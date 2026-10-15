@@ -1,8 +1,8 @@
 #!/bin/sh
 # herdr [[build]] step (herdr plugin install / update): put the prebuilt nudge binary for this
 # platform in dist/nudge, verified against the release checksum. Without a release binary for this
-# platform, build it with Bun instead. `herdr plugin link` skips build steps; linked checkouts run
-# the source with Bun (see bin/nudge) unless you run `bun run build`.
+# platform, build it with cargo instead. `herdr plugin link` skips build steps; linked checkouts run
+# target/release/nudge (see bin/nudge) after `cargo build --release`.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/herdr-plugin.toml" | head -n 1)
@@ -46,14 +46,15 @@ else
   echo "nudge: no prebuilt binary for $(uname -s)-$(uname -m)"
 fi
 
-for bun in "${NUDGE_BUN:-}" "$(command -v bun 2>/dev/null || true)" "$HOME/.local/share/mise/shims/bun" "$HOME/.bun/bin/bun"; do
-  if [ -n "$bun" ] && [ -x "$bun" ]; then
-    echo "nudge: building with $bun"
+for cargo in "$(command -v cargo 2>/dev/null || true)" "$HOME/.cargo/bin/cargo"; do
+  if [ -n "$cargo" ] && [ -x "$cargo" ]; then
+    echo "nudge: building with $cargo"
     cd "$root"
-    "$bun" install --frozen-lockfile
-    "$bun" build --compile --minify src/cli.ts --outfile dist/nudge
+    "$cargo" build --release --locked
+    cp target/release/nudge dist/nudge
+    echo "nudge: installed $root/dist/nudge"
     exit 0
   fi
 done
-echo "nudge: no prebuilt binary and Bun isn't installed (https://bun.sh)" >&2
+echo "nudge: no prebuilt binary and cargo isn't installed (https://rustup.rs)" >&2
 exit 1

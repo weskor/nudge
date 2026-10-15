@@ -1,0 +1,162 @@
+//! Read the clipboard for `nudge setup`, also from herdr plugin panes that lack the desktop session's env.
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::context::{Env, Run};
+
+/// Clipboard tools `nudge setup` can use, for doctor's report.
+pub(crate) const CLIPBOARD_TOOLS: [&str; 2] = ["wl-paste", "xclip"];
+
+const WL_PASTE: [&str; 4] = ["wl-paste", "--no-newline", "--type", "text"];
+const XCLIP: [&str; 4] = ["xclip", "-selection", "clipboard", "-o"];
+
+/// Clipboard commands to try, in order: wl-paste, then xclip, each as-is first. Processes started by the herdr
+/// server (plugin panes) may lack the desktop session's `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` or `DISPLAY`, so
+/// also try every Wayland socket in the runtime dir and `DISPLAY=:0`.
+pub(crate) fn clipboard_commands(env: &Env, runtime_dir: &str, wayland_sockets: &[String]) -> Vec<Vec<String>> {
+    let owned = |args: &[&str]| args.iter().map(|&arg| arg.to_owned()).collect::<Vec<String>>();
+    let mut commands = vec![owned(&WL_PASTE)];
+    for socket in wayland_sockets {
+        if env.get("WAYLAND_DISPLAY") == Some(socket.as_str()) && env.get("XDG_RUNTIME_DIR") == Some(runtime_dir) {
+            continue;
+        }
+        let mut command = vec![
+            "env".to_owned(),
+            format!("XDG_RUNTIME_DIR={runtime_dir}"),
+            format!("WAYLAND_DISPLAY={socket}"),
+        ];
+        command.extend(owned(&WL_PASTE));
+        commands.push(command);
+    }
+    commands.push(owned(&XCLIP));
+    if env.get("DISPLAY").is_none() {
+        let mut command = vec!["env".to_owned(), "DISPLAY=:0".to_owned()];
+        command.extend(owned(&XCLIP));
+        commands.push(command);
+    }
+    commands
+}
+
+fn wayland_sockets_in(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            name.strip_prefix("wayland-")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect()
+}
+
+/// `$XDG_RUNTIME_DIR`, else `/run/user/<uid>`.
+pub(crate) fn runtime_dir(env: &Env) -> PathBuf {
+    env.get("XDG_RUNTIME_DIR").map_or_else(
+        || PathBuf::from(format!("/run/user/{}", rustix::process::getuid().as_raw())),
+        PathBuf::from,
+    )
+}
+
+/// Trimmed text from the first clipboard command that works and isn't empty; `None` if none do.
+pub(crate) fn read_clipboard(run: &dyn Run, env: &Env, runtime_dir: &Path) -> Option<String> {
+    let dir = runtime_dir.to_string_lossy();
+    clipboard_commands(env, &dir, &wayland_sockets_in(runtime_dir))
+        .into_iter()
+        .find_map(|cmd| {
+            let args: Vec<&str> = cmd.iter().map(String::as_str).collect();
+            run.run(&args, Path::new("/")).filter(|text| !text.is_empty())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{clipboard_commands, read_clipboard};
+    use crate::context::Env;
+    use crate::context::tests::FakeRun;
+
+    const WL: &str = "wl-paste --no-newline --type text";
+    const XC: &str = "xclip -selection clipboard -o";
+
+    fn desktop() -> Env {
+        Env::from([
+            ("WAYLAND_DISPLAY", "wayland-1"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("DISPLAY", ":0"),
+        ])
+    }
+
+    #[test]
+    fn prefers_wl_paste_in_the_current_session() {
+        let runtime = tempfile::tempdir().unwrap();
+        let run = FakeRun::new([(WL, "https://desk/hook"), (XC, "other")]);
+        assert_eq!(
+            read_clipboard(&run, &desktop(), runtime.path()).as_deref(),
+            Some("https://desk/hook")
+        );
+        assert_eq!(run.calls(), [WL]);
+    }
+
+    #[test]
+    fn falls_back_to_xclip_when_wl_paste_fails_or_is_empty() {
+        let runtime = tempfile::tempdir().unwrap();
+        for run in [
+            FakeRun::new([(XC, "Bearer abc")]),
+            FakeRun::new([(WL, ""), (XC, "Bearer abc")]),
+        ] {
+            assert_eq!(
+                read_clipboard(&run, &desktop(), runtime.path()).as_deref(),
+                Some("Bearer abc")
+            );
+        }
+    }
+
+    #[test]
+    fn from_a_plugin_pane_without_session_env_it_finds_the_wayland_socket() {
+        let runtime = tempfile::tempdir().unwrap();
+        fs::write(runtime.path().join("wayland-1"), "").unwrap();
+        fs::write(runtime.path().join("wayland-1.lock"), "").unwrap();
+        let cmd = format!(
+            "env XDG_RUNTIME_DIR={} WAYLAND_DISPLAY=wayland-1 {WL}",
+            runtime.path().display()
+        );
+        let run = FakeRun::new([(cmd.as_str(), "https://desk/hook")]);
+        assert_eq!(
+            read_clipboard(&run, &Env::default(), runtime.path()).as_deref(),
+            Some("https://desk/hook")
+        );
+    }
+
+    #[test]
+    fn none_when_nothing_yields_text() {
+        let runtime = tempfile::tempdir().unwrap();
+        let run = FakeRun::default();
+        assert_eq!(read_clipboard(&run, &desktop(), runtime.path()), None);
+        assert_eq!(run.calls(), [WL, XC]);
+    }
+
+    #[test]
+    fn session_fallbacks_only_when_the_env_lacks_them() {
+        let joined = |commands: Vec<Vec<String>>| commands.into_iter().map(|c| c.join(" ")).collect::<Vec<_>>();
+        assert_eq!(
+            joined(clipboard_commands(&desktop(), "/run/user/1000", &["wayland-1".into()])),
+            [WL, XC]
+        );
+        assert_eq!(
+            joined(clipboard_commands(
+                &Env::default(),
+                "/run/user/1000",
+                &["wayland-0".into(), "wayland-1".into()]
+            )),
+            [
+                WL.to_owned(),
+                format!("env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 {WL}"),
+                format!("env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 {WL}"),
+                XC.to_owned(),
+                format!("env DISPLAY=:0 {XC}"),
+            ]
+        );
+    }
+}

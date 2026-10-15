@@ -1,0 +1,79 @@
+[package]
+name = "nudge"
+version = "0.5.0"
+edition = "2024"
+rust-version = "1.88"
+description = "herdr plugin and CLI: tell your AI desk (a webhook automation) when a coding agent is done, blocked or has a question."
+license = "MIT"
+repository = "https://github.com/weskor/nudge"
+readme = "README.md"
+keywords = ["herdr", "agents", "webhook", "notifications", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
+
+[dependencies]
+lexopt = "0.3.2"
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+rustix = { version = "1.1.5", features = ["termios", "stdio", "process"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+url = "2.5.8"
+
+[dev-dependencies]
+parking_lot = "0.12.5"
+tempfile = "3.27.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Strict by default. Every exception is a `#[expect(lint, reason = "...")]` next to the code it excuses.
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+let_underscore_drop = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Transitive duplicates (rustls, ring, windows-sys) are not ours to fix.
+multiple_crate_versions = "allow"
+
+# Panics: return errors instead. Tests may unwrap (clippy.toml).
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+exit = "deny"
+# Lossy or surprising conversions.
+as_conversions = "deny"
+# Exhaustive handling: name every variant instead of `_ =>`.
+wildcard_enum_match_arm = "deny"
+# Lint exceptions must be `#[expect]` with a reason, so stale ones fail the build.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+# Leftovers and noise.
+dbg_macro = "deny"
+print_literal = "deny"
+str_to_string = "deny"
+clone_on_ref_ptr = "deny"
+if_then_some_else_none = "deny"
+let_underscore_must_use = "deny"
+redundant_type_annotations = "deny"
+tests_outside_test_module = "deny"
+unnecessary_self_imports = "deny"
+unused_trait_names = "deny"
+verbose_file_reads = "deny"

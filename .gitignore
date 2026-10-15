@@ -1,5 +1,7 @@
-node_modules/
+target/
 dist/
 *.log
 # The real config lives in ~/.config/nudge/config.toml; never commit one here.
 config.toml
+# verify-nudge evidence and parity transcripts (.cursor/skills/verify-nudge)
+.verify/
