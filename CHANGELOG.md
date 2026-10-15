@@ -2,6 +2,12 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## 0.5.0
+
+- **Rewritten in Rust.** The binary is about 3 MB instead of 30–40 MB, and static on Linux. Commands, config, state and the webhook JSON are unchanged.
+- `nudge doctor` shows recent plugin runs by age ("5m ago") instead of clock time.
+- Building from source needs Rust instead of Bun.
+
 ## 0.4.0
 
 First public release.

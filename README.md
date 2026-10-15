@@ -36,7 +36,7 @@ nudge is a [herdr](https://herdr.dev) plugin. When an agent finishes a long turn
 herdr plugin install weskor/nudge
 ```
 
-The install step downloads the prebuilt `nudge` binary for your platform and checks it against the release checksum, so there's nothing else to install. On other platforms it builds from source if [Bun](https://bun.sh) is installed.
+The install step downloads the prebuilt `nudge` binary for your platform (about 3 MB, static on Linux) and checks it against the release checksum, so there's nothing else to install. On other platforms it builds from source if [Rust](https://rustup.rs) is installed.
 
 ## Quick start
 
@@ -178,7 +178,6 @@ description = "nudge: send this pane to the desk"
 | `NUDGE_CONFIG` | Use another config file |
 | `NUDGE_STATE_DIR` | Use another state directory |
 | `NUDGE_AGENT` | The agent name to send as `from_agent` |
-| `NUDGE_BUN` | Path to Bun, when running from source |
 | `NO_COLOR` | Plain output |
 
 <details>
