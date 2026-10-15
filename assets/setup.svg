@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 520" width="860" height="520" role="img" aria-labelledby="title desc">
+  <title id="title">nudge setup in a terminal</title>
+  <desc id="desc">nudge setup reads the webhook URL and Authorization header from the clipboard, shows the header masked, test-pings the webhook, asks again when the header is rejected, saves the config, and offers auto-notify.</desc>
+  <style>
+    .mono { white-space: pre; font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; }
+    .t { fill: #e6edf3; } .d { fill: #8b949e; } .g { fill: #3fb950; } .r { fill: #f85149; } .y { fill: #d29922; } .b { fill: #58a6ff; } .w { font-weight: 700; }
+  </style>
+  <rect x="0" y="0" width="860" height="520" rx="14" fill="#0d1117" stroke="#30363d"/>
+  <rect x="0.5" y="0.5" width="859" height="36" rx="14" fill="#161b22"/>
+  <rect x="0.5" y="22" width="859" height="15" fill="#161b22"/>
+  <line x1="0" y1="37" x2="860" y2="37" stroke="#30363d"/>
+  <circle cx="22" cy="18" r="6" fill="#f85149"/>
+  <circle cx="42" cy="18" r="6" fill="#d29922"/>
+  <circle cx="62" cy="18" r="6" fill="#3fb950"/>
+  <text x="430" y="23" class="mono d" text-anchor="middle" font-size="12">nudge setup</text>
+
+  <text class="mono" xml:space="preserve">
+    <tspan x="24" y="66" class="g">❯</tspan><tspan class="t"> nudge setup</tspan>
+    <tspan x="24" y="89" class="t w">nudge setup</tspan><tspan class="t">: add desk "desk" </tspan><tspan class="d">(~/.config/nudge/config.toml)</tspan>
+    <tspan x="24" y="125" class="t">1/2 Copy the Webhook URL from your desk's webhook settings, then press Enter </tspan><tspan class="d">›</tspan>
+    <tspan x="24" y="146" class="g">    ✓</tspan><tspan class="t"> https://hooks.example.com/desk/7f3c2a</tspan>
+    <tspan x="24" y="167" class="t">2/2 Copy the Authorization header from your desk's webhook settings, then press Enter </tspan><tspan class="d">›</tspan>
+    <tspan x="24" y="188" class="g">    ✓</tspan><tspan class="t"> Bearer ••••••••a1b2 </tspan><tspan class="d">(52 characters)</tspan>
+    <tspan x="24" y="209" class="t">    Testing… </tspan><tspan class="r">✗</tspan><tspan class="t"> the webhook rejected the Authorization header </tspan><tspan class="d">(HTTP 401)</tspan>
+    <tspan x="24" y="230" class="b">  ↻</tspan><tspan class="t"> Copy the Authorization header from your desk's webhook settings, then press Enter </tspan><tspan class="d">›</tspan>
+    <tspan x="24" y="251" class="g">    ✓</tspan><tspan class="t"> Bearer ••••••••c3d4 </tspan><tspan class="d">(52 characters)</tspan>
+    <tspan x="24" y="272" class="t">    Testing… </tspan><tspan class="g">✓</tspan><tspan class="t"> HTTP 200: the desk received a test ping</tspan>
+    <tspan x="24" y="293" class="g">    ✓</tspan><tspan class="t"> Saved "desk" as the default desk </tspan><tspan class="d">(~/.config/nudge/config.toml, mode 600)</tspan>
+    <tspan x="24" y="329" class="t">herdr plugin </tspan><tspan class="g">✓</tspan><tspan class="t"> enabled</tspan>
+    <tspan x="24" y="350" class="d">    Auto-notify sends an agent's last terminal lines (with secrets redacted) to the desk</tspan>
+    <tspan x="24" y="371" class="d">    when it's blocked, or finishes a turn longer than 2 minutes while you're not watching it.</tspan>
+    <tspan x="24" y="392" class="t">    Turn on auto-notify? </tspan><tspan class="d">[Y/n] ›</tspan>
+    <tspan x="24" y="413" class="g">    ✓</tspan><tspan class="t"> auto-notify on</tspan>
+    <tspan x="24" y="434" class="t">nudge command </tspan><tspan class="g">✓</tspan><tspan class="t"> ~/.local/bin/nudge</tspan>
+    <tspan x="24" y="470" class="t">Done. Check everything any time with </tspan><tspan class="t w">nudge doctor</tspan><tspan class="t">.</tspan>
+    <tspan x="24" y="497" class="g">❯</tspan><tspan class="t"> </tspan><tspan class="d">▌</tspan>
+  </text>
+</svg>

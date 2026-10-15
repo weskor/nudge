@@ -1,0 +1,23 @@
+# nudge config. `nudge setup` writes this file for you; this example documents the format.
+# Location: ~/.config/nudge/config.toml ($XDG_CONFIG_HOME/nudge/config.toml if XDG_CONFIG_HOME
+# is set; override the path with NUDGE_CONFIG).
+#
+# This file holds secrets: keep it out of git and `chmod 600` it.
+
+# Desk used when --desk is not given, and the one the herdr plugin notifies.
+# Optional when only one desk is configured.
+default_desk = "desk"
+
+# One [[desk]] table per webhook that receives nudge events.
+[[desk]]
+name = "desk"
+# Optional; shown by `nudge list` and the list_desks MCP tool.
+description = "Coordinator desk: hears from coding agents when they finish or need input."
+url = "https://REPLACE_WITH_WEBHOOK_URL"
+# Sent verbatim as the Authorization header value.
+authorization = "Bearer REPLACE_WITH_WEBHOOK_TOKEN"
+
+[[desk]]
+name = "research"
+url = "https://REPLACE_WITH_RESEARCH_WEBHOOK_URL"
+authorization = "Bearer REPLACE_WITH_RESEARCH_WEBHOOK_TOKEN"

@@ -1,0 +1,50 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: linux-x64 linux-arm64
+          # macOS runners sign the darwin binaries; unsigned arm64 binaries won't run.
+          - os: macos-latest
+            targets: darwin-x64 darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Versions match the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(bun -e 'console.log((await Bun.file("package.json").json()).version)')
+          manifest=$(sed -n 's/^version = "\(.*\)"$/\1/p' herdr-plugin.toml | head -n 1)
+          echo "tag=$tag package.json=$pkg herdr-plugin.toml=$manifest"
+          test "$tag" = "$pkg" && test "$tag" = "$manifest"
+      - run: bun test
+      - run: bunx tsc --noEmit
+      - run: sh scripts/build-release.sh ${{ matrix.targets }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: dist/release/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

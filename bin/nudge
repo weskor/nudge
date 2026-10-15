@@ -1,0 +1,18 @@
+#!/bin/sh
+# Run nudge: the prebuilt binary (dist/nudge, from the herdr build step or `bun run build`),
+# else the TypeScript source with Bun. herdr runs plugin commands with its server's PATH,
+# which often lacks Bun, so also look in NUDGE_BUN, the mise shim and ~/.bun.
+self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+root=$(cd "$(dirname "$self")/.." && pwd)
+export NUDGE_ROOT="$root"
+if [ -x "$root/dist/nudge" ]; then
+  exec "$root/dist/nudge" "$@"
+fi
+for bun in "$NUDGE_BUN" "$(command -v bun 2>/dev/null)" "$HOME/.local/share/mise/shims/bun" "$HOME/.bun/bin/bun"; do
+  if [ -n "$bun" ] && [ -x "$bun" ]; then
+    exec "$bun" "$root/src/cli.ts" "$@"
+  fi
+done
+echo "nudge: no prebuilt binary in $root/dist and Bun not found." >&2
+echo "Reinstall the plugin (herdr plugin install weskor/nudge), or install Bun and run: bun run build" >&2
+exit 1

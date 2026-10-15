@@ -1,0 +1,32 @@
+name: Bug report
+description: Something in nudge doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: nudge doctor output
+      description: Run `nudge doctor` (or the herdr action `weskor.nudge.status`) and paste the output. It never prints your Authorization header, but check before posting.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Plugin log
+      description: For auto-notify problems, the relevant lines from `herdr plugin log list --plugin weskor.nudge`.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: "`nudge --version`, `herdr --version`, and your OS."
+    validations:
+      required: true
