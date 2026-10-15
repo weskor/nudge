@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Fake `wl-paste` / `xclip` for verify-nudge. Never touches the real clipboard.
+
+Installed as <RUN>/fakebin/wl-paste and <RUN>/fakebin/xclip (sh wrappers that run this file and set
+VERIFY_NUDGE_FAKE to the wrapper's path, which locates <RUN> and the tool name).
+Prints <RUN>/clipboard.txt verbatim when it exists and is non-empty (exit 0), else exits 1
+like an empty clipboard. Every call is appended to <RUN>/clipboard-calls.jsonl as
+{"tool": "wl-paste", "argv": [...], "env": {"DISPLAY": ..., "WAYLAND_DISPLAY": ..., "XDG_RUNTIME_DIR": ...}, "exit": N}.
+"""
+import json
+import os
+import sys
+
+invoked = os.path.abspath(os.environ.get("VERIFY_NUDGE_FAKE") or sys.argv[0])
+run = os.path.dirname(os.path.dirname(invoked))
+tool = os.path.basename(invoked)
+
+try:
+    with open(os.path.join(run, "clipboard.txt"), encoding="utf-8") as f:
+        text = f.read()
+except FileNotFoundError:
+    text = ""
+code = 0 if text else 1
+
+env = {k: os.environ[k] for k in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR") if k in os.environ}
+line = json.dumps({"tool": tool, "argv": sys.argv[1:], "env": env, "exit": code}, ensure_ascii=False) + "\n"
+fd = os.open(os.path.join(run, "clipboard-calls.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+try:
+    os.write(fd, line.encode())
+finally:
+    os.close(fd)
+
+if code == 0:
+    sys.stdout.write(text)
+sys.exit(code)

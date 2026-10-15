@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Fake desk webhook for verify-nudge. Listens on 127.0.0.1 only.
+
+usage: fake-webhook --dir DIR --id SESSION_ID [--port 0]
+
+  POST /hook   200 "ok" when Authorization equals the good token, else 401 {"message":"Invalid API key"}
+  POST /fail   500 "desk exploded"
+  anything else (any method) 404 "no such hook"
+  GET /__verify  200 SESSION_ID  (health/ownership probe for `verify-nudge doctor`; not recorded)
+
+Every other request is appended to DIR/requests.jsonl before the response is sent:
+  {"method", "path", "headers": {"authorization", "content-type", "user-agent"}, "body": <parsed JSON or raw text>}
+Writes the bound port to DIR/webhook.port once it is listening.
+"""
+import argparse
+import json
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+GOOD_TOKEN = "Bearer good-token-0123456789abcdef"
+RECORDED_HEADERS = ("authorization", "content-type", "user-agent")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dir", required=True)
+parser.add_argument("--id", required=True)
+parser.add_argument("--port", type=int, default=0)
+opts = parser.parse_args()
+log_path = os.path.join(opts.dir, "requests.jsonl")
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "fake-desk"
+    sys_version = ""
+
+    def log_message(self, format, *args):  # keep stderr quiet
+        pass
+
+    def read_body(self):
+        if self.headers.get("transfer-encoding", "").lower() == "chunked":
+            chunks = b""
+            while True:
+                size = int(self.rfile.readline().strip().split(b";")[0], 16)
+                if size == 0:
+                    self.rfile.readline()
+                    return chunks
+                chunks += self.rfile.read(size)
+                self.rfile.readline()
+        length = int(self.headers.get("content-length") or 0)
+        return self.rfile.read(length) if length else b""
+
+    def reply(self, code, body, content_type="text/plain"):
+        data = body.encode()
+        self.send_response(code)
+        self.send_header("content-type", content_type)
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def handle_any(self):
+        if self.command == "GET" and self.path == "/__verify":
+            return self.reply(200, opts.id)
+        raw = self.read_body()
+        text = raw.decode("utf-8", errors="replace")
+        try:
+            body = json.loads(text)
+        except ValueError:
+            body = text
+        headers = {h: self.headers[h] for h in RECORDED_HEADERS if self.headers.get(h) is not None}
+        record = {"method": self.command, "path": self.path, "headers": headers, "body": body}
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if self.path == "/hook":
+            if self.headers.get("authorization") == GOOD_TOKEN:
+                return self.reply(200, "ok")
+            return self.reply(401, '{"message":"Invalid API key"}', "application/json")
+        if self.path == "/fail":
+            return self.reply(500, "desk exploded")
+        return self.reply(404, "no such hook")
+
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = handle_any
+
+
+server = ThreadingHTTPServer(("127.0.0.1", opts.port), Handler)
+port_file = os.path.join(opts.dir, "webhook.port")
+with open(port_file + ".tmp", "w") as f:
+    f.write(str(server.server_address[1]))
+os.replace(port_file + ".tmp", port_file)
+server.serve_forever()

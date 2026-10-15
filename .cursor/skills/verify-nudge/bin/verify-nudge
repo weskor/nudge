@@ -1,0 +1,1401 @@
+#!/usr/bin/env python3
+"""verify-nudge: drive the real `nudge` binary in a sandbox, capture evidence, and diff two builds.
+
+Binary under test: $NUDGE_BIN (default: <repo>/bin/nudge). python3 stdlib only.
+
+Session commands (one long-lived sandbox + fake webhook; evidence in <repo>/.verify/<id>/):
+  verify-nudge launch                      start a session, print the ready line
+  verify-nudge doctor                      read-only: is the session worth driving?
+  verify-nudge seed-config [--default NAME] write the standard desks config (default desk: "desk")
+  verify-nudge seed-state JSON             write state.json (e.g. '{"auto": true}')
+  verify-nudge herdr PRESET|FILE           fake herdr fixture: none | running | agent-pane | FILE.json
+  verify-nudge clip TEXT | --clear         fake clipboard contents (wl-paste/xclip)
+  verify-nudge git-repo NAME BRANCH [ORIGIN]   create <sandbox>/NAME as a git repo (use with run --cwd NAME)
+  verify-nudge link TARGET | --file | --remove  set <sandbox>/home/.local/bin/nudge ({NUDGE_ROOT} expands)
+  verify-nudge run [--stdin TEXT] [--stdin-file F] [--env K=V]... [--cwd DIR] [--expect N] -- ARGS...
+  verify-nudge pty [--env K=V]... [--cwd DIR] [--expect-exit N] (--expect RE | --send TEXT | --clip TEXT)... -- ARGS...
+  verify-nudge mcp [--env K=V]... [--call TOOL JSON]...
+  verify-nudge files | requests | env
+  verify-nudge cleanup                     kill what launch started, delete scratch; keep evidence
+
+Parity:
+  verify-nudge parity OUT.json [--only SUBSTRING]...   run every scenario in fresh sandboxes, write a normalized transcript
+
+Session selection: $VERIFY_NUDGE_SESSION, else the id in <repo>/.verify/current.
+"""
+import json
+import os
+import re
+import select
+import shlex
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.request
+
+BIN_DIR = os.path.dirname(os.path.realpath(__file__))
+SKILL_DIR = os.path.dirname(BIN_DIR)
+REPO = os.path.realpath(os.path.join(SKILL_DIR, "..", "..", ".."))
+EVIDENCE_ROOT = os.path.join(REPO, ".verify")
+
+GOOD = "Bearer good-token-0123456789abcdef"
+WRONG = "Bearer wrong-token-0123456789abcdef"
+SECRET_MARKERS = ("good-token-0123456789abcdef", "wrong-token-0123456789abcdef")
+PLUGIN_ID = "weskor.nudge"
+
+
+def die(message, code=1):
+    sys.stderr.write(f"verify-nudge: {message}\n")
+    sys.exit(code)
+
+
+def nudge_bin():
+    path = os.environ.get("NUDGE_BIN") or os.path.join(REPO, "bin", "nudge")
+    path = os.path.abspath(path)
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        die(f"NUDGE_BIN {path} is not an executable file")
+    return path
+
+
+def nudge_root(binary):
+    """Install root nudge reports (dirname of the bin/ or dist/ dir holding the binary)."""
+    return os.path.dirname(os.path.dirname(os.path.realpath(binary)))
+
+# The age at the end of a doctor "Recent:" line, optionally inside a dim ANSI style and before a PTY "\r".
+RECENT_AGE = re.compile(r"(?m)^(.*Recent: .*?)(just now|\d+[smhd] ago)((?:\x1b\[[0-9;]*m)?\r?)$")
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def unescape(text):
+    table = {"r": "\r", "n": "\n", "t": "\t", "e": "\x1b", "\\": "\\"}
+    return re.sub(r"\\(x[0-9a-fA-F]{2}|[rnte\\])", lambda m: chr(int(m.group(1)[1:], 16)) if m.group(1)[0] == "x" else table[m.group(1)], text)
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+# --------------------------------------------------------------------------------------------- fake webhook
+
+
+def start_webhook(directory, session_id):
+    """Start bin/fake-webhook as our own child (new session); returns (pid, port)."""
+    port_file = os.path.join(directory, "webhook.port")
+    if os.path.exists(port_file):
+        os.remove(port_file)
+    log = open(os.path.join(directory, "webhook.log"), "ab")
+    proc = subprocess.Popen(
+        [sys.executable, os.path.join(BIN_DIR, "fake-webhook"), "--dir", directory, "--id", session_id],
+        stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+    )
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if os.path.exists(port_file):
+            port = int(open(port_file).read())
+            if webhook_owner(port) == session_id:
+                return proc.pid, port
+        if proc.poll() is not None:
+            break
+        time.sleep(0.05)
+    proc.kill()
+    die(f"fake webhook did not start; see {directory}/webhook.log")
+
+
+def webhook_owner(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/__verify", timeout=2) as r:
+            return r.read().decode()
+    except OSError:
+        return None
+
+
+def pid_is(pid, needle):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return needle in f.read().decode(errors="replace")
+    except OSError:
+        return False
+
+
+# --------------------------------------------------------------------------------------------- herdr fixtures
+
+
+def rule(argv, stdout="", exit=0):
+    return {"argv": argv, "stdout": stdout, "exit": exit}
+
+
+def prefix(argv, stdout="", exit=0):
+    return {"prefix": argv, "stdout": stdout, "exit": exit}
+
+
+def fixture(*rules, default_exit=1):
+    return {"rules": list(rules), "default_exit": default_exit}
+
+
+HERDR_VERSION = rule(["--version"], "herdr 0.9.3")
+NOTIFICATION_OK = prefix(["notification", "show"])
+PANE_OPEN_OK = prefix(["plugin", "pane", "open"])
+NO_AGENTS = rule(["agent", "list"], {"result": {"agents": []}})
+
+
+def plugin_list(*plugins):
+    return rule(["plugin", "list", "--plugin", PLUGIN_ID, "--json"], {"result": {"plugins": list(plugins)}})
+
+
+def plugin(enabled=True, root="{RUN}/plugin", version="0.4.0"):
+    return {"enabled": enabled, "plugin_root": root, "version": version}
+
+
+PLUGIN_LOGS = rule(
+    ["plugin", "log", "list", "--plugin", PLUGIN_ID],
+    {"result": {"logs": [
+        {"started_unix_ms": 1760000300000, "status": "succeeded", "stderr": "[nudge] p_1 done: notified desk (HTTP 200)\n", "event": "pane.agent_status_changed"},
+        {"started_unix_ms": 1760000000000, "status": "succeeded", "stderr": "", "event": "pane.agent_status_changed"},
+        {"started_unix_ms": 1760000100000, "status": "succeeded", "stderr": "[nudge] p_2 done: skipped (turn shorter than 120s)"},
+        {"started_unix_ms": 1760000200000, "status": "failed", "stderr": "[nudge] failed: boom\n[nudge] failed: desk \"desk\" webhook returned HTTP 500: desk exploded", "action_id": "ask-desk"},
+        {"started_unix_ms": 1760000050000, "status": "succeeded", "stderr": "[nudge] oldest line, dropped by the last-5 window"},
+        {"started_unix_ms": 1760000400000, "status": "succeeded", "stderr": "[nudge] p_3 blocked: skipped (cooldown)"},
+        {"started_unix_ms": 1760000500000, "status": "succeeded", "stderr": "[nudge] repointed ~/.local/bin/nudge at this install"},
+    ]}},
+)
+
+
+def agent_get(pane, name, cwd="{RUN}/repo", focused=False, foreground_cwd=None):
+    agent = {"name": name, "pane_id": pane, "cwd": cwd, "focused": focused}
+    if foreground_cwd is not None:
+        agent["foreground_cwd"] = foreground_cwd
+    return rule(["agent", "get", pane], {"result": {"agent": agent}})
+
+
+def pane_read(pane, text):
+    return rule(["pane", "read", pane, "--source", "recent-unwrapped", "--lines", "200", "--format", "text"], text)
+
+
+PANE_TEXT = (
+    "".join(f"step {i}: compiling module_{i}\n" for i in range(1, 46))
+    + "\x1b[1;32m$\x1b[0m claude --resume\n"
+    + "────────────────────────────\n"
+    + "Running migrations…\n\n\n\n"
+    + "export API_KEY=abc123def456\n"
+    + "curl -H 'Authorization: Bearer abcdefghijklmnop12345' https://api.example.com\n"
+    + "OPENAI=sk-proj0123456789abcdefghij\n"
+    + "remote token ghp_0123456789abcdefghijABCDEFGHIJ\n"
+    + "aws AKIA0123456789ABCDEF\n"
+    + "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpM\n"
+    + "commit 0123456789abcdef0123456789abcdef01234567 kept\n"
+    + "random Zx9Qw8Er7Ty6Ui5Op4As3Df2Gh1Jk0LmNbVc\n"
+    + "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n"
+    + 'db_password = "hunter2 extra"\n'
+    + "Done. 3 files changed.\n"
+    + "═══════════\n\n\n"
+)
+
+PRESETS = {
+    "none": None,
+    "running": fixture(HERDR_VERSION, plugin_list(plugin()), PLUGIN_LOGS, NO_AGENTS, NOTIFICATION_OK, PANE_OPEN_OK),
+    "agent-pane": fixture(
+        HERDR_VERSION, plugin_list(plugin()), PLUGIN_LOGS, NOTIFICATION_OK, PANE_OPEN_OK,
+        agent_get("p_1", "claude-1"), pane_read("p_1", PANE_TEXT),
+        rule(["agent", "list"], {"result": {"agents": [{"name": "claude-1", "pane_id": "p_1", "cwd": "{RUN}/repo"}]}}),
+    ),
+}
+
+
+def desks_config(port, offline_port, default="desk"):
+    hook = f"http://127.0.0.1:{port}"
+    desks = [
+        ("desk", "Main desk", f"{hook}/hook", GOOD),
+        ("research", "Research desk", f"{hook}/hook", GOOD),
+        ("badauth", None, f"{hook}/hook", WRONG),
+        ("nohook", None, f"{hook}/nope", GOOD),
+        ("broken", None, f"{hook}/fail", GOOD),
+        ("offline", None, f"http://127.0.0.1:{offline_port}/hook", GOOD),
+    ]
+    lines = [f'default_desk = "{default}"', ""] if default else []
+    for name, description, url, auth in desks:
+        lines += ["[[desk]]", f'name = "{name}"']
+        if description:
+            lines.append(f'description = "{description}"')
+        lines += [f'url = "{url}"', f'authorization = "{auth}"', ""]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------------------------- sandbox
+
+
+class Sandbox:
+    """One isolated HOME/config/state/fakes directory (<RUN>). Nothing in it points at the user's real files."""
+
+    def __init__(self, run, binary, port, offline_port, requests_file):
+        self.run = run
+        self.binary = binary
+        self.port = port
+        self.offline_port = offline_port
+        self.requests_file = requests_file
+        self.home = os.path.join(run, "home")
+        self.config = os.path.join(self.home, ".config", "nudge", "config.toml")
+        self.state_dir = os.path.join(self.home, ".local", "state", "nudge")
+        self.link = os.path.join(self.home, ".local", "bin", "nudge")
+        self.seeded = {}
+        self.marks = {}
+
+    def create(self):
+        for d in ("home", "work", "fakebin", "plugin"):
+            os.makedirs(os.path.join(self.run, d), exist_ok=True)
+        os.makedirs(os.path.join(self.run, "runtime"), mode=0o700, exist_ok=True)
+        # sh wrappers run the fakes with this interpreter, so the sandbox PATH needs no python3 of its own.
+        # VERIFY_NUDGE_FAKE tells the fake which <RUN>/fakebin entry was invoked.
+        for name, target in (("herdr", "fake-herdr"), ("wl-paste", "fake-clipboard"), ("xclip", "fake-clipboard")):
+            path = os.path.join(self.run, "fakebin", name)
+            if not os.path.lexists(path):
+                with open(path, "w") as f:
+                    f.write(f'#!/bin/sh\nVERIFY_NUDGE_FAKE="$0" exec {shlex.quote(sys.executable)} '
+                            f'{shlex.quote(os.path.join(BIN_DIR, target))} "$@"\n')
+                os.chmod(path, 0o755)
+        return self
+
+    def env(self, extra=None, tty=False):
+        env = {
+            "PATH": f"{self.run}/fakebin:/usr/local/bin:/usr/bin:/bin",
+            "HOME": self.home,
+            "XDG_CONFIG_HOME": os.path.join(self.home, ".config"),
+            "XDG_STATE_HOME": os.path.join(self.home, ".local", "state"),
+            "XDG_RUNTIME_DIR": os.path.join(self.run, "runtime"),
+            "NUDGE_CONFIG": self.config,
+            "NUDGE_STATE_DIR": self.state_dir,
+            "HERDR_BIN_PATH": os.path.join(self.run, "fakebin", "herdr"),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+        if tty:
+            env["TERM"] = "xterm-256color"
+        for key, value in (extra or {}).items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value.replace("{RUN}", self.run)
+        return env
+
+    def cwd(self, where):
+        return where if os.path.isabs(where or "") else os.path.join(self.run, where or "work")
+
+    # ---- seeding
+
+    def write_config(self, text, mode=0o600):
+        os.makedirs(os.path.dirname(self.config), mode=0o700, exist_ok=True)
+        with open(self.config, "w") as f:
+            f.write(text)
+        os.chmod(self.config, mode)
+
+    def write_state(self, state):
+        def resolve(value):
+            if isinstance(value, dict) and list(value) == ["ago"]:
+                stamp = now_ms() - value["ago"]
+                self.seeded[stamp] = f"<now-{value['ago']}ms>"
+                return stamp
+            if isinstance(value, dict):
+                return {k: resolve(v) for k, v in value.items()}
+            return value
+        os.makedirs(self.state_dir, mode=0o700, exist_ok=True)
+        path = os.path.join(self.state_dir, "state.json")
+        with open(path, "w") as f:
+            json.dump(resolve(state), f)
+        os.chmod(path, 0o600)
+
+    def edit_state(self, pane, key, ago):
+        path = os.path.join(self.state_dir, "state.json")
+        state = json.load(open(path))
+        stamp = now_ms() - ago
+        self.seeded[stamp] = f"<now-{ago}ms>"
+        state.setdefault("panes", {}).setdefault(pane, {})[key] = stamp
+        with open(path, "w") as f:
+            json.dump(state, f)
+
+    def write_herdr(self, fix):
+        path = os.path.join(self.run, "herdr.json")
+        if fix is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        with open(path, "w") as f:
+            json.dump(fix, f, indent=1)
+
+    def clip(self, text):
+        with open(os.path.join(self.run, "clipboard.txt"), "w") as f:
+            f.write(text or "")
+
+    def git_repo(self, name, branch, origin=None):
+        path = os.path.join(self.run, name)
+        os.makedirs(path, exist_ok=True)
+        env = self.env()
+        git = lambda *a: subprocess.run(["git", *a], cwd=path, env=env, check=True, capture_output=True)
+        git("init", "-q", "-b", branch)
+        if origin:
+            git("remote", "add", "origin", origin)
+        git("-c", "user.name=verify", "-c", "user.email=verify@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
+
+    # ---- observation
+
+    def _since(self, path, key):
+        try:
+            with open(path, "rb") as f:
+                f.seek(self.marks.get(key, 0))
+                data = f.read()
+                self.marks[key] = f.tell()
+        except FileNotFoundError:
+            return []
+        return [json.loads(line) for line in data.decode().splitlines() if line.strip()]
+
+    def mark(self):
+        for key, path in self._logs():
+            self._since(path, key)
+
+    def _logs(self):
+        return (("requests", self.requests_file), ("herdr", os.path.join(self.run, "herdr-calls.jsonl")),
+                ("clipboard", os.path.join(self.run, "clipboard-calls.jsonl")))
+
+    def side_effects(self):
+        requests, herdr, clipboard = (self._since(path, key) for key, path in self._logs())
+        # herdr calls can run concurrently (agent get + pane read), so their order is not behavior.
+        herdr = sorted((c["argv"] for c in herdr), key=lambda a: json.dumps(a))
+        return {"webhook": requests, "herdr_calls": herdr, "clipboard_calls": clipboard}
+
+    def files(self):
+        def mode(path):
+            return format(os.stat(path).st_mode & 0o777, "03o")
+
+        def entries(d):
+            return sorted(os.listdir(d)) if os.path.isdir(d) else None
+
+        out = {}
+        if os.path.exists(self.config):
+            out["config"] = {"mode": mode(self.config), "dir_mode": mode(os.path.dirname(self.config)), "text": open(self.config).read()}
+        else:
+            out["config"] = None
+        out["config_dir_entries"] = entries(os.path.dirname(self.config))
+        state_path = os.path.join(self.state_dir, "state.json")
+        if os.path.exists(state_path):
+            text = open(state_path).read()
+            try:
+                state = json.loads(text)
+            except ValueError:
+                state = {"unparseable": text}
+            out["state"] = {"mode": mode(state_path), "dir_mode": mode(self.state_dir), "json": state}
+        else:
+            out["state"] = None
+        out["state_dir_entries"] = entries(self.state_dir)
+        if os.path.islink(self.link):
+            out["command_link"] = {"type": "symlink", "target": os.readlink(self.link)}
+        elif os.path.exists(self.link):
+            out["command_link"] = {"type": "file"}
+        else:
+            out["command_link"] = None
+        return out
+
+    # ---- drivers
+
+    def run_cmd(self, args, stdin=None, env=None, cwd=None, timeout=60):
+        self.mark()
+        try:
+            proc = subprocess.run(
+                [self.binary, *args], input=(stdin or "").encode() if stdin is not None else None,
+                stdin=subprocess.DEVNULL if stdin is None else None, capture_output=True,
+                env=self.env(env), cwd=self.cwd(cwd), timeout=timeout,
+            )
+            code, out, err = proc.returncode, proc.stdout.decode(errors="replace"), proc.stderr.decode(errors="replace")
+        except subprocess.TimeoutExpired as e:
+            code, out, err = "timeout", (e.stdout or b"").decode(errors="replace"), (e.stderr or b"").decode(errors="replace")
+        record = {"kind": "cmd", "argv": args, "stdin": stdin, "env": env or {}, "cwd": cwd or "work",
+                  "exit": code, "stdout": out, "stderr": err}
+        record.update(self.side_effects())
+        record["files"] = self.files()
+        return record
+
+    def run_pty(self, args, script, env=None, cwd=None, timeout=15):
+        import fcntl
+        import termios
+        self.mark()
+        master, slave = os.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+
+        def controlling_tty():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+        proc = subprocess.Popen([self.binary, *args], stdin=slave, stdout=slave, stderr=slave,
+                                env=self.env(env, tty=True), cwd=self.cwd(cwd), preexec_fn=controlling_tty)
+        os.close(slave)
+        buf = bytearray()
+        eof = False
+
+        def pump(wait):
+            nonlocal eof
+            if eof:
+                return
+            ready, _, _ = select.select([master], [], [], wait)
+            if ready:
+                try:
+                    data = os.read(master, 65536)
+                except OSError:
+                    data = b""
+                if data:
+                    buf.extend(data)
+                else:
+                    eof = True
+
+        pos = 0
+        failures = []
+        for op, arg in script:
+            if op == "expect":
+                pattern = re.compile(arg)
+                deadline = time.time() + timeout
+                while True:
+                    text = buf.decode(errors="replace")
+                    match = pattern.search(text, pos)
+                    if match:
+                        pos = match.end()
+                        break
+                    if eof or time.time() > deadline:
+                        failures.append(f"expect {arg!r} not seen")
+                        break
+                    pump(0.05)
+            elif op == "send":
+                time.sleep(0.2)  # let the prompt switch the terminal to raw mode first
+                try:
+                    os.write(master, unescape(arg).encode())
+                except OSError:
+                    failures.append(f"send {arg!r}: terminal already closed")
+            elif op == "clip":
+                self.clip(arg)
+        deadline = time.time() + timeout
+        while not eof and time.time() < deadline:
+            pump(0.05)
+        try:
+            code = proc.wait(timeout=max(0.1, deadline - time.time()))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            code = "timeout"
+        os.close(master)
+        record = {"kind": "pty", "argv": args, "script": [list(s) for s in script], "env": env or {}, "exit": code,
+                  "output": buf.decode(errors="replace"), "expect_failures": failures}
+        record.update(self.side_effects())
+        record["files"] = self.files()
+        return record
+
+    def run_mcp(self, messages, env=None, timeout=20):
+        """Send JSON-RPC messages over stdio; wait for each request's response; then close stdin."""
+        self.mark()
+        proc = subprocess.Popen([self.binary, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=self.env(env), cwd=self.cwd(None))
+        lines, err, eof = [], [], []
+        cond = threading.Condition()
+
+        def read_out():
+            for line in proc.stdout:
+                with cond:
+                    lines.append(line.decode(errors="replace"))
+                    cond.notify_all()
+            with cond:
+                eof.append(True)
+                cond.notify_all()
+
+        reader = threading.Thread(target=read_out, daemon=True)
+        reader.start()
+        err_thread = threading.Thread(target=lambda: err.append(proc.stderr.read().decode(errors="replace")), daemon=True)
+        err_thread.start()
+
+        def has_response(msg_id):
+            for line in lines:
+                try:
+                    if json.loads(line).get("id") == msg_id:
+                        return True
+                except ValueError:
+                    pass
+            return False
+
+        missing = []
+        for message in messages:
+            try:
+                proc.stdin.write((json.dumps(message) + "\n").encode())
+                proc.stdin.flush()
+            except BrokenPipeError:
+                pass  # the server already exited; the missing responses below record it
+            if "id" in message:
+                with cond:
+                    cond.wait_for(lambda: has_response(message["id"]) or eof, timeout)
+                    if not has_response(message["id"]):
+                        missing.append(message["id"])
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        try:
+            code = proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            code = "still running 10s after stdin closed (killed)"
+        reader.join(5)
+        err_thread.join(5)
+        responses, other = {}, []
+        for line in lines:
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                other.append(line)
+                continue
+            if isinstance(msg, dict) and "id" in msg and ("result" in msg or "error" in msg):
+                responses[str(msg["id"])] = msg
+            else:
+                other.append(msg)
+        record = {"kind": "mcp", "argv": ["mcp"], "requests": messages, "env": env or {}, "exit": code,
+                  "responses_by_id": responses, "other_stdout": other, "missing_responses": missing, "stderr": "".join(err)}
+        record.update(self.side_effects())
+        record["files"] = self.files()
+        return record
+
+
+# --------------------------------------------------------------------------------------------- normalization
+
+
+class Normalizer:
+    def __init__(self, sandbox, root, t0):
+        self.sb = sandbox
+        self.t0 = t0
+        pairs = [(sandbox.run, "<RUN>"), (os.path.realpath(sandbox.run), "<RUN>")]
+        if len(root) > 1:
+            pairs.append((root, "<NUDGE_ROOT>"))
+        pairs += [(f"127.0.0.1:{sandbox.port}", "127.0.0.1:<PORT>"), (f"127.0.0.1:{sandbox.offline_port}", "127.0.0.1:<OFFLINE_PORT>")]
+        self.pairs = sorted(set(pairs), key=lambda p: -len(p[0]))
+
+    def text(self, s):
+        for old, new in self.pairs:
+            s = s.replace(old, new)
+        return s
+
+    def epoch(self, value, t1):
+        if value in self.sb.seeded:
+            return self.sb.seeded[value]
+        if self.t0 - 5 <= value <= t1 + 5:
+            return "<now>"
+        return "<epoch-ms>"
+
+    def value(self, obj, t1, epochs=False):
+        if isinstance(obj, str):
+            return self.text(obj)
+        if isinstance(obj, bool) or obj is None:
+            return obj
+        if isinstance(obj, int) and epochs and obj > 10**12:
+            return self.epoch(obj, t1)
+        if isinstance(obj, list):
+            return [self.value(v, t1, epochs) for v in obj]
+        if isinstance(obj, dict):
+            return {self.text(k): self.value(v, t1, epochs) for k, v in obj.items()}
+        return obj
+
+    def record(self, rec, t1):
+        rec = dict(rec)
+        files = rec.pop("files", None)
+        rec = self.value(rec, t1)
+        # JSON text inside MCP tool results is compared as data too.
+        for response in rec.get("responses_by_id", {}).values():
+            for item in (response.get("result") or {}).get("content") or []:
+                try:
+                    item["text_json"] = json.loads(item["text"])
+                    del item["text"]
+                except (KeyError, TypeError, ValueError):
+                    pass
+        # doctor's "Recent:" lines end with a relative age ("just now", "5m ago", "371d ago"); it changes daily.
+        for key in ("stdout", "output"):
+            if isinstance(rec.get(key), str):
+                rec[key] = RECENT_AGE.sub(r"\1<ago>\3", rec[key])
+        # JSON stdout (list --json) is compared as data, not bytes.
+        if rec.get("stdout"):
+            try:
+                rec["stdout_json"] = json.loads(rec["stdout"])
+                del rec["stdout"]
+            except ValueError:
+                pass
+        for key in ("stdout", "stderr", "output", "stdin"):
+            if isinstance(rec.get(key), str) and "\n" in rec[key]:
+                rec[key] = rec[key].split("\n")
+        if files is not None:
+            files = self.value(files, t1, epochs=False)
+            if files.get("state"):
+                files["state"]["json"] = self.value(files["state"]["json"], t1, epochs=True)
+            if files.get("config"):
+                files["config"]["text"] = files["config"]["text"].split("\n")
+            rec["files"] = files
+        return rec
+
+
+def secret_leaks(rec):
+    texts = [rec.get(k) for k in ("stdout", "stderr", "output")]
+    texts += [json.dumps(r) for r in rec.get("responses_by_id", {}).values()]
+    return [m for m in SECRET_MARKERS for t in texts if isinstance(t, str) and m in t]
+
+
+# --------------------------------------------------------------------------------------------- session
+
+
+def session_id():
+    sid = os.environ.get("VERIFY_NUDGE_SESSION")
+    if not sid:
+        try:
+            sid = open(os.path.join(EVIDENCE_ROOT, "current")).read().strip()
+        except FileNotFoundError:
+            die("no session: run `verify-nudge launch` first")
+    return sid
+
+
+def load_session():
+    sid = session_id()
+    path = os.path.join(EVIDENCE_ROOT, sid, "session.json")
+    if not os.path.exists(path):
+        die(f"session {sid} not found at {path}")
+    return json.load(open(path))
+
+
+def save_session(s):
+    with open(os.path.join(s["evidence"], "session.json"), "w") as f:
+        json.dump(s, f, indent=2)
+
+
+def session_sandbox(s):
+    sb = Sandbox(s["run"], s["nudge_bin"], s["port"], s["offline_port"], os.path.join(s["scratch"], "requests.jsonl"))
+    sb.seeded = {int(k): v for k, v in s.get("seeded", {}).items()}
+    marks_path = os.path.join(s["scratch"], "marks.json")
+    if os.path.exists(marks_path):
+        sb.marks = json.load(open(marks_path))
+    return sb
+
+
+def persist_marks(s, sb):
+    with open(os.path.join(s["scratch"], "marks.json"), "w") as f:
+        json.dump(sb.marks, f)
+    s["seeded"] = {str(k): v for k, v in sb.seeded.items()}
+    save_session(s)
+
+
+def cmd_launch(argv):
+    binary = nudge_bin()
+    sid = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(2).hex()
+    evidence = os.path.join(EVIDENCE_ROOT, sid)
+    os.makedirs(evidence)
+    scratch = os.path.realpath(tempfile.mkdtemp(prefix=f"verify-nudge-{sid}-"))
+    pid, port = start_webhook(scratch, sid)
+    s = {"id": sid, "scratch": scratch, "run": os.path.join(scratch, "run"), "evidence": evidence,
+         "nudge_bin": binary, "nudge_root": nudge_root(binary), "pid": pid, "port": port, "offline_port": free_port(),
+         "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "cleaned": False, "steps": 0}
+    session_sandbox(s).create()
+    save_session(s)
+    with open(os.path.join(EVIDENCE_ROOT, "current"), "w") as f:
+        f.write(sid)
+    print(f"verify-nudge: ready session={sid}")
+    print(f"  nudge:    {binary}")
+    print(f"  webhook:  http://127.0.0.1:{port}/hook  (good Authorization: {GOOD!r}; /fail = 500; other paths = 404)")
+    print(f"  offline:  http://127.0.0.1:{s['offline_port']}/hook  (nothing listens)")
+    print(f"  sandbox:  {s['run']}  (HOME, config, state, fake herdr/wl-paste/xclip)")
+    print(f"  evidence: {evidence}")
+    print(f"  export VERIFY_NUDGE_SESSION={sid}  # to pin this session in another shell")
+
+
+def cmd_doctor(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    problems = []
+
+    def check(ok, title, detail=""):
+        print(f"{'ok  ' if ok else 'FAIL'} {title}{'  ' + detail if detail else ''}")
+        if not ok:
+            problems.append(title)
+
+    check(not s["cleaned"], f"session {s['id']} not cleaned up")
+    check(os.path.isdir(s["run"]), "sandbox exists", s["run"])
+    alive = pid_is(s["pid"], "fake-webhook")
+    check(alive, "fake webhook process is ours and alive", f"pid {s['pid']}")
+    check(webhook_owner(s["port"]) == s["id"], "webhook port answers with this session id", f"127.0.0.1:{s['port']}")
+    check(os.access(s["nudge_bin"], os.X_OK), "NUDGE_BIN executable", s["nudge_bin"])
+    env = sb.env()
+    for tool in ("herdr", "wl-paste", "xclip"):
+        found = shutil.which(tool, path=env["PATH"])
+        check(found == os.path.join(s["run"], "fakebin", tool), f"{tool} resolves to the fake", found or "not found")
+    real_home = os.path.expanduser("~")
+    isolated = all(env[k].startswith(s["run"]) for k in ("HOME", "NUDGE_CONFIG", "NUDGE_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "HERDR_BIN_PATH"))
+    check(isolated and not env["HOME"].startswith(real_home + "/.config"), "config/state/HOME isolated in the sandbox")
+    check(not any(k in env for k in ("DISPLAY", "WAYLAND_DISPLAY", "HERDR_PANE_ID", "NUDGE_AGENT")), "no display, pane or agent variables leak in")
+    try:
+        out = subprocess.run([s["nudge_bin"], "version"], capture_output=True, text=True, env=env, cwd=sb.cwd(None), timeout=60)
+        check(out.returncode == 0 and out.stdout.strip() != "", "nudge version runs", out.stdout.strip() or out.stderr.strip())
+    except (OSError, subprocess.SubprocessError) as e:
+        check(False, "nudge version runs", str(e))
+    rev = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", REPO, "status", "--porcelain"], capture_output=True, text=True).stdout.strip() != ""
+    print(f"info checkout {REPO} at {rev}{' (dirty)' if dirty else ''}; nudge root {s['nudge_root']}")
+    sys.exit(1 if problems else 0)
+
+
+def parse_common(argv, allowed):
+    """Parse leading options up to `--`; returns (opts, ordered steps, rest)."""
+    if "--" not in argv:
+        rest, head = [], argv
+    else:
+        i = argv.index("--")
+        head, rest = argv[:i], argv[i + 1:]
+    opts = {"env": {}, "steps": [], "calls": []}
+    it = iter(head)
+    for flag in it:
+        if flag not in allowed:
+            die(f"unknown option {flag}", 2)
+        if flag == "--env":
+            key, _, value = next(it).partition("=")
+            opts["env"][key] = value
+        elif flag in ("--expect", "--send", "--clip") and allowed.get(flag) == "step":
+            opts["steps"].append([flag[2:], next(it)])
+        elif flag == "--call":
+            opts["calls"].append((next(it), json.loads(next(it))))
+        else:
+            opts[flag[2:]] = next(it)
+    return opts, rest
+
+
+def report(s, sb, rec, t0, label):
+    norm = Normalizer(sb, s["nudge_root"], t0).record(rec, now_ms())
+    leaks = secret_leaks(rec)
+    s["steps"] += 1
+    path = os.path.join(s["evidence"], f"{s['steps']:03d}-{label}.json")
+    norm["secret_leaks"] = leaks
+    with open(path, "w") as f:
+        json.dump(norm, f, indent=2, ensure_ascii=False, sort_keys=True)
+    persist_marks(s, sb)
+    print(json.dumps(norm, indent=2, ensure_ascii=False, sort_keys=True))
+    print(f"evidence: {path}")
+    if leaks:
+        print(f"WARNING: secret printed: {leaks}")
+    return norm
+
+
+def slug(args):
+    return re.sub(r"[^A-Za-z0-9]+", "-", "-".join(args[:2]) or "noargs").strip("-")[:40]
+
+
+def cmd_run(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    opts, rest = parse_common(argv, {"--stdin": 1, "--stdin-file": 1, "--env": 1, "--cwd": 1, "--expect": 1})
+    stdin = opts.get("stdin")
+    if "stdin-file" in opts:
+        stdin = open(opts["stdin-file"]).read()
+    if stdin is not None:
+        stdin = unescape(stdin)
+    t0 = now_ms()
+    rec = sb.run_cmd(rest, stdin=stdin, env=opts["env"], cwd=opts.get("cwd"))
+    report(s, sb, rec, t0, "run-" + slug(rest))
+    if "expect" in opts and str(rec["exit"]) != opts["expect"]:
+        die(f"exit {rec['exit']}, expected {opts['expect']}")
+
+
+def cmd_pty(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    opts, rest = parse_common(argv, {"--env": 1, "--cwd": 1, "--expect-exit": 1, "--expect": "step", "--send": "step", "--clip": "step"})
+    t0 = now_ms()
+    rec = sb.run_pty(rest, opts["steps"], env=opts["env"], cwd=opts.get("cwd"))
+    report(s, sb, rec, t0, "pty-" + slug(rest))
+    if rec["expect_failures"]:
+        die(f"expectations failed: {rec['expect_failures']}")
+    if "expect-exit" in opts and str(rec["exit"]) != opts["expect-exit"]:
+        die(f"exit {rec['exit']}, expected {opts['expect-exit']}")
+
+
+def mcp_messages(calls):
+    msgs = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "verify-nudge", "version": "1"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    ]
+    for i, (name, args) in enumerate(calls, start=3):
+        msgs.append({"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {"name": name, "arguments": args}})
+    return msgs
+
+
+def cmd_mcp(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    opts, _ = parse_common(argv, {"--env": 1, "--call": 1})
+    t0 = now_ms()
+    rec = sb.run_mcp(mcp_messages(opts["calls"]), env=opts["env"])
+    report(s, sb, rec, t0, "mcp")
+
+
+def cmd_seed_config(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    if argv and not (len(argv) == 2 and argv[0] == "--default"):
+        die("usage: verify-nudge seed-config [--default NAME]", 2)
+    default = argv[1] if argv else "desk"
+    sb.write_config(desks_config(s["port"], s["offline_port"], default))
+    print(f"wrote {sb.config}: default {default!r}; desks desk + research (accept), badauth (401), nohook (404), broken (500), offline (refused)")
+
+
+def cmd_git_repo(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    if len(argv) not in (2, 3):
+        die("usage: verify-nudge git-repo NAME BRANCH [ORIGIN]", 2)
+    sb.git_repo(argv[0], argv[1], argv[2] if len(argv) == 3 else None)
+    print(f"git repo {os.path.join(sb.run, argv[0])} on {argv[1]}" + (f", origin {argv[2]}" if len(argv) == 3 else ", no origin"))
+
+
+def cmd_link(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    if len(argv) != 1:
+        die("usage: verify-nudge link TARGET | --file | --remove", 2)
+    if os.path.lexists(sb.link):
+        os.remove(sb.link)
+    os.makedirs(os.path.dirname(sb.link), exist_ok=True)
+    if argv[0] == "--file":
+        with open(sb.link, "w") as f:
+            f.write("#!/bin/sh\n")
+    elif argv[0] != "--remove":
+        os.symlink(argv[0].replace("{NUDGE_ROOT}", s["nudge_root"]), sb.link)
+    print(f"{sb.link}: {argv[0]}")
+
+
+def cmd_seed_state(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    if len(argv) != 1:
+        die('usage: verify-nudge seed-state \'{"auto": true, "panes": {"p_1": {"working_since": {"ago": 180000}}}}\'', 2)
+    sb.write_state(json.loads(argv[0]))
+    persist_marks(s, sb)
+    print(open(os.path.join(sb.state_dir, "state.json")).read())
+
+
+def cmd_herdr(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    if len(argv) != 1:
+        die(f"usage: verify-nudge herdr {'|'.join(PRESETS)}|FILE.json", 2)
+    fix = PRESETS[argv[0]] if argv[0] in PRESETS else json.load(open(argv[0]))
+    sb.write_herdr(fix)
+    print(f"fake herdr fixture: {argv[0]}" + ("" if fix else " (herdr acts as not installed)"))
+
+
+def cmd_clip(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    if argv == ["--clear"]:
+        sb.clip("")
+        print("clipboard cleared")
+    elif len(argv) == 1:
+        sb.clip(argv[0])
+        print("clipboard set")
+    else:
+        die("usage: verify-nudge clip TEXT | --clear", 2)
+
+
+def cmd_files(argv):
+    s = load_session()
+    sb = session_sandbox(s)
+    print(json.dumps(Normalizer(sb, s["nudge_root"], 0).record({"files": sb.files()}, now_ms()), indent=2, sort_keys=True))
+
+
+def cmd_requests(argv):
+    s = load_session()
+    path = os.path.join(s["scratch"], "requests.jsonl")
+    print(open(path).read() if os.path.exists(path) else "(no requests yet)", end="")
+
+
+def cmd_env(argv):
+    s = load_session()
+    for key, value in session_sandbox(s).env().items():
+        print(f"export {key}='{value}'")
+    print("unset DISPLAY WAYLAND_DISPLAY HERDR_PANE_ID NUDGE_AGENT HERDR_PLUGIN_ID HERDR_PLUGIN_EVENT_JSON HERDR_PLUGIN_CONTEXT_JSON")
+
+
+def cmd_cleanup(argv):
+    s = load_session()
+    if pid_is(s["pid"], "fake-webhook") and pid_is(s["pid"], s["scratch"]):
+        os.kill(s["pid"], signal.SIGTERM)
+        print(f"stopped fake webhook pid {s['pid']}")
+    if os.path.isdir(s["scratch"]):
+        requests = os.path.join(s["scratch"], "requests.jsonl")
+        if os.path.exists(requests):
+            shutil.copy(requests, os.path.join(s["evidence"], "webhook-requests.jsonl"))
+        shutil.rmtree(s["scratch"])
+        print(f"removed sandbox {s['scratch']}")
+    s["cleaned"] = True
+    save_session(s)
+    current = os.path.join(EVIDENCE_ROOT, "current")
+    if os.path.exists(current) and open(current).read().strip() == s["id"]:
+        os.remove(current)
+    print(f"evidence kept: {s['evidence']}")
+
+
+# --------------------------------------------------------------------------------------------- parity scenarios
+
+
+def cmd(args, stdin=None, env=None, cwd=None, expect=None):
+    return {"do": "cmd", "argv": args, "stdin": stdin, "env": env, "cwd": cwd, "expect": expect}
+
+
+def pty(args, script, env=None, expect=None):
+    return {"do": "pty", "argv": args, "script": script, "env": env, "expect": expect}
+
+
+def event(status, pane="p_1", env=None, expect=0):
+    payload = json.dumps({"event": "pane.agent_status_changed", "data": {"pane_id": pane, "agent_status": status}})
+    return cmd(["plugin", "event"], env={"HERDR_PLUGIN_EVENT_JSON": payload, **(env or {})}, cwd="home", expect=expect)
+
+
+def action(name, context=None, env=None, expect=0):
+    extra = dict(env or {})
+    if context is not None:
+        extra["HERDR_PLUGIN_CONTEXT_JSON"] = json.dumps(context)
+    return cmd(["plugin", "action", name], env=extra, cwd="home", expect=expect)
+
+
+URL = "http://127.0.0.1:{PORT}/hook"
+
+
+def config(default="desk"):
+    return {"do": "config", "default": default}
+
+
+def raw_config(text):
+    return {"do": "raw_config", "text": text}
+
+
+def state(obj):
+    return {"do": "state", "state": obj}
+
+
+def herdr(fix):
+    return {"do": "herdr", "fixture": fix}
+
+
+def clip(text):
+    return {"do": "clip", "text": text}
+
+
+def git(name, branch, origin=None):
+    return {"do": "git", "name": name, "branch": branch, "origin": origin}
+
+
+def link(target=None, regular=False):
+    return {"do": "link", "target": target, "regular": regular}
+
+
+def write(rel, text):
+    return {"do": "write", "path": rel, "text": text}
+
+
+def mcp(calls, env=None):
+    return {"do": "mcp", "messages": mcp_messages(calls), "env": env}
+
+
+TWO_DESKS_NO_DEFAULT = (
+    '[[desk]]\nname = "alpha"\nurl = "http://127.0.0.1:{PORT}/hook"\nauthorization = "' + GOOD + '"\n\n'
+    '[[desk]]\nname = "beta"\ndescription = "Beta desk"\nurl = "http://127.0.0.1:{PORT}/hook"\nauthorization = "' + GOOD + '"\n'
+)
+BAD_TOML = 'default_desk = "desk"\n[[desk]\nname = desk\n'
+BAD_SCHEMA = (
+    'default_desk = "ghost"\n\n[[desk]]\nname = "my desk"\nurl = "http://example.com/hook"\nauthorization = "REPLACE_WITH_TOKEN"\n\n'
+    '[[desk]]\nname = "dup"\nurl = "https://example.com/a"\nauthorization = "Bearer x"\n\n'
+    '[[desk]]\nname = "dup"\nurl = "not a url"\nauthorization = ""\n'
+)
+PANE_HERDR = PRESETS["agent-pane"]
+AGENT_HERDR = fixture(HERDR_VERSION, NOTIFICATION_OK, NO_AGENTS)
+
+
+def setup_tty_url_prompt():
+    return ["expect", r"1/2 Copy the Webhook URL[^\n]*›"]
+
+
+def scenarios():
+    S = []
+    add = lambda name, *ops: S.append((name, list(ops)))
+
+    # ---- top-level CLI
+    add("cli-help", cmd(["--help"], expect=0), cmd(["-h"], expect=0), cmd(["help"], expect=0))
+    add("cli-no-args", cmd([], expect=2))
+    add("cli-version", cmd(["version"], expect=0), cmd(["--version"], expect=0), cmd(["-v"], expect=0))
+    add("cli-unknown-command", cmd(["frobnicate"], expect=2))
+    add("cli-unknown-option", config(), cmd(["list", "--bogus"], expect=2))
+    add("cli-extra-args", config(), cmd(["list", "extra"], expect=2), cmd(["test", "extra"], expect=2),
+        cmd(["doctor", "extra"], expect=2), cmd(["setup", "extra"], expect=2), cmd(["mcp", "extra"], expect=2))
+    add("cli-notify-bad-status", config(), cmd(["notify", "--status", "urgent", "hi"], expect=2))
+    add("cli-notify-no-message", config(), cmd(["notify"], expect=2), cmd(["notify", "--status", "blocked"], expect=2))
+
+    # ---- list
+    add("list", config(), cmd(["list"], expect=0), cmd(["list", "--json"], expect=0))
+    add("list-no-default", raw_config(TWO_DESKS_NO_DEFAULT), cmd(["list"], expect=0), cmd(["list", "--json"], expect=0))
+    add("list-no-config", cmd(["list"], expect=1))
+    add("list-invalid-config", raw_config(BAD_SCHEMA), cmd(["list"], expect=1))
+    add("list-bad-toml", raw_config(BAD_TOML), cmd(["list"], expect=1))
+
+    # ---- notify
+    elsewhere = rule(["agent", "list"], {"result": {"agents": [{"name": "other", "pane_id": "p_5", "cwd": "/somewhere/else"}]}})
+    add("notify-args", config(), herdr(fixture(elsewhere)), cmd(["notify", "Finished", "the", "auth", "refactor;", "PR #42"], expect=0))
+    add("notify-stdin", config(), herdr(fixture(NO_AGENTS)), cmd(["notify", "-"], stdin="  Line one\nLine two \"quoted\"\n\n", expect=0))
+    add("notify-desk-status", config(), cmd(["notify", "--desk", "research", "--status", "blocked", "Need", "the", "staging", "DB", "password"], expect=0))
+    add("notify-agent-flag", config(), cmd(["notify", "--agent", "api-refactor", "--status", "question", "Use v2 or v3?"], expect=0),
+        cmd(["notify", "--agent", "my agent's pane", "quoting"], expect=0), cmd(["notify", "--agent=eq-form", "--status=done", "equals form"], expect=0))
+    add("notify-env-agent", config(), cmd(["notify", "from env"], env={"NUDGE_AGENT": "env-agent"}, expect=0),
+        cmd(["notify", "--agent", "flag-wins", "flag beats env"], env={"NUDGE_AGENT": "env-agent"}, expect=0))
+    add("notify-in-agent-pane", config(), herdr(fixture(agent_get("p_1", "claude-1"))),
+        cmd(["notify", "from the pane"], env={"HERDR_PANE_ID": "p_1"}, expect=0))
+    add("notify-in-unnamed-agent-pane", config(), herdr(fixture(agent_get("p_9", None))),
+        cmd(["notify", "unnamed agent"], env={"HERDR_PANE_ID": "p_9"}, expect=0))
+    add("notify-in-shell-pane", config(), herdr(fixture(rule(["agent", "get", "p_shell"], "", exit=1), NO_AGENTS)),
+        cmd(["notify", "plain shell"], env={"HERDR_PANE_ID": "p_shell"}, expect=0))
+    add("notify-cwd-single-agent", config(),
+        herdr(fixture(rule(["agent", "list"], {"result": {"agents": [
+            {"name": "worker", "pane_id": "p_3", "cwd": "{RUN}/work"}, {"name": "other", "pane_id": "p_4", "cwd": "/elsewhere"}]}}))),
+        cmd(["notify", "matched by cwd"], expect=0))
+    add("notify-cwd-foreground-unnamed", config(),
+        herdr(fixture(rule(["agent", "list"], {"result": {"agents": [
+            {"name": None, "pane_id": "p_8", "cwd": "/home/x", "foreground_cwd": "{RUN}/work"}]}}))),
+        cmd(["notify", "matched by foreground cwd"], expect=0))
+    add("notify-cwd-two-agents", config(),
+        herdr(fixture(rule(["agent", "list"], {"result": {"agents": [
+            {"name": "a", "pane_id": "p_3", "cwd": "{RUN}/work"}, {"name": "b", "pane_id": "p_4", "cwd": "{RUN}/work"}]}}))),
+        cmd(["notify", "ambiguous"], expect=0))
+    add("notify-herdr-missing", config(), herdr(None), cmd(["notify", "no herdr"], expect=0))
+    add("notify-herdr-garbage", config(), herdr(fixture(rule(["agent", "list"], "not json"))), cmd(["notify", "garbage"], expect=0))
+    add("notify-git-ssh-origin", config(), git("repo", "feature/x", "git@github.com:acme/api.git"),
+        cmd(["notify", "--agent", "a", "in git"], cwd="repo", expect=0))
+    add("notify-git-https-origin", config(), git("web", "main", "https://github.com/acme/web.git"),
+        cmd(["notify", "--agent", "a", "https remote"], cwd="web", expect=0))
+    add("notify-git-no-origin", config(), git("plainrepo", "main"),
+        cmd(["notify", "--agent", "a", "no origin"], cwd="plainrepo", expect=0))
+    add("notify-empty-message", config(), cmd(["notify", "   "], expect=1), cmd(["notify", "-"], stdin="", expect=1),
+        cmd(["notify", "-"], stdin=" \n\n", expect=1))
+    add("notify-unknown-desk", config(), cmd(["notify", "--desk", "nope", "hi"], expect=1))
+    add("notify-401", config(), cmd(["notify", "--desk", "badauth", "hi"], expect=1))
+    add("notify-404", config(), cmd(["notify", "--desk", "nohook", "hi"], expect=1))
+    add("notify-500", config(), cmd(["notify", "--desk", "broken", "hi"], expect=1))
+    add("notify-unreachable", config(), cmd(["notify", "--desk", "offline", "hi"], expect=1))
+    add("notify-no-config", cmd(["notify", "hi"], expect=1))
+    add("notify-several-desks-no-default", raw_config(TWO_DESKS_NO_DEFAULT), cmd(["notify", "hi"], expect=1),
+        cmd(["notify", "--desk", "beta", "hi"], expect=0))
+    add("notify-invalid-config", raw_config(BAD_SCHEMA), cmd(["notify", "hi"], expect=1))
+    add("notify-bad-toml", raw_config(BAD_TOML), cmd(["notify", "hi"], expect=1))
+
+    # ---- test ping
+    add("test-ping", config(), cmd(["test"], expect=0), cmd(["test", "--desk", "research", "--agent", "pinger"], expect=0))
+    add("test-ping-failures", config(), cmd(["test", "--desk", "badauth"], expect=1), cmd(["test", "--desk", "nohook"], expect=1),
+        cmd(["test", "--desk", "broken"], expect=1), cmd(["test", "--desk", "offline"], expect=1))
+    add("test-no-config", cmd(["test"], expect=1))
+
+    # ---- setup, scripted (stdin is not a terminal)
+    add("setup-flags", cmd(["setup", "--url", URL, "--authorization", GOOD, "--description", "Main desk"], expect=0), cmd(["list"], expect=0))
+    add("setup-stdin", cmd(["setup"], stdin=f"\n  {URL}  \r\n\n{GOOD}\n", expect=0))
+    add("setup-stdin-auth-only", cmd(["setup", "--url", URL], stdin=f"{GOOD}\n", expect=0))
+    add("setup-rejected-auth", cmd(["setup", "--url", URL, "--authorization", WRONG], expect=1))
+    add("setup-wrong-url", cmd(["setup", "--url", "http://127.0.0.1:{PORT}/nope", "--authorization", GOOD], expect=1))
+    add("setup-desk-500", cmd(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], expect=1))
+    add("setup-unreachable", cmd(["setup", "--url", "http://127.0.0.1:{OFFLINE_PORT}/hook", "--authorization", GOOD], expect=1))
+    add("setup-no-test", cmd(["setup", "--url", URL, "--authorization", WRONG, "--no-test"], expect=0))
+    add("setup-default-two-desks",
+        cmd(["setup", "--url", URL, "--authorization", GOOD], expect=0),
+        cmd(["setup", "--desk", "research", "--url", URL, "--authorization", GOOD, "--description", "Research desk"], expect=0),
+        cmd(["list"], expect=0),
+        cmd(["setup", "--desk", "research", "--default"], stdin="", expect=0),
+        cmd(["list"], expect=0))
+    add("setup-rerun-replaces",
+        cmd(["setup", "--url", URL, "--authorization", WRONG, "--description", "first", "--no-test"], expect=0),
+        cmd(["setup", "--url", URL, "--authorization", GOOD, "--description", "second"], expect=0),
+        cmd(["setup", "--description", "third"], stdin="", expect=0),
+        cmd(["list"], expect=0))
+    add("setup-auth-prefix", cmd(["setup", "--url", URL, "--authorization", "  Authorization: " + GOOD + "  "], expect=0),
+        cmd(["setup", "--desk", "lower", "--url", URL], stdin="authorization:" + GOOD + "\n", expect=0))
+    add("setup-invalid-values", cmd(["setup", "--url", "http://example.com/hook", "--authorization", GOOD], expect=1),
+        cmd(["setup", "--url", "ftp://127.0.0.1/hook", "--authorization", GOOD], expect=1),
+        cmd(["setup", "--url", URL, "--authorization", "Bearer bad\ttoken"], expect=1),
+        cmd(["setup", "--desk", "bad name!", "--url", URL, "--authorization", GOOD], expect=1),
+        cmd(["setup", "--url", URL, "--authorization", "REPLACE_WITH_TOKEN"], expect=1))
+    add("setup-missing-values", cmd(["setup"], stdin="", expect=1), cmd(["setup", "--url", URL], stdin="", expect=1))
+    add("setup-existing-bad-toml", raw_config(BAD_TOML), cmd(["setup", "--url", URL, "--authorization", GOOD], expect=1))
+
+    # ---- setup, interactive (PTY)
+    add("setup-tty-clipboard", herdr(PRESETS["running"]), clip(URL),
+        pty(["setup"], [
+            setup_tty_url_prompt(), ["send", "\\r"],
+            ["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["clip", GOOD], ["send", "\\r"],
+            ["expect", r"Turn on auto-notify\?[^\n]*›"], ["send", "\\r"],
+            ["expect", r"Install the[^\n]*nudge[^\n]*›"], ["send", "\\r"],
+            ["expect", r"Done\."]], expect=0))
+    add("setup-tty-manual-and-401",
+        pty(["setup", "--desk", "manual"], [
+            setup_tty_url_prompt(), ["send", "\\r"],
+            ["expect", r"No clipboard text found\. Paste or type the Webhook URL[^\n]*›"], ["send", URL + "\\r"],
+            ["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["send", WRONG + "\\r"],
+            ["expect", r"rejected the Authorization header"],
+            ["expect", r"↻ Copy the Authorization header[^\n]*›"], ["send", "  Authorization: " + GOOD + "\\r"],
+            ["expect", r"Install the[^\n]*›"], ["send", "n\\r"],
+            ["expect", r"Done\."]], expect=0))
+    add("setup-tty-url-retry",
+        pty(["setup"], [
+            setup_tty_url_prompt(), ["send", "http://example.com/hook\\r"],
+            ["expect", r"https URL"],
+            setup_tty_url_prompt(), ["send", "http://127.0.0.1:{PORT}/nope\\r"],
+            ["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["send", GOOD + "\\r"],
+            ["expect", r"no webhook at that URL"],
+            ["expect", r"↻ Copy the Webhook URL[^\n]*›"], ["send", "http://127.0.0.1:{PORT}/hoo\x7fok\\r"],
+            ["expect", r"Install the[^\n]*›"], ["send", "no\\r"],
+            ["expect", r"Done\."]], expect=0))
+    add("setup-tty-500-save-anyway-no",
+        pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], [
+            ["expect", r"Save anyway\?[^\n]*›"], ["send", "\\r"]], expect=1))
+    add("setup-tty-500-save-anyway-yes",
+        pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD, "--no-test"], [
+            ["expect", r"Install the[^\n]*›"], ["send", "n\\r"], ["expect", r"Done\."]], expect=0),
+        pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], [
+            ["expect", r"Save anyway\?[^\n]*›"], ["send", "maybe\\r"],
+            ["expect", r"Save anyway\?[^\n]*›"], ["send", "y\\r"],
+            ["expect", r"Install the[^\n]*›"], ["send", "n\\r"], ["expect", r"Done\."]], expect=0))
+    add("setup-tty-ctrl-c",
+        pty(["setup"], [setup_tty_url_prompt(), ["send", "\\x03"], ["expect", r"Cancelled; nothing saved\."]], expect=1),
+        pty(["setup", "--url", URL], [["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["send", "Bearer typed\\x03"],
+                                      ["expect", r"Cancelled"]], expect=1))
+    add("setup-tty-update-keep", config(), herdr(fixture(HERDR_VERSION, plugin_list(), NO_AGENTS)),
+        pty(["setup"], [
+            setup_tty_url_prompt(), ["send", "\\r"],
+            ["expect", r"or Enter to keep the current one[^\n]*›"], ["send", "\\r"],
+            ["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["send", "\\r"],
+            ["expect", r"or Enter to keep the current one[^\n]*›"], ["send", "\\r"],
+            ["expect", r"Install the[^\n]*›"], ["send", "n\\r"], ["expect", r"Done\."]], expect=0))
+    add("setup-tty-plugin-decline-auto", herdr(fixture(HERDR_VERSION, plugin_list(plugin(enabled=False)))), link("/opt/old/bin/nudge"),
+        pty(["setup", "--url", URL, "--authorization", GOOD], [
+            ["expect", r"Turn on auto-notify\?[^\n]*›"], ["send", "n\\r"], ["expect", r"Done\."]], expect=0))
+    add("setup-tty-pane-wait", pty(["setup", "--pane"], [
+        setup_tty_url_prompt(), ["send", "\\x03"], ["expect", "Press any key to close"], ["send", "x"]], expect=1))
+
+    # ---- doctor
+    add("doctor-no-config", cmd(["doctor"], expect=1))
+    add("doctor-bad-toml", raw_config(BAD_TOML), cmd(["doctor"], expect=1))
+    add("doctor-invalid-config", raw_config(BAD_SCHEMA), cmd(["doctor"], expect=1))
+    add("doctor-valid-no-herdr", config(), cmd(["doctor"], expect=0))
+    add("doctor-full", config(), herdr(PRESETS["running"]), cmd(["doctor"], expect=0))
+    add("doctor-auto-on-prebuilt", config(), herdr(PRESETS["running"]), state({"auto": True}), write("plugin/dist/nudge", "#!/bin/sh\n"),
+        cmd(["doctor"], expect=0))
+    add("doctor-plugin-disabled", config(), herdr(fixture(HERDR_VERSION, plugin_list(plugin(enabled=False, version="0.3.9")))), cmd(["doctor"], expect=1))
+    add("doctor-plugin-missing", config(), herdr(fixture(HERDR_VERSION, plugin_list())), cmd(["doctor"], expect=1))
+    add("doctor-herdr-no-server", config(), herdr(fixture(HERDR_VERSION)), cmd(["doctor"], expect=0))
+    add("doctor-ping-ok", config(), cmd(["doctor", "--ping"], expect=0))
+    add("doctor-ping-failures", config("badauth"), cmd(["doctor", "--ping"], expect=1), config("nohook"), cmd(["doctor", "--ping"], expect=1),
+        config("broken"), cmd(["doctor", "--ping"], expect=1), config("offline"), cmd(["doctor", "--ping"], expect=1))
+    add("doctor-no-default", raw_config(TWO_DESKS_NO_DEFAULT), cmd(["doctor", "--ping"], expect=0))
+    add("doctor-command-link", config(), link("{NUDGE_ROOT}/bin/nudge"), cmd(["doctor"], expect=0),
+        cmd(["doctor"], env={"HERDR_PLUGIN_ID": PLUGIN_ID}, expect=0))
+    add("doctor-tty-pane", config(), herdr(PRESETS["running"]),
+        pty(["doctor", "--pane"], [["expect", "Press any key to close"], ["send", "q"]], expect=0))
+
+    # ---- plugin: automatic notifications (pane.agent_status_changed)
+    add("event-working-then-done", config(), herdr(PANE_HERDR), git("repo", "feature/x", "git@github.com:acme/api.git"), state({"auto": True}),
+        event("working"), {"do": "edit_state", "pane": "p_1", "key": "working_since", "ago": 180000}, event("working"), event("done"))
+    add("event-done-short-turn", config(), herdr(PANE_HERDR), state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 30000}}}}), event("done"))
+    add("event-done-unknown-start", config(), herdr(PANE_HERDR), state({"auto": True}), event("done"))
+    add("event-blocked", config(), herdr(PANE_HERDR), git("repo", "feature/x", "git@github.com:acme/api.git"), state({"auto": True}), event("blocked"))
+    add("event-focused", config(), herdr(fixture(agent_get("p_1", "claude-1", focused=True), pane_read("p_1", PANE_TEXT), NOTIFICATION_OK)),
+        state({"auto": True}), event("blocked"))
+    add("event-auto-off", config(), herdr(PANE_HERDR), state({"panes": {"p_1": {"working_since": {"ago": 600000}}}}), event("done"), event("blocked"))
+    add("event-no-state-file", config(), herdr(PANE_HERDR), event("blocked"))
+    add("event-cooldown", config(), herdr(PANE_HERDR), state({"auto": True, "panes": {"p_1": {"last_auto_at": {"ago": 60000}}}}), event("blocked"))
+    add("event-cooldown-expired", config(), herdr(PANE_HERDR), state({"auto": True, "panes": {"p_1": {"last_auto_at": {"ago": 360000}}}}), event("blocked"))
+    add("event-self-notified", config(), herdr(PANE_HERDR),
+        state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 180000}, "self_notified_at": {"ago": 10000}}}}), event("done"))
+    add("event-self-notified-blocked-no-turn", config(), herdr(PANE_HERDR),
+        state({"auto": True, "panes": {"p_1": {"self_notified_at": {"ago": 60000}}}}), event("blocked"))
+    add("event-notify-then-event", config(), herdr(PANE_HERDR), state({"auto": True}), event("working"),
+        cmd(["notify", "I am done"], env={"HERDR_PANE_ID": "p_1"}, expect=0),
+        {"do": "edit_state", "pane": "p_1", "key": "working_since", "ago": 300000}, event("done"))
+    add("event-idle-unknown", config(), herdr(PANE_HERDR), state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 300000}}}}),
+        event("idle"), event("unknown"), event("done"))
+    add("event-invalid-payload", config(), state({"auto": True}),
+        cmd(["plugin", "event"], cwd="home", expect=0),
+        cmd(["plugin", "event"], env={"HERDR_PLUGIN_EVENT_JSON": "{not json"}, cwd="home", expect=0),
+        cmd(["plugin", "event"], env={"HERDR_PLUGIN_EVENT_JSON": '{"data":{"pane_id":"p_1","agent_status":"sleeping"}}'}, cwd="home", expect=0))
+    add("event-unknown-agent-empty-pane", config(), herdr(fixture(NOTIFICATION_OK, pane_read("p_7", "\n\n────\n"))), state({"auto": True}), event("blocked", pane="p_7"))
+    add("event-webhook-fails", config("broken"), herdr(PANE_HERDR), state({"auto": True}), event("blocked", expect=1))
+    add("event-no-config", herdr(PANE_HERDR), state({"auto": True}), event("blocked", expect=1))
+
+    # ---- plugin: actions
+    add("action-auto-toggle", herdr(AGENT_HERDR), action("toggle"), action("toggle"), action("enable"), action("enable"), action("disable"))
+    add("action-ask-desk-blocked", config(), herdr(PANE_HERDR), git("repo", "feature/x", "git@github.com:acme/api.git"),
+        action("ask-desk", {"focused_pane_id": "p_1", "focused_pane_status": "blocked"}))
+    add("action-ask-desk-question", config(), herdr(PANE_HERDR), action("ask-desk", {"focused_pane_id": "p_1", "focused_pane_status": "working"}))
+    add("action-ask-desk-env-pane", config(), herdr(PANE_HERDR), action("ask-desk", env={"HERDR_PANE_ID": "p_1"}))
+    add("action-ask-desk-no-pane", config(), herdr(PANE_HERDR), action("ask-desk", {}), action("ask-desk"))
+    add("action-ask-desk-fails", config("badauth"), herdr(PANE_HERDR), action("ask-desk", {"focused_pane_id": "p_1"}, expect=1))
+    add("action-ask-desk-no-config", herdr(PANE_HERDR), action("ask-desk", {"focused_pane_id": "p_1"}, expect=1))
+    add("action-open-panes", herdr(PRESETS["running"]), action("setup"), action("status"))
+    add("action-open-pane-fails", action("setup", expect=1))
+    add("action-unknown", herdr(AGENT_HERDR), action("explode", expect=1))
+    add("plugin-usage", cmd(["plugin"], cwd="home", expect=1), cmd(["plugin", "bogus"], cwd="home", expect=1), cmd(["plugin", "action"], cwd="home", expect=1))
+
+    # ---- plugin: startup
+    add("startup-repoint", link("/opt/old-nudge/bin/nudge"), cmd(["plugin", "startup"], cwd="home", expect=0))
+    add("startup-current", link("{NUDGE_ROOT}/bin/nudge"), cmd(["plugin", "startup"], cwd="home", expect=0))
+    add("startup-foreign-link", link("/usr/bin/true"), cmd(["plugin", "startup"], cwd="home", expect=0))
+    add("startup-regular-file", link(regular=True), cmd(["plugin", "startup"], cwd="home", expect=0))
+    add("startup-no-link", cmd(["plugin", "startup"], cwd="home", expect=0))
+
+    # ---- MCP over stdio
+    add("mcp-session", config(), herdr(fixture(NO_AGENTS)), mcp([
+        ("list_desks", {}),
+        ("notify_desk", {"message": "Done via MCP", "status": "question", "agent": "mcp-agent"}),
+        ("notify_desk", {"message": "default status, detected agent"}),
+        ("notify_desk", {"message": "goes nowhere", "desk": "broken"}),
+        ("notify_desk", {"message": "who?", "desk": "nope"}),
+    ]))
+    add("mcp-no-config", mcp([("list_desks", {}), ("notify_desk", {"message": "hi"})]))
+    return S
+
+
+def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
+    run = os.path.join(scratch, "s", f"{index:03d}")
+    sb = Sandbox(run, binary, port, offline_port, os.path.join(scratch, "requests.jsonl")).create()
+    sb.mark()
+    t0 = now_ms()
+    subst = lambda v: v.replace("{PORT}", str(port)).replace("{OFFLINE_PORT}", str(offline_port)).replace("{NUDGE_ROOT}", root).replace("{RUN}", run) if isinstance(v, str) else v
+    steps, setup_log, checks = [], [], []
+    for op in ops:
+        do = op["do"]
+        if do == "config":
+            sb.write_config(desks_config(port, offline_port, op.get("default", "desk")))
+            setup_log.append(f"config: standard desks, default {op.get('default', 'desk')}")
+        elif do == "raw_config":
+            sb.write_config(subst(op["text"]))
+            setup_log.append("config: raw text " + json.dumps(op["text"][:40]))
+        elif do == "state":
+            sb.write_state(op["state"])
+            setup_log.append("state: " + json.dumps(op["state"], sort_keys=True))
+        elif do == "edit_state":
+            sb.edit_state(op["pane"], op["key"], op["ago"])
+            setup_log.append(f"state: panes.{op['pane']}.{op['key']} = now-{op['ago']}ms")
+        elif do == "herdr":
+            sb.write_herdr(op["fixture"])
+            setup_log.append("herdr fixture: " + ("none (not installed)" if op["fixture"] is None else f"{len(op['fixture']['rules'])} rules"))
+        elif do == "clip":
+            sb.clip(subst(op["text"]))
+            setup_log.append("clipboard set")
+        elif do == "git":
+            sb.git_repo(op["name"], op["branch"], op["origin"])
+            setup_log.append(f"git repo {op['name']} on {op['branch']} origin {op['origin']}")
+        elif do == "link":
+            os.makedirs(os.path.dirname(sb.link), exist_ok=True)
+            if op["regular"]:
+                open(sb.link, "w").write("#!/bin/sh\n")
+                setup_log.append("~/.local/bin/nudge: regular file")
+            else:
+                os.symlink(subst(op["target"]), sb.link)
+                setup_log.append(f"~/.local/bin/nudge -> {op['target']}")
+        elif do == "write":
+            path = os.path.join(run, op["path"])
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").write(op["text"])
+            setup_log.append(f"file {op['path']}")
+        elif do == "cmd":
+            env = {k: subst(v) for k, v in (op["env"] or {}).items()}
+            rec = sb.run_cmd([subst(a) for a in op["argv"]], stdin=subst(op["stdin"]), env=env, cwd=op["cwd"])
+            steps.append((rec, op))
+        elif do == "pty":
+            script = [[k, subst(v)] for k, v in op["script"]]
+            rec = sb.run_pty([subst(a) for a in op["argv"]], script, env=op["env"])
+            steps.append((rec, op))
+        elif do == "mcp":
+            rec = sb.run_mcp(op["messages"], env=op["env"])
+            steps.append((rec, op))
+    t1 = now_ms()
+    norm = Normalizer(sb, root, t0)
+    out_steps = []
+    for i, (rec, op) in enumerate(steps, start=1):
+        leaks = secret_leaks(rec)
+        if leaks:
+            checks.append(f"step {i}: secret printed {sorted(set(leaks))}")
+        if op.get("expect") is not None and rec["exit"] != op["expect"]:
+            checks.append(f"step {i}: exit {rec['exit']}, expected {op['expect']}")
+        if rec.get("expect_failures"):
+            checks.append(f"step {i}: {rec['expect_failures']}")
+        if rec.get("missing_responses"):
+            checks.append(f"step {i}: no response for ids {rec['missing_responses']}")
+        out_steps.append(norm.record(rec, t1))
+    return {"name": name, "setup": [norm.text(s) for s in setup_log], "steps": out_steps, "check_failures": checks}
+
+
+def cmd_parity(argv):
+    if not argv or argv[0].startswith("-"):
+        die("usage: verify-nudge parity OUT.json [--only SUBSTRING]...", 2)
+    out_path = os.path.abspath(argv[0])
+    only = [argv[i + 1] for i, a in enumerate(argv) if a == "--only"]
+    binary = nudge_bin()
+    root = nudge_root(binary)
+    os.umask(0o022)
+    scratch = os.path.realpath(tempfile.mkdtemp(prefix="verify-nudge-parity-"))
+    pid = None
+    try:
+        pid, port = start_webhook(scratch, "parity")
+        offline_port = free_port()
+        selected = [(n, ops) for n, ops in scenarios() if not only or any(o in n for o in only)]
+        results = []
+        for index, (name, ops) in enumerate(selected, start=1):
+            sys.stderr.write(f"[{index}/{len(selected)}] {name}\n")
+            try:
+                results.append(run_scenario(index, name, ops, scratch, binary, root, port, offline_port))
+            except Exception as e:  # keep going: one broken scenario must not hide the rest of the diff
+                results.append({"name": name, "setup": [], "steps": [], "check_failures": [f"harness error: {type(e).__name__}: {e}"]})
+        failures = [(r["name"], c) for r in results for c in r["check_failures"]]
+        transcript = {
+            "harness": "verify-nudge parity v2",
+            "normalized": ["<RUN> = per-scenario sandbox dir", "<NUDGE_ROOT> = dirname(dirname(realpath(NUDGE_BIN)))",
+                           "<PORT>/<OFFLINE_PORT> = fake webhook / closed port", "state.json epoch ms: <now>, <now-Nms> (seeded), <epoch-ms>",
+                           "herdr_calls sorted (some are concurrent)", "JSON stdout and MCP responses compared as sorted-key JSON; MCP responses keyed by id",
+                           "doctor 'Recent:' line ages -> <ago>"],
+            "scenario_count": len(results),
+            "scenarios": results,
+        }
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(transcript, f, indent=2, ensure_ascii=False, sort_keys=True)
+            f.write("\n")
+        print(f"wrote {out_path}: {len(results)} scenarios, {len(failures)} check failures")
+        for name, c in failures:
+            print(f"  CHECK {name}: {c}")
+        if failures:
+            sys.exit(1)
+    finally:
+        if pid and pid_is(pid, "fake-webhook"):
+            os.kill(pid, signal.SIGTERM)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+COMMANDS = {
+    "launch": cmd_launch, "doctor": cmd_doctor, "run": cmd_run, "pty": cmd_pty, "mcp": cmd_mcp,
+    "seed-config": cmd_seed_config, "seed-state": cmd_seed_state, "herdr": cmd_herdr, "clip": cmd_clip,
+    "git-repo": cmd_git_repo, "link": cmd_link,
+    "files": cmd_files, "requests": cmd_requests, "env": cmd_env, "cleanup": cmd_cleanup, "parity": cmd_parity,
+}
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        sys.stdout.write(__doc__)
+        sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help", "help") else 2)
+    COMMANDS[sys.argv[1]](sys.argv[2:])

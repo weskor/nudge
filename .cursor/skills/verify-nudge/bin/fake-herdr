@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Fake `herdr` for verify-nudge. Never talks to a real herdr server.
+
+Installed as <RUN>/fakebin/herdr (an sh wrapper that runs this file with VERIFY_NUDGE_FAKE set to the
+wrapper's path); <RUN> is derived from it, so every sandbox has its own fixture and call log:
+
+  <RUN>/herdr.json         fixture (missing = behaves like herdr is not installed: exit 1)
+  <RUN>/herdr-calls.jsonl  one JSON line per call: {"argv": [...], "exit": N}
+
+Fixture shape:
+  {"rules": [
+     {"argv":   ["--version"],            "stdout": "herdr 0.9.3"},
+     {"prefix": ["notification", "show"], "exit": 0},
+     {"argv":   ["agent", "get", "p_1"],  "stdout": {"result": {...}}}
+   ],
+   "default_exit": 1}
+
+Rules are tried in order; "argv" must match exactly, "prefix" matches the leading arguments.
+"stdout" may be a string or JSON (serialized compactly); "{RUN}" inside it is replaced by <RUN>.
+"exit" defaults to 0. No matching rule: exit default_exit (1) with a note on stderr.
+"""
+import json
+import os
+import sys
+
+run = os.path.dirname(os.path.dirname(os.path.abspath(os.environ.get("VERIFY_NUDGE_FAKE") or sys.argv[0])))
+args = sys.argv[1:]
+fixture_path = os.path.join(run, "herdr.json")
+
+
+def log(code):
+    line = json.dumps({"argv": args, "exit": code}, ensure_ascii=False) + "\n"
+    fd = os.open(os.path.join(run, "herdr-calls.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, line.encode())
+    finally:
+        os.close(fd)
+
+
+try:
+    with open(fixture_path, encoding="utf-8") as f:
+        fixture = json.load(f)
+except FileNotFoundError:
+    log(1)
+    sys.stderr.write("fake herdr: no fixture (acting as if herdr is not installed)\n")
+    sys.exit(1)
+
+for rule in fixture.get("rules", []):
+    if "argv" in rule:
+        hit = args == rule["argv"]
+    else:
+        prefix = rule.get("prefix", [])
+        hit = args[: len(prefix)] == prefix
+    if not hit:
+        continue
+    out = rule.get("stdout", "")
+    if not isinstance(out, str):
+        out = json.dumps(out, separators=(",", ":"), ensure_ascii=False)
+    out = out.replace("{RUN}", run)
+    code = int(rule.get("exit", 0))
+    log(code)
+    if out:
+        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+    if rule.get("stderr"):
+        sys.stderr.write(rule["stderr"] + "\n")
+    sys.exit(code)
+
+code = int(fixture.get("default_exit", 1))
+log(code)
+sys.stderr.write("fake herdr: no rule for " + json.dumps(args) + "\n")
+sys.exit(code)
