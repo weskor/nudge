@@ -1,0 +1,4 @@
+# Pinned so the strict clippy set only changes when we bump this on purpose.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
