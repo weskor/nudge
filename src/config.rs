@@ -20,12 +20,88 @@ pub(crate) struct Desk {
     pub(crate) url: String,
     /// Sent verbatim as the webhook's Authorization header value.
     pub(crate) authorization: String,
+    /// When set, requests are signed with HMAC-SHA256 (`x-nudge-signature`) so the desk can verify them.
+    pub(crate) signing_secret: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `[auto]`: when the herdr plugin notifies the desk on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Auto {
+    /// A `done` turn shorter than this is not worth a notification.
+    pub(crate) min_turn_seconds: u32,
+    /// At most one automatic notification per pane in this window.
+    pub(crate) cooldown_seconds: u32,
+    /// Lines of terminal output sent with an automatic notification.
+    pub(crate) tail_lines: u32,
+    /// Show a herdr toast when an automatic notification was sent.
+    pub(crate) toast: bool,
+}
+
+impl Default for Auto {
+    fn default() -> Self {
+        Self {
+            min_turn_seconds: 120,
+            cooldown_seconds: 300,
+            tail_lines: 40,
+            toast: true,
+        }
+    }
+}
+
+impl Auto {
+    pub(crate) fn min_turn_ms(self) -> i64 {
+        i64::from(self.min_turn_seconds) * 1000
+    }
+
+    pub(crate) fn cooldown_ms(self) -> i64 {
+        i64::from(self.cooldown_seconds) * 1000
+    }
+
+    /// `min_turn_seconds` in words: "2 minutes", "1 minute", "90 seconds".
+    pub(crate) fn min_turn_words(self) -> String {
+        let seconds = self.min_turn_seconds;
+        match (seconds / 60, seconds % 60) {
+            (1, 0) => "1 minute".to_owned(),
+            (minutes @ 2.., 0) => format!("{minutes} minutes"),
+            (_, _) if seconds == 1 => "1 second".to_owned(),
+            (_, _) => format!("{seconds} seconds"),
+        }
+    }
+}
+
+/// `[scope]`: which agents may notify the desk. Empty means every agent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Scope {
+    /// herdr workspace labels or ids.
+    pub(crate) workspaces: Vec<String>,
+    /// herdr agent names or pane ids.
+    pub(crate) agents: Vec<String>,
+}
+
+impl Scope {
+    pub(crate) const fn is_everyone(&self) -> bool {
+        self.workspaces.is_empty() && self.agents.is_empty()
+    }
+
+    /// Whether an agent known by any of `agent_ids` (name, pane id), in a workspace known by any of
+    /// `workspace_ids` (label, id), may notify.
+    pub(crate) fn allows(&self, agent_ids: &[&str], workspace_ids: &[&str]) -> bool {
+        self.is_everyone()
+            || self.agents.iter().any(|agent| agent_ids.contains(&agent.as_str()))
+            || self
+                .workspaces
+                .iter()
+                .any(|workspace| workspace_ids.contains(&workspace.as_str()))
+    }
+}
+
+/// A config as read from disk. `Default` is the empty config `nudge setup` starts from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Config {
     pub(crate) default_desk: Option<String>,
     pub(crate) desk: Vec<Desk>,
+    pub(crate) auto: Auto,
+    pub(crate) scope: Scope,
 }
 
 /// Validation problems, collected so one error lists all of them. Messages never include the input value,
@@ -131,6 +207,106 @@ impl Problems {
         value
     }
 
+    fn signing_secret(&mut self, path: &str, raw: &str) -> String {
+        let value = self.non_empty(path, raw);
+        if value.chars().count() < 16 || !value.chars().all(|c| c.is_ascii_graphic()) {
+            self.add(path, "must be at least 16 printable ASCII characters, without spaces");
+        }
+        value
+    }
+
+    /// An integer in `range`; a number outside it, or a fraction, is reported with `message`.
+    fn integer(
+        &mut self,
+        path: &str,
+        value: &Value,
+        range: std::ops::RangeInclusive<u32>,
+        message: &str,
+    ) -> Option<u32> {
+        if let Value::Integer(number) = value {
+            let fits = u32::try_from(*number).ok().filter(|number| range.contains(number));
+            if fits.is_none() {
+                self.add(path, message);
+            }
+            fits
+        } else if let Value::Float(_) = value {
+            self.add(path, message);
+            None
+        } else {
+            self.wrong_type(path, "number", Some(value));
+            None
+        }
+    }
+
+    fn auto(&mut self, value: Option<&Value>) -> Auto {
+        const SECONDS: &str = "must be a whole number of seconds, 0 or more";
+        let mut auto = Auto::default();
+        let Some(value) = value else { return auto };
+        let Value::Table(table) = value else {
+            self.wrong_type("auto", "object", Some(value));
+            return auto;
+        };
+        for (key, value) in table {
+            let path = format!("auto.{key}");
+            match key.as_str() {
+                "min_turn_seconds" => {
+                    auto.min_turn_seconds = self.integer(&path, value, 0..=u32::MAX, SECONDS).unwrap_or_default();
+                }
+                "cooldown_seconds" => {
+                    auto.cooldown_seconds = self.integer(&path, value, 0..=u32::MAX, SECONDS).unwrap_or_default();
+                }
+                "tail_lines" => {
+                    auto.tail_lines = self
+                        .integer(&path, value, 1..=200, "must be a whole number from 1 to 200")
+                        .unwrap_or_default();
+                }
+                "toast" => {
+                    if let Value::Boolean(toast) = value {
+                        auto.toast = *toast;
+                    } else {
+                        self.wrong_type(&path, "boolean", Some(value));
+                    }
+                }
+                _ => self.add(&path, "unknown setting"),
+            }
+        }
+        auto
+    }
+
+    /// A list of non-empty names.
+    fn names(&mut self, path: &str, value: &Value) -> Vec<String> {
+        let Value::Array(items) = value else {
+            self.wrong_type(path, "array", Some(value));
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let item_path = format!("{path}.{index}");
+            if let Some(raw) = self.string(&item_path, Some(item)) {
+                names.push(self.non_empty(&item_path, raw));
+            }
+        }
+        names
+    }
+
+    fn scope(&mut self, value: Option<&Value>) -> Scope {
+        let mut scope = Scope::default();
+        let Some(value) = value else { return scope };
+        let Value::Table(table) = value else {
+            self.wrong_type("scope", "object", Some(value));
+            return scope;
+        };
+        for (key, value) in table {
+            let path = format!("scope.{key}");
+            match key.as_str() {
+                "workspaces" => scope.workspaces = self.names(&path, value),
+                "agents" => scope.agents = self.names(&path, value),
+                _ => self.add(&path, "unknown setting"),
+            }
+        }
+        scope
+    }
+
     fn desk(&mut self, path: &str, value: &Value) -> Option<Desk> {
         let Value::Table(table) = value else {
             self.wrong_type(path, "object", Some(value));
@@ -154,11 +330,18 @@ impl Problems {
         let authorization = self
             .string(&field("authorization"), table.get("authorization"))
             .map(|raw| self.authorization(&field("authorization"), raw));
+        let signing_secret = match table.get("signing_secret") {
+            None => Some(None),
+            Some(value) => self
+                .string(&field("signing_secret"), Some(value))
+                .map(|raw| Some(self.signing_secret(&field("signing_secret"), raw))),
+        };
         Some(Desk {
             name: name?,
             description: description?,
             url: url?,
             authorization: authorization?,
+            signing_secret: signing_secret?,
         })
     }
 
@@ -197,9 +380,13 @@ impl Problems {
                 None
             }
         };
+        let auto = self.auto(raw.get("auto"));
+        let scope = self.scope(raw.get("scope"));
         let config = Config {
             default_desk: default_desk?,
             desk: desks?,
+            auto,
+            scope,
         };
         if let Some(name) = &config.default_desk
             && !config.desk.iter().any(|desk| &desk.name == name)
@@ -225,13 +412,20 @@ pub(crate) fn check_authorization(value: &str) -> Result<String> {
 }
 
 /// Validate one desk entered via `nudge setup`.
-pub(crate) fn validate_desk(name: &str, url: &str, authorization: &str, description: Option<&str>) -> Result<Desk> {
+pub(crate) fn validate_desk(
+    name: &str,
+    url: &str,
+    authorization: &str,
+    description: Option<&str>,
+    signing_secret: Option<&str>,
+) -> Result<Desk> {
     let mut problems = Problems::default();
     let desk = Desk {
         name: problems.desk_name("name", name),
         description: description.map(str::to_owned),
         url: problems.webhook_url("url", url),
         authorization: problems.authorization("authorization", authorization),
+        signing_secret: signing_secret.map(|secret| problems.signing_secret("signing_secret", secret)),
     };
     problems.into_result(desk, "invalid desk")
 }
@@ -307,27 +501,28 @@ pub(crate) fn find_desk<'a>(config: &'a Config, name: Option<&str>) -> Result<&'
         .ok_or_else(|| Error::Config(format!("unknown desk \"{wanted}\". Configured desks: {}", known())))
 }
 
-/// Add or replace `desk` by name. The first desk, or any desk with `make_default`, becomes `default_desk`.
+/// Add or replace `desk` by name, keeping the other settings. The first desk, or any desk with `make_default`,
+/// becomes `default_desk`.
 pub(crate) fn upsert_desk(config: Option<Config>, desk: Desk, make_default: bool) -> Config {
-    let (mut desks, default_desk) =
-        config.map_or_else(|| (Vec::new(), None), |config| (config.desk, config.default_desk));
-    let default_desk = match default_desk {
-        Some(name) if !make_default => name,
-        Some(_) | None => desk.name.clone(),
-    };
-    match desks.iter_mut().find(|existing| existing.name == desk.name) {
+    let mut config = config.unwrap_or_default();
+    if make_default || config.default_desk.is_none() {
+        config.default_desk = Some(desk.name.clone());
+    }
+    match config.desk.iter_mut().find(|existing| existing.name == desk.name) {
         Some(existing) => *existing = desk,
-        None => desks.push(desk),
+        None => config.desk.push(desk),
     }
-    Config {
-        default_desk: Some(default_desk),
-        desk: desks,
-    }
+    config
 }
 
 /// A TOML basic string. JSON string escapes are a subset of TOML's.
 fn toml_string(value: &str) -> String {
     serde_json::Value::from(value).to_string()
+}
+
+fn toml_strings(values: &[String]) -> String {
+    let items: Vec<String> = values.iter().map(|value| toml_string(value)).collect();
+    format!("[{}]", items.join(", "))
 }
 
 pub(crate) fn serialize_config(config: &Config) -> String {
@@ -347,8 +542,40 @@ pub(crate) fn serialize_config(config: &Config) -> String {
         lines.extend([
             format!("url = {}", toml_string(&desk.url)),
             format!("authorization = {}", toml_string(&desk.authorization)),
-            String::new(),
         ]);
+        if let Some(secret) = &desk.signing_secret {
+            lines.push(format!("signing_secret = {}", toml_string(secret)));
+        }
+        lines.push(String::new());
+    }
+    // Only settings that differ from the defaults, so a later default change reaches this config too.
+    let defaults = Auto::default();
+    let auto = config.auto;
+    let changed: Vec<String> = [
+        (auto.min_turn_seconds != defaults.min_turn_seconds)
+            .then(|| format!("min_turn_seconds = {}", auto.min_turn_seconds)),
+        (auto.cooldown_seconds != defaults.cooldown_seconds)
+            .then(|| format!("cooldown_seconds = {}", auto.cooldown_seconds)),
+        (auto.tail_lines != defaults.tail_lines).then(|| format!("tail_lines = {}", auto.tail_lines)),
+        (auto.toast != defaults.toast).then(|| format!("toast = {}", auto.toast)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !changed.is_empty() {
+        lines.push("[auto]".to_owned());
+        lines.extend(changed);
+        lines.push(String::new());
+    }
+    if !config.scope.is_everyone() {
+        lines.push("[scope]".to_owned());
+        if !config.scope.workspaces.is_empty() {
+            lines.push(format!("workspaces = {}", toml_strings(&config.scope.workspaces)));
+        }
+        if !config.scope.agents.is_empty() {
+            lines.push(format!("agents = {}", toml_strings(&config.scope.agents)));
+        }
+        lines.push(String::new());
     }
     lines.join("\n")
 }
@@ -379,7 +606,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::{
-        Config, Desk, check_authorization, check_webhook_url, default_config_path, find_desk, load_config,
+        Auto, Config, Desk, Scope, check_authorization, check_webhook_url, default_config_path, find_desk, load_config,
         parse_config, read_config, serialize_config, upsert_desk, validate_desk, write_config,
     };
     use crate::context::Env;
@@ -406,6 +633,15 @@ authorization = "Token xyz"
             description: None,
             url: format!("https://desks.example/hook/{name}"),
             authorization: authorization.to_owned(),
+            signing_secret: None,
+        }
+    }
+
+    fn config_of(default_desk: Option<&str>, desk: Vec<Desk>) -> Config {
+        Config {
+            default_desk: default_desk.map(str::to_owned),
+            desk,
+            ..Config::default()
         }
     }
 
@@ -510,19 +746,13 @@ authorization = "Token xyz"
         let config = parse_config(VALID, "cfg").unwrap();
         assert_eq!(find_desk(&config, Some("research")).unwrap().name, "research");
         assert_eq!(find_desk(&config, None).unwrap().name, "bridge");
-        let single = Config {
-            default_desk: None,
-            desk: vec![desk("research", "Bearer b")],
-        };
+        let single = config_of(None, vec![desk("research", "Bearer b")]);
         assert_eq!(find_desk(&single, None).unwrap().name, "research");
     }
 
     #[test]
     fn find_desk_errors_name_the_configured_desks() {
-        let two = Config {
-            default_desk: None,
-            desk: vec![desk("bridge", "Bearer a"), desk("research", "Bearer b")],
-        };
+        let two = config_of(None, vec![desk("bridge", "Bearer a"), desk("research", "Bearer b")]);
         assert!(config_error(find_desk(&two, None)).contains("no default_desk; pass --desk"));
         let config = parse_config(VALID, "cfg").unwrap();
         assert!(config_error(find_desk(&config, Some("nope"))).contains("Configured desks: bridge, research"));
@@ -535,6 +765,7 @@ authorization = "Token xyz"
             " https://desks.example/x ",
             "Authorization: Bearer abc \n",
             None,
+            None,
         )
         .unwrap();
         assert_eq!(desk.authorization, "Bearer abc");
@@ -543,7 +774,7 @@ authorization = "Token xyz"
 
     #[test]
     fn validate_desk_reports_every_problem() {
-        let message = config_error(validate_desk("bridge", "not a url", "", None));
+        let message = config_error(validate_desk("bridge", "not a url", "", None, None));
         let url = message.find("url: must be an https URL").unwrap();
         let authorization = message.find("authorization: must be a non-empty string").unwrap();
         assert!(url < authorization);
@@ -570,21 +801,9 @@ authorization = "Token xyz"
         let bridge = desk("bridge", "Bearer a");
         let research = desk("research", "Bearer b");
         let one = upsert_desk(None, bridge.clone(), false);
-        assert_eq!(
-            one,
-            Config {
-                default_desk: Some("bridge".into()),
-                desk: vec![bridge.clone()]
-            }
-        );
+        assert_eq!(one, config_of(Some("bridge"), vec![bridge.clone()]));
         let two = upsert_desk(Some(one.clone()), research.clone(), false);
-        assert_eq!(
-            two,
-            Config {
-                default_desk: Some("bridge".into()),
-                desk: vec![bridge, research.clone()]
-            }
-        );
+        assert_eq!(two, config_of(Some("bridge"), vec![bridge, research.clone()]));
         assert_eq!(
             upsert_desk(Some(one), research, true).default_desk.as_deref(),
             Some("research")
@@ -592,19 +811,16 @@ authorization = "Token xyz"
     }
 
     #[test]
-    fn upsert_existing_name_replaces_it_in_place() {
-        let two = Config {
-            default_desk: Some("research".into()),
-            desk: vec![desk("bridge", "a"), desk("research", "b")],
-        };
+    fn upsert_existing_name_replaces_it_in_place_and_keeps_other_settings() {
+        let mut two = config_of(Some("research"), vec![desk("bridge", "a"), desk("research", "b")]);
+        two.auto.toast = false;
+        two.scope.agents = vec!["api".into()];
         let rotated = desk("bridge", "Bearer rotated");
-        let updated = upsert_desk(Some(two), rotated.clone(), false);
+        let updated = upsert_desk(Some(two.clone()), rotated.clone(), false);
+        assert_eq!(updated.desk, [rotated, desk("research", "b")]);
         assert_eq!(
-            updated,
-            Config {
-                default_desk: Some("research".into()),
-                desk: vec![rotated, desk("research", "b")]
-            }
+            (updated.default_desk, updated.auto, updated.scope),
+            (two.default_desk, two.auto, two.scope)
         );
     }
 
@@ -615,9 +831,17 @@ authorization = "Token xyz"
         let path = dir.join("config.toml");
         let mut bridge = desk("bridge", "Bearer a");
         bridge.description = Some("Says \"hi\"\\ and\tmore".into());
-        let config = Config {
-            default_desk: Some("bridge".into()),
-            desk: vec![bridge, desk("research", "Bearer b")],
+        bridge.signing_secret = Some("0123456789abcdef-secret".into());
+        let mut config = config_of(Some("bridge"), vec![bridge, desk("research", "Bearer b")]);
+        config.auto = Auto {
+            min_turn_seconds: 30,
+            cooldown_seconds: 0,
+            tail_lines: 80,
+            toast: false,
+        };
+        config.scope = Scope {
+            workspaces: vec!["desk \"bridge\"".into()],
+            agents: vec!["api-refactor".into(), "w1:p2".into()],
         };
         write_config(&path, &config).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
@@ -642,11 +866,78 @@ authorization = "Token xyz"
     }
 
     #[test]
-    fn serialized_output_omits_absent_optional_fields() {
-        let text = serialize_config(&Config {
-            default_desk: None,
-            desk: vec![desk("bridge", "Bearer a")],
-        });
-        assert!(!text.contains("default_desk") && !text.contains("description"));
+    fn serialized_output_omits_absent_and_default_settings() {
+        let mut config = config_of(None, vec![desk("bridge", "Bearer a")]);
+        let text = serialize_config(&config);
+        for absent in ["default_desk", "description", "signing_secret", "[auto]", "[scope]"] {
+            assert!(!text.contains(absent), "{absent}");
+        }
+        config.auto.cooldown_seconds = 60;
+        let text = serialize_config(&config);
+        assert!(text.contains("[auto]\ncooldown_seconds = 60\n"), "{text}");
+        assert!(!text.contains("min_turn_seconds"), "{text}");
+    }
+
+    #[test]
+    fn auto_and_scope_settings_parse_with_defaults_for_missing_keys() {
+        let text = format!("{VALID}\n[auto]\nmin_turn_seconds = 0\ntail_lines = 200\n\n[scope]\nagents = [\"api\"]\n");
+        let config = parse_config(&text, "cfg").unwrap();
+        let expected = Auto {
+            min_turn_seconds: 0,
+            tail_lines: 200,
+            ..Auto::default()
+        };
+        assert_eq!(config.auto, expected);
+        assert_eq!(config.scope.agents, ["api"]);
+        assert!(config.scope.workspaces.is_empty());
+    }
+
+    #[test]
+    fn rejects_bad_auto_and_scope_settings_naming_each() {
+        let text = format!(
+            "{VALID}\n[auto]\nmin_turn_seconds = -1\ncooldown_seconds = 1.5\ntail_lines = 0\ntoast = \"yes\"\n\
+             min_turn = 5\n\n[scope]\nagents = [\"\"]\nworkspaces = \"base\"\nteams = []\n"
+        );
+        let message = config_error(parse_config(&text, "cfg"));
+        for expected in [
+            "auto.min_turn_seconds: must be a whole number of seconds, 0 or more",
+            "auto.cooldown_seconds: must be a whole number of seconds, 0 or more",
+            "auto.tail_lines: must be a whole number from 1 to 200",
+            "auto.toast: Invalid input: expected boolean, received string",
+            "auto.min_turn: unknown setting",
+            "scope.agents.0: must be a non-empty string",
+            "scope.workspaces: Invalid input: expected array, received string",
+            "scope.teams: unknown setting",
+        ] {
+            assert!(message.contains(expected), "missing {expected:?} in\n{message}");
+        }
+    }
+
+    #[test]
+    fn signing_secrets_must_be_long_and_are_never_echoed() {
+        let short = VALID.replace(
+            "authorization = \"Token xyz\"",
+            "authorization = \"Token xyz\"\nsigning_secret = \"tiny-secret\"",
+        );
+        let message = config_error(parse_config(&short, "cfg"));
+        assert!(message.contains("desk.1.signing_secret: must be at least 16 printable ASCII characters"));
+        assert!(!message.contains("tiny-secret"));
+        let desk = validate_desk("d", "https://x.example/h", "Bearer a", None, Some(" 0123456789abcdef ")).unwrap();
+        assert_eq!(desk.signing_secret.as_deref(), Some("0123456789abcdef"));
+    }
+
+    #[test]
+    fn min_turn_in_words() {
+        let words = |seconds| {
+            Auto {
+                min_turn_seconds: seconds,
+                ..Auto::default()
+            }
+            .min_turn_words()
+        };
+        assert_eq!(
+            [words(120), words(60), words(90), words(1), words(0)],
+            ["2 minutes", "1 minute", "90 seconds", "1 second", "0 seconds"]
+        );
     }
 }

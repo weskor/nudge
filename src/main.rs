@@ -25,7 +25,8 @@ use crate::setup::{SetupOptions, setup};
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE: &str = "Usage:
-  nudge setup  [--desk NAME] [--url URL] [--authorization VALUE] [--description TEXT] [--default] [--no-test]
+  nudge setup  [--desk NAME] [--url URL] [--authorization VALUE] [--description TEXT]
+               [--signing-secret VALUE] [--default] [--no-test]
   nudge notify [--desk NAME] [--status done|blocked|question] [--agent NAME] <message...|->
   nudge test   [--desk NAME] [--agent NAME]
   nudge doctor [--ping]
@@ -37,8 +38,10 @@ const USAGE: &str = "Usage:
            shown. nudge test-pings the webhook before saving and asks again if it's
            rejected, then offers the herdr plugin's auto-notify and the nudge command.
            Without a terminal: values from flags or stdin (URL, then Authorization).
-  notify   Send {from_agent, cwd, repo, branch, status, message, reply_hint} to the
-           desk's webhook. Message \"-\" reads stdin. --status defaults to done.
+           --signing-secret makes nudge sign every request (x-nudge-signature).
+  notify   Send {id, sent_at, from_agent, cwd, repo, branch, status, message,
+           reply_hint} to the desk's webhook. Message \"-\" reads stdin. --status
+           defaults to done. Agents outside the config's [scope] are refused.
   test     Send a status \"test\" ping.
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
@@ -65,6 +68,7 @@ struct Args {
     url: Option<String>,
     authorization: Option<String>,
     description: Option<String>,
+    signing_secret: Option<String>,
     make_default: bool,
     no_test: bool,
     ping: bool,
@@ -100,6 +104,7 @@ fn parse_args(argv: Vec<String>) -> Result<Args> {
             Long("url") => parsed.url = Some(utf8(parser.value()?)?),
             Long("authorization") => parsed.authorization = Some(utf8(parser.value()?)?),
             Long("description") => parsed.description = Some(utf8(parser.value()?)?),
+            Long("signing-secret") => parsed.signing_secret = Some(utf8(parser.value()?)?),
             Long("default") => parsed.make_default = true,
             Long("no-test") => parsed.no_test = true,
             Long("ping") => parsed.ping = true,
@@ -202,6 +207,7 @@ fn run(words: Vec<String>, env: &Env) -> Result<u8> {
                 url: args.url,
                 authorization: args.authorization,
                 description: args.description,
+                signing_secret: args.signing_secret,
                 make_default: args.make_default,
                 test: !args.no_test,
                 pane: args.pane,

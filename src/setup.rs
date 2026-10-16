@@ -5,8 +5,8 @@ use std::path::Path;
 
 use crate::clipboard::{read_clipboard, runtime_dir};
 use crate::config::{
-    Config, Desk, check_authorization, check_webhook_url, default_config_path, read_config, upsert_desk, validate_desk,
-    write_config,
+    Auto, Config, Desk, check_authorization, check_webhook_url, default_config_path, read_config, upsert_desk,
+    validate_desk, write_config,
 };
 use crate::context::{Env, System};
 use crate::error::{Blame, DeskError, Error, Result};
@@ -21,6 +21,8 @@ pub(crate) struct SetupOptions {
     pub(crate) url: Option<String>,
     pub(crate) authorization: Option<String>,
     pub(crate) description: Option<String>,
+    /// HMAC signing secret shared with the desk; kept from the existing desk when not given.
+    pub(crate) signing_secret: Option<String>,
     pub(crate) make_default: bool,
     /// Test-ping the webhook before saving (off with `--no-test`).
     pub(crate) test: bool,
@@ -145,8 +147,8 @@ fn explain(error: &DeskError) -> String {
 /// Test-ping `desk` alone. A webhook failure is returned, not raised.
 fn ping(desk: &Desk, env: &Env) -> Result<Result<u16, DeskError>> {
     let config = Config {
-        default_desk: None,
         desk: vec![desk.clone()],
+        ..Config::default()
     };
     let cwd = current_dir()?;
     match ping_desk(
@@ -204,6 +206,11 @@ fn offer_extras(env: &Env) -> Result<()> {
                 Mark::Ok,
                 Style::Dim.paint(&info.plugin_root)
             );
+            let min_turn = read_config(&default_config_path(env))
+                .ok()
+                .flatten()
+                .map_or_else(Auto::default, |config| config.auto)
+                .min_turn_words();
             eprintln!(
                 "{}",
                 Style::Dim
@@ -211,9 +218,9 @@ fn offer_extras(env: &Env) -> Result<()> {
             );
             eprintln!(
                 "{}",
-                Style::Dim.paint(
-                    "    when it's blocked, or finishes a turn longer than 2 minutes while you're not watching it."
-                )
+                Style::Dim.paint(format!(
+                    "    when it's blocked, or finishes a turn longer than {min_turn} while you're not watching it."
+                ))
             );
             let auto = confirm("    Turn on auto-notify?", true)?;
             update_state(env, |state| state.auto = auto)?;
@@ -286,13 +293,23 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
             env,
         )?,
     };
+    let signing_secret = options
+        .signing_secret
+        .clone()
+        .or_else(|| current.as_ref().and_then(|desk| desk.signing_secret.clone()));
     let description = options
         .description
         .clone()
         .or_else(|| current.and_then(|desk| desk.description));
 
     loop {
-        let desk = validate_desk(name, &url, &authorization, description.as_deref())?;
+        let desk = validate_desk(
+            name,
+            &url,
+            &authorization,
+            description.as_deref(),
+            signing_secret.as_deref(),
+        )?;
         let failure = if options.test { test_desk(&desk, env)? } else { None };
         match failure.as_ref().map(DeskError::blames) {
             Some(Some(Blame::Url)) => url = capture("  ↻", Field::Url { current: None }, env)?,
@@ -356,11 +373,21 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
                 .into(),
         ));
     };
+    let signing_secret = options
+        .signing_secret
+        .clone()
+        .or_else(|| current.as_ref().and_then(|desk| desk.signing_secret.clone()));
     let description = options
         .description
         .clone()
         .or_else(|| current.and_then(|desk| desk.description));
-    let desk = validate_desk(name, &url, &authorization, description.as_deref())?;
+    let desk = validate_desk(
+        name,
+        &url,
+        &authorization,
+        description.as_deref(),
+        signing_secret.as_deref(),
+    )?;
     if options.test {
         match ping(&desk, env)? {
             Ok(status) => println!("Test ping to \"{}\": HTTP {status}.", desk.name),

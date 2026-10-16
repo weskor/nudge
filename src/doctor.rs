@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use crate::clipboard::CLIPBOARD_TOOLS;
-use crate::config::{default_config_path, default_desk_name, read_config};
+use crate::config::{Auto, default_config_path, default_desk_name, read_config};
 use crate::context::{Env, Run as _, System};
 use crate::error::{Blame, Error, Result};
 use crate::install::{PLUGIN_ID, Plugin, command_link, nudge_root, plugin, plugin_logs};
@@ -92,12 +92,28 @@ fn check_config(ping: bool, env: &Env) -> Result<Vec<Check>> {
                 .fix("run nudge setup --desk NAME --default (the plugin sends to the default desk)"),
         ]);
     };
+    let scope = if config.scope.is_everyone() {
+        Check::new(Level::Ok, "Scope: all agents")
+    } else {
+        let list = |label: &str, names: &[String]| (!names.is_empty()).then(|| format!("{label} {}", names.join(", ")));
+        let parts: Vec<String> = [
+            list("workspaces", &config.scope.workspaces),
+            list("agents", &config.scope.agents),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        Check::new(Level::Ok, format!("Scope: {}", parts.join("; "))).fix(format!(
+            "herdr plugin action invoke {PLUGIN_ID}.all-agents lets every agent notify"
+        ))
+    };
     let mut checks = vec![
         Check::new(
             Level::Ok,
             format!("Config: {count} desk{plural}, default \"{default_name}\""),
         )
         .detail(shown),
+        scope,
     ];
     if !ping {
         checks.push(Check::new(Level::Ok, "Webhook not tested").detail("nudge doctor --ping sends a test ping"));
@@ -185,8 +201,15 @@ fn check_plugin(env: &Env) -> Result<Vec<Check>> {
     } else {
         Check::new(Level::Ok, "Plugin runs a local build").detail("no dist/nudge (linked checkout)")
     };
+    let rules = read_config(&default_config_path(env))
+        .ok()
+        .flatten()
+        .map_or_else(Auto::default, |config| config.auto);
     let auto = if update_state(env, |state| state.auto)? {
-        Check::new(Level::Ok, "Auto-notify on").detail("blocked, or done after 2+ minutes while you're not watching")
+        Check::new(Level::Ok, "Auto-notify on").detail(format!(
+            "blocked, or done after {} or more while you're not watching",
+            rules.min_turn_words()
+        ))
     } else {
         Check::new(Level::Warn, "Auto-notify off").fix(format!("herdr plugin action invoke {PLUGIN_ID}.enable"))
     };

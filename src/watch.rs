@@ -5,15 +5,10 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
 
+use crate::config::Auto;
 use crate::context::unreachable_regex;
 use crate::state::State;
 
-/// A `done` turn shorter than this (ms) is not worth a notification.
-pub(crate) const MIN_TURN_MS: i64 = 2 * 60_000;
-/// At most one automatic notification per pane in this window (ms).
-pub(crate) const COOLDOWN_MS: i64 = 5 * 60_000;
-/// Lines of terminal output sent with an automatic notification.
-pub(crate) const TAIL_LINES: usize = 40;
 const TAIL_MAX_CHARS: usize = 4_000;
 const REDACTED: &str = "[REDACTED]";
 
@@ -55,10 +50,17 @@ pub(crate) enum Decision {
 
 /// Apply one `pane.agent_status_changed` event to `state` and decide whether to notify.
 /// - `working` starts a turn; `idle` (seen by you) and `done` end it.
-/// - `blocked` always qualifies; `done` only after a turn of at least [`MIN_TURN_MS`] with a known start.
+/// - `blocked` always qualifies; `done` only after a turn of at least `rules.min_turn_seconds` with a known start.
 /// - Skipped when auto-notify is off, you are looking at the pane (`focused`), the agent already ran
-///   `nudge notify` this turn, or the pane is in cooldown.
-pub(crate) fn decide(state: &mut State, pane_id: &str, status: HerdrStatus, now: i64, focused: bool) -> Decision {
+///   `nudge notify` this turn, or the pane is in its `rules.cooldown_seconds` cooldown.
+pub(crate) fn decide(
+    state: &mut State,
+    pane_id: &str,
+    status: HerdrStatus,
+    now: i64,
+    focused: bool,
+    rules: Auto,
+) -> Decision {
     let pane = state.panes.entry(pane_id.to_owned()).or_default();
     let turn_start = pane.working_since;
     let settled = match status {
@@ -83,7 +85,7 @@ pub(crate) fn decide(state: &mut State, pane_id: &str, status: HerdrStatus, now:
     if focused {
         return Decision::Skip("you are looking at this pane".into());
     }
-    let self_notified_since = turn_start.unwrap_or(now - MIN_TURN_MS);
+    let self_notified_since = turn_start.unwrap_or(now - rules.min_turn_ms());
     if pane.self_notified_at.is_some_and(|at| at >= self_notified_since) {
         return Decision::Skip("agent already notified the desk this turn".into());
     }
@@ -91,11 +93,11 @@ pub(crate) fn decide(state: &mut State, pane_id: &str, status: HerdrStatus, now:
         let Some(start) = turn_start else {
             return Decision::Skip("turn start unknown".into());
         };
-        if now - start < MIN_TURN_MS {
-            return Decision::Skip(format!("turn shorter than {}s", MIN_TURN_MS / 1000));
+        if now - start < rules.min_turn_ms() {
+            return Decision::Skip(format!("turn shorter than {}s", rules.min_turn_seconds));
         }
     }
-    if pane.last_auto_at.is_some_and(|at| now - at < COOLDOWN_MS) {
+    if pane.last_auto_at.is_some_and(|at| now - at < rules.cooldown_ms()) {
         return Decision::Skip("cooldown".into());
     }
     pane.last_auto_at = Some(now);
@@ -221,10 +223,8 @@ pub(crate) fn auto_message(trigger: Trigger, tail: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        COOLDOWN_MS, Decision, HerdrStatus, MIN_TURN_MS, Settled, TAIL_LINES, Trigger, auto_message, clean_tail,
-        decide, redact,
-    };
+    use super::{Decision, HerdrStatus, Settled, Trigger, auto_message, clean_tail, decide, redact};
+    use crate::config::Auto;
     use crate::state::{PaneState, State};
 
     const P: &str = "w1:p3";
@@ -245,7 +245,7 @@ mod tests {
     fn run(state: &mut State, events: &[(i64, HerdrStatus)], focused: bool) -> Vec<Decision> {
         events
             .iter()
-            .map(|&(seconds, status)| decide(state, P, status, at(seconds), focused))
+            .map(|&(seconds, status)| decide(state, P, status, at(seconds), focused, Auto::default()))
             .collect()
     }
 
@@ -270,11 +270,27 @@ mod tests {
     #[test]
     fn a_turn_shorter_than_min_turn_does_not() {
         let mut state = fresh();
-        let _started = decide(&mut state, P, Working, T0, false);
+        let _started = decide(&mut state, P, Working, T0, false, Auto::default());
         assert_eq!(
-            decide(&mut state, P, Done, T0 + MIN_TURN_MS - 1, false),
+            decide(&mut state, P, Done, T0 + 120_000 - 1, false, Auto::default()),
             skip("turn shorter than 120s")
         );
+    }
+
+    #[test]
+    fn configured_thresholds_replace_the_defaults() {
+        let quick = Auto {
+            min_turn_seconds: 10,
+            cooldown_seconds: 0,
+            ..Auto::default()
+        };
+        let mut state = fresh();
+        let mut feed = |seconds, status| decide(&mut state, P, status, at(seconds), false, quick);
+        let _started = feed(0, Working);
+        assert_eq!(feed(9, Done), skip("turn shorter than 10s"));
+        let _again = feed(20, Working);
+        assert_eq!(feed(30, Done), Decision::Notify(Settled::Done));
+        assert_eq!(feed(31, Blocked), Decision::Notify(Settled::Blocked), "no cooldown");
     }
 
     #[test]
@@ -309,7 +325,7 @@ mod tests {
 
     #[test]
     fn cooldown_allows_one_automatic_notification_per_pane_per_window() {
-        let after_cooldown = 60 + COOLDOWN_MS / 1000 + 120;
+        let after_cooldown = 60 + 300 + 120;
         let decisions = run(
             &mut fresh(),
             &[
@@ -331,7 +347,7 @@ mod tests {
         let mut state = fresh();
         let _blocked = run(&mut state, &[(0, Working), (60, Blocked)], false);
         assert_eq!(
-            decide(&mut state, "other:p1", Blocked, at(90), false),
+            decide(&mut state, "other:p1", Blocked, at(90), false, Auto::default()),
             Decision::Notify(Settled::Blocked)
         );
     }
@@ -433,13 +449,13 @@ mod tests {
             "",
         ]
         .join("\n");
-        assert_eq!(clean_tail(&raw, TAIL_LINES), "line 1\n\nline 2\nline 3\n\n❯");
+        assert_eq!(clean_tail(&raw, 40), "line 1\n\nline 2\nline 3\n\n❯");
         assert_eq!(clean_tail(&raw, 2), "\n❯");
     }
 
     #[test]
     fn clean_tail_caps_very_long_output() {
-        assert!(clean_tail(&"x".repeat(10_000), TAIL_LINES).chars().count() <= 4_001);
+        assert!(clean_tail(&"x".repeat(10_000), 40).chars().count() <= 4_001);
     }
 
     #[test]

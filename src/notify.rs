@@ -1,12 +1,13 @@
 //! Build a notification and POST it to a desk webhook.
-use std::thread;
 use std::time::Duration;
 
+use ring::hmac;
+use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::Serialize;
 
 use crate::VERSION;
 use crate::config::{Config, Desk, find_desk};
-use crate::context::{Env, Run, detect_agent, git_info};
+use crate::context::{Env, Run, Sender, detect_sender, git_info, in_scope};
 use crate::error::{DeskError, Error, Result};
 use crate::state::{now_ms, update_state};
 
@@ -62,6 +63,10 @@ impl From<NotifyStatus> for Status {
 /// The JSON body sent to a desk webhook; the desk sees it inside `<webhook_event>`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Notification {
+    /// Unique per notification (UUID v4), so the desk can drop duplicates.
+    pub(crate) id: String,
+    /// When nudge built the notification, UTC RFC 3339.
+    pub(crate) sent_at: String,
     /// herdr agent target the desk can reply to; `None` if it could not be detected.
     pub(crate) from_agent: Option<String>,
     pub(crate) cwd: String,
@@ -102,13 +107,66 @@ pub(crate) fn reply_hint(agent: Option<&str>) -> String {
     format!("reply with: herdr agent prompt {target} \"...\"")
 }
 
-/// Build the notification: trimmed message, the agent to reply to (`agent`, else detected), git repo and branch.
-pub(crate) fn build_notification(
-    status: Status,
-    message: &str,
-    agent: Option<String>,
-    origin: Origin<'_>,
-) -> Result<Notification> {
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .flat_map(|byte| [byte >> 4, byte & 0x0f])
+        .filter_map(|digit| char::from_digit(u32::from(digit), 16))
+        .collect()
+}
+
+/// A random UUID v4.
+fn event_id() -> Result<String> {
+    let mut bytes = [0_u8; 16];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| Error::Other("no system randomness for the notification id".into()))?;
+    if let Some(version) = bytes.get_mut(6) {
+        *version = (*version & 0x0f) | 0x40;
+    }
+    if let Some(variant) = bytes.get_mut(8) {
+        *variant = (*variant & 0x3f) | 0x80;
+    }
+    let mut rest = bytes.iter().copied();
+    let groups: Vec<String> = [4, 2, 2, 2, 6]
+        .into_iter()
+        .map(|len| hex(&rest.by_ref().take(len).collect::<Vec<u8>>()))
+        .collect();
+    Ok(groups.join("-"))
+}
+
+/// Year, month and day of the `days`-th day after 1970-01-01 (proleptic Gregorian).
+const fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + if month <= 2 { 1 } else { 0 };
+    (year, month, day)
+}
+
+/// `unix_seconds` as UTC RFC 3339, e.g. `2026-10-16T06:12:03Z`.
+fn utc_timestamp(unix_seconds: i64) -> String {
+    let (year, month, day) = civil_from_days(unix_seconds.div_euclid(86_400));
+    let second_of_day = unix_seconds.rem_euclid(86_400);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        second_of_day / 3600,
+        second_of_day % 3600 / 60,
+        second_of_day % 60
+    )
+}
+
+/// The message as sent: trimmed and non-empty.
+fn message_text(message: &str) -> Result<&str> {
     let message = message.trim();
     if message.is_empty() {
         return Err(DeskError {
@@ -117,13 +175,21 @@ pub(crate) fn build_notification(
         }
         .into());
     }
-    let (from_agent, git) = thread::scope(|scope| {
-        let git = scope.spawn(|| git_info(origin.cwd, origin.run));
-        let agent = agent.or_else(|| detect_agent(origin.env, origin.cwd, origin.run));
-        (agent, git.join())
-    });
-    let git = git.map_err(|_| Error::Other("git lookup failed".into()))?;
+    Ok(message)
+}
+
+/// Build the notification from `from_agent` (the reply target), with a fresh id and the git repo and branch.
+pub(crate) fn build_notification(
+    status: Status,
+    message: &str,
+    from_agent: Option<String>,
+    origin: Origin<'_>,
+) -> Result<Notification> {
+    let message = message_text(message)?;
+    let git = git_info(origin.cwd, origin.run);
     Ok(Notification {
+        id: event_id()?,
+        sent_at: utc_timestamp(now_ms().div_euclid(1000)),
         reply_hint: reply_hint(from_agent.as_deref()),
         from_agent,
         cwd: origin.cwd.to_owned(),
@@ -134,7 +200,15 @@ pub(crate) fn build_notification(
     })
 }
 
-/// POST `payload` to the desk webhook with its Authorization header; returns the 2xx status.
+/// `sha256=<hex HMAC-SHA256(secret, "<timestamp>.<body>")>`, the `x-nudge-signature` header value.
+fn signature(secret: &str, timestamp: i64, body: &str) -> String {
+    let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
+    let tag = hmac::sign(&key, format!("{timestamp}.{body}").as_bytes());
+    format!("sha256={}", hex(tag.as_ref()))
+}
+
+/// POST `payload` to the desk webhook with its Authorization header (and signature, if the desk has a signing
+/// secret); returns the 2xx status.
 pub(crate) fn post_to_desk(desk: &Desk, payload: &Notification) -> Result<u16, DeskError> {
     let unreachable = |detail: &dyn std::fmt::Display| DeskError {
         message: format!("could not reach desk \"{}\" webhook: {detail}", desk.name),
@@ -146,13 +220,18 @@ pub(crate) fn post_to_desk(desk: &Desk, payload: &Notification) -> Result<u16, D
         .http_status_as_error(false)
         .build()
         .into();
-    let response = agent
+    let mut request = agent
         .post(&desk.url)
         .header("authorization", &desk.authorization)
         .header("content-type", "application/json")
-        .header("user-agent", format!("nudge/{VERSION}"))
-        .send(body)
-        .map_err(|error| unreachable(&error))?;
+        .header("user-agent", format!("nudge/{VERSION}"));
+    if let Some(secret) = &desk.signing_secret {
+        let timestamp = now_ms().div_euclid(1000);
+        request = request
+            .header("x-nudge-timestamp", timestamp.to_string())
+            .header("x-nudge-signature", signature(secret, timestamp, &body));
+    }
+    let response = request.send(body).map_err(|error| unreachable(&error))?;
     let status = response.status().as_u16();
     if response.status().is_success() {
         return Ok(status);
@@ -181,8 +260,17 @@ pub(crate) struct Sent {
     pub(crate) notification: Notification,
 }
 
+/// Who is sending: `agent` if named explicitly, else detected from herdr.
+fn sender(agent: Option<String>, origin: Origin<'_>) -> Sender {
+    agent.map_or_else(
+        || detect_sender(origin.env, origin.cwd, origin.run),
+        |agent| Sender::named(agent, origin.env),
+    )
+}
+
 /// Tell a desk (the default desk unless `desk` is given) that this agent is done, blocked or has a question.
-/// Inside a herdr pane, records that the agent notified, so the herdr plugin doesn't send a duplicate.
+/// Refuses agents outside the config's `[scope]`. Inside a herdr pane, records that the agent notified, so the
+/// herdr plugin doesn't send a duplicate.
 pub(crate) fn notify_desk(
     config: &Config,
     desk: Option<&str>,
@@ -192,7 +280,24 @@ pub(crate) fn notify_desk(
     origin: Origin<'_>,
 ) -> Result<Sent> {
     let desk = find_desk(config, desk)?;
-    let notification = build_notification(status.into(), message, agent, origin)?;
+    let message = message_text(message)?;
+    let sender = sender(agent, origin);
+    if !in_scope(&config.scope, &sender, origin.env, origin.run) {
+        let who = sender
+            .agent
+            .as_deref()
+            .map_or_else(|| "this agent".to_owned(), |agent| format!("agent \"{agent}\""));
+        let place = sender
+            .workspace_id
+            .as_deref()
+            .map(|id| format!(" in workspace \"{id}\""))
+            .unwrap_or_default();
+        return Err(Error::Config(format!(
+            "{who}{place} is outside nudge's scope, so nothing was sent. Change [scope] in the nudge config, \
+             or run the herdr action \"Nudge: notify from all agents\"."
+        )));
+    }
+    let notification = build_notification(status.into(), message, sender.agent, origin)?;
     let http_status = post_to_desk(desk, &notification)?;
     if let Some(pane_id) = origin.env.get("HERDR_PANE_ID") {
         let now = now_ms();
@@ -209,7 +314,8 @@ pub(crate) fn notify_desk(
     })
 }
 
-/// Send a harmless `status: "test"` notification to check the webhook URL and Authorization header.
+/// Send a harmless `status: "test"` notification to check the webhook URL and Authorization header. Ignores
+/// `[scope]`: it tests the desk, not an agent.
 pub(crate) fn ping_desk(
     config: &Config,
     desk: Option<&str>,
@@ -217,7 +323,8 @@ pub(crate) fn ping_desk(
     origin: Origin<'_>,
 ) -> Result<Sent> {
     let desk = find_desk(config, desk)?;
-    let notification = build_notification(Status::Test, "nudge test ping. No action needed.", agent, origin)?;
+    let from_agent = sender(agent, origin).agent;
+    let notification = build_notification(Status::Test, "nudge test ping. No action needed.", from_agent, origin)?;
     let http_status = post_to_desk(desk, &notification)?;
     Ok(Sent {
         desk: desk.name.clone(),
@@ -330,14 +437,17 @@ pub(crate) mod tests {
                     description: None,
                     url: format!("{base}/bridge"),
                     authorization: "Bearer bridge-secret".into(),
+                    signing_secret: None,
                 },
                 Desk {
                     name: "research".into(),
                     description: None,
                     url: format!("{base}/research"),
                     authorization: "Token research-secret".into(),
+                    signing_secret: Some("research-signing-secret-0123".into()),
                 },
             ],
+            ..Config::default()
         }
     }
 
@@ -401,16 +511,145 @@ pub(crate) mod tests {
             "reply_hint": "reply with: herdr agent prompt api-refactor \"...\"",
         });
         assert_eq!((sent.desk.as_str(), sent.http_status), ("bridge", 202));
-        assert_eq!(serde_json::to_value(&sent.notification).unwrap(), expected);
         let requests = hook.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, "/bridge");
         assert_eq!(requests[0].header("authorization"), Some("Bearer bridge-secret"));
         assert_eq!(requests[0].header("content-type"), Some("application/json"));
+        assert_eq!(requests[0].header("x-nudge-signature"), None, "unsigned desk");
+        let mut body: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
+        let id = body["id"].as_str().unwrap().to_owned();
+        let sent_at = body["sent_at"].as_str().unwrap().to_owned();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&requests[0].body).unwrap(),
-            expected
+            (id.as_str(), sent_at.as_str()),
+            (sent.notification.id.as_str(), sent.notification.sent_at.as_str())
         );
+        assert!(is_uuid_v4(&id), "{id}");
+        assert!(is_utc_timestamp(&sent_at), "{sent_at}");
+        body.as_object_mut()
+            .unwrap()
+            .retain(|key, _| key != "id" && key != "sent_at");
+        assert_eq!(body, expected);
+    }
+
+    fn is_uuid_v4(id: &str) -> bool {
+        let groups: Vec<&str> = id.split('-').collect();
+        groups.iter().map(|group| group.len()).eq([8, 4, 4, 4, 12])
+            && id
+                .chars()
+                .all(|c| c == '-' || c.is_ascii_digit() || ('a'..='f').contains(&c))
+            && groups[2].starts_with('4')
+            && groups[3].starts_with(['8', '9', 'a', 'b'])
+    }
+
+    fn is_utc_timestamp(text: &str) -> bool {
+        text.len() == 20
+            && text.ends_with('Z')
+            && text.chars().enumerate().all(|(index, c)| match index {
+                4 | 7 => c == '-',
+                10 => c == 'T',
+                13 | 16 => c == ':',
+                19 => c == 'Z',
+                _ => c.is_ascii_digit(),
+            })
+    }
+
+    #[test]
+    fn every_notification_gets_its_own_id() {
+        let hook = FakeWebhook::start(|_| (200, String::new()));
+        let state = tempfile::tempdir().unwrap();
+        let (env, run) = (env(&state, true), herdr_and_git());
+        let origin = Origin {
+            env: &env,
+            cwd: "/home/user/src/api",
+            run: &run,
+        };
+        let config = config(&hook.base);
+        let ids: std::collections::BTreeSet<String> = (0..20)
+            .map(|_| {
+                notify_desk(&config, None, NotifyStatus::Done, "x", None, origin)
+                    .unwrap()
+                    .notification
+                    .id
+            })
+            .collect();
+        assert_eq!(ids.len(), 20);
+    }
+
+    #[test]
+    fn utc_timestamps_match_the_calendar() {
+        for (seconds, expected) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (951_782_400, "2000-02-29T00:00:00Z"),
+            (1_800_000_000, "2027-01-15T08:00:00Z"),
+            (4_102_444_799, "2099-12-31T23:59:59Z"),
+        ] {
+            assert_eq!(super::utc_timestamp(seconds), expected);
+        }
+    }
+
+    #[test]
+    fn a_desk_with_a_signing_secret_gets_a_verifiable_signature() {
+        let hook = FakeWebhook::start(|_| (200, String::new()));
+        let state = tempfile::tempdir().unwrap();
+        let (env, run) = (env(&state, true), herdr_and_git());
+        let origin = Origin {
+            env: &env,
+            cwd: "/home/user/src/api",
+            run: &run,
+        };
+        let _sent = notify_desk(
+            &config(&hook.base),
+            Some("research"),
+            NotifyStatus::Done,
+            "x",
+            None,
+            origin,
+        )
+        .unwrap();
+        let request = &hook.requests()[0];
+        let timestamp = request.header("x-nudge-timestamp").unwrap();
+        let signature = request.header("x-nudge-signature").unwrap();
+        let age = crate::state::now_ms() / 1000 - timestamp.parse::<i64>().unwrap();
+        assert!((0..60).contains(&age), "timestamp is now");
+        // What a desk would do: recompute the HMAC over "<timestamp>.<body>" with the shared secret.
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"research-signing-secret-0123");
+        let hex = signature.strip_prefix("sha256=").unwrap();
+        let tag: Vec<u8> = hex
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        let signed = format!("{timestamp}.{}", request.body);
+        assert!(ring::hmac::verify(&key, signed.as_bytes(), &tag).is_ok());
+        assert!(
+            ring::hmac::verify(&key, format!("{timestamp}.{{}}").as_bytes(), &tag).is_err(),
+            "body is covered"
+        );
+    }
+
+    #[test]
+    fn agents_outside_the_scope_are_refused_before_sending() {
+        let hook = FakeWebhook::start(|_| (200, String::new()));
+        let state = tempfile::tempdir().unwrap();
+        let (env, run) = (env(&state, true), herdr_and_git());
+        let origin = Origin {
+            env: &env,
+            cwd: "/home/user/src/api",
+            run: &run,
+        };
+        let mut config = config(&hook.base);
+        config.scope.agents = vec!["reviewer".into()];
+        let refused = notify_desk(&config, None, NotifyStatus::Done, "x", None, origin);
+        assert!(
+            matches!(&refused, Err(Error::Config(message)) if message.contains("outside nudge's scope")),
+            "{refused:?}"
+        );
+        assert_eq!(hook.requests().len(), 0);
+        config.scope.agents = vec!["api-refactor".into()];
+        let _sent = notify_desk(&config, None, NotifyStatus::Done, "x", None, origin).unwrap();
+        let _ping = ping_desk(&config, None, Some("someone-else".into()), origin).unwrap();
+        assert_eq!(hook.requests().len(), 2, "in-scope notify and any ping go through");
     }
 
     #[test]
