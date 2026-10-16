@@ -80,11 +80,11 @@ The plugin listens to herdr's agent status changes. It notifies your default des
 
 The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. When it's sent, herdr shows a toast ("Told the desk: api-refactor is blocked"). Every decision, including skipped events and why, is in `herdr plugin log list --plugin weskor.nudge`, and `nudge doctor` shows the most recent ones.
 
-The 2 minutes, 5 minutes, 40 lines and the toast are [settings](#configuration).
+The 2 minutes, 5 minutes, 40 lines and the toast are [settings](#settings).
 
 ### Choose which agents can notify
 
-By default every agent can reach the desk. To narrow that down, focus a pane and run one of these herdr actions:
+By default every agent can reach the desk. To narrow that down, tick workspaces or agents in [settings](#settings), or focus a pane and run one of these herdr actions:
 
 | Action | Who can notify afterwards |
 | --- | --- |
@@ -92,7 +92,40 @@ By default every agent can reach the desk. To narrow that down, focus a pane and
 | `weskor.nudge.only-agent` | Only the agent in the focused pane |
 | `weskor.nudge.all-agents` | Every agent again |
 
-They write the `[scope]` table in the config, which you can also edit by hand to list several workspaces or agents. Scope applies to automatic notifications and to `nudge notify` and the MCP tool; an agent outside it gets an error and nothing is sent. Sending a pane yourself with `ask-desk`, and `nudge test`, ignore it.
+Both write the `[scope]` table in the config. Scope applies to automatic notifications and to `nudge notify` and the MCP tool; an agent outside it gets an error and nothing is sent. Sending a pane yourself with `ask-desk`, and `nudge test`, ignore it.
+
+### Settings
+
+`herdr plugin action invoke weskor.nudge.settings` (or `nudge settings` in a terminal) opens an editor for everything above, with the workspaces and agents that are open in herdr right now:
+
+```text
+┌ nudge settings ──────────────────────────────────────────────┐
+│Automatic notifications                                       │
+│  [x] Auto-notify                                             │
+│  [x] Toast when one is sent                                  │
+│  Shortest turn sent    ◂ 2 minutes ▸                         │
+│  Cooldown per pane     ◂ 5 minutes ▸                         │
+│  Terminal lines sent   ◂ 40 ▸                                │
+│                                                              │
+│Who can notify                                                │
+│  ( ) Every agent                                             │
+│  (•) Only these:                                             │
+│      Workspaces                                              │
+│        [ ] Base                                              │
+│        [x] api                                               │
+│      Agents                                                  │
+│        [ ] builder                                           │
+│        [x] reviewer                                          │
+│                                                              │
+│Desk the plugin notifies                                      │
+│  (•) bridge  desks.example                                   │
+│  ( ) local  127.0.0.1  signed                                │
+│                                                              │
+│↑↓ move  space pick  ←→ change  t test  s save  q quit        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+`t` sends a test ping to the desk under the cursor. Nothing changes until you press `s`; `q` twice throws edits away. Desks show only their host, never the URL path or secrets.
 
 ### Notifications written by the agent
 
@@ -176,6 +209,7 @@ To verify, recompute the HMAC over the timestamp, a `.` and the raw request body
 | --- | --- |
 | `weskor.nudge.setup` | Open setup in an overlay |
 | `weskor.nudge.status` | Open `nudge doctor` in an overlay |
+| `weskor.nudge.settings` | Open [settings](#settings) in an overlay |
 | `weskor.nudge.ask-desk` | Send the focused pane to the desk now, skipping the rules above |
 | `weskor.nudge.toggle` | Turn auto-notify on or off (also `.enable`, `.disable`) |
 | `weskor.nudge.only-workspace`, `.only-agent`, `.all-agents` | Choose [which agents can notify](#choose-which-agents-can-notify) |
@@ -201,7 +235,7 @@ description = "nudge: send this pane to the desk"
 
 `nudge setup` writes the config for you; [config.example.toml](config.example.toml) documents the format. To add another desk, run `nudge setup --desk research`. `--default` makes it the desk the plugin uses.
 
-Automatic notifications are tuned in an optional `[auto]` table; leave out anything you don't change:
+[Settings](#settings) edits these for you. By hand, automatic notifications are tuned in an optional `[auto]` table; leave out anything you don't change:
 
 ```toml
 [auto]
@@ -237,6 +271,7 @@ nudge setup  [--desk NAME] [--url URL] [--authorization VALUE] [--description TE
 nudge notify [--desk NAME] [--status done|blocked|question] [--agent NAME] <message...|->
 nudge test   [--desk NAME] [--agent NAME]
 nudge doctor [--ping]
+nudge settings
 nudge list   [--json]
 nudge mcp
 ```
