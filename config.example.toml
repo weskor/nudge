@@ -16,8 +16,24 @@ description = "Coordinator desk: hears from coding agents when they finish or ne
 url = "https://REPLACE_WITH_WEBHOOK_URL"
 # Sent verbatim as the Authorization header value.
 authorization = "Bearer REPLACE_WITH_WEBHOOK_TOKEN"
+# Optional, at least 16 characters. When set, every request carries x-nudge-timestamp and
+# x-nudge-signature (sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">) so the desk can verify it.
+# signing_secret = "REPLACE_WITH_SHARED_SECRET"
 
 [[desk]]
 name = "research"
 url = "https://REPLACE_WITH_RESEARCH_WEBHOOK_URL"
 authorization = "Bearer REPLACE_WITH_RESEARCH_WEBHOOK_TOKEN"
+
+# Optional: when the herdr plugin notifies on its own. These are the defaults.
+[auto]
+min_turn_seconds = 120   # a "done" turn shorter than this isn't sent
+cooldown_seconds = 300   # at most one automatic notification per pane in this window
+tail_lines = 40          # terminal lines sent along (1 to 200)
+toast = true             # herdr toast when one is sent
+
+# Optional: which agents may notify. Leave it out (or both lists empty) for every agent.
+# The herdr actions weskor.nudge.only-workspace / .only-agent / .all-agents rewrite it.
+[scope]
+workspaces = ["api"]     # herdr workspace names (or ids)
+agents = ["reviewer"]    # herdr agent names (or pane ids)

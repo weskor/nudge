@@ -75,9 +75,24 @@ The plugin listens to herdr's agent status changes. It notifies your default des
 | You aren't looking at the pane | You already know |
 | The agent didn't send its own `nudge notify` during the turn | Its own message says more than terminal output |
 | No automatic notification for that pane in the last 5 minutes | Rate limit, and a brake on reply loops |
+| The agent is in [scope](#choose-which-agents-can-notify) | You decide which agents may reach the desk |
 | Auto-notify is on | Off until you turn it on |
 
-The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. Every decision, including skipped events and why, is in `herdr plugin log list --plugin weskor.nudge`, and `nudge doctor` shows the most recent ones.
+The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. When it's sent, herdr shows a toast ("Told the desk: api-refactor is blocked"). Every decision, including skipped events and why, is in `herdr plugin log list --plugin weskor.nudge`, and `nudge doctor` shows the most recent ones.
+
+The 2 minutes, 5 minutes, 40 lines and the toast are [settings](#configuration).
+
+### Choose which agents can notify
+
+By default every agent can reach the desk. To narrow that down, focus a pane and run one of these herdr actions:
+
+| Action | Who can notify afterwards |
+| --- | --- |
+| `weskor.nudge.only-workspace` | Agents in the focused pane's workspace |
+| `weskor.nudge.only-agent` | Only the agent in the focused pane |
+| `weskor.nudge.all-agents` | Every agent again |
+
+They write the `[scope]` table in the config, which you can also edit by hand to list several workspaces or agents. Scope applies to automatic notifications and to `nudge notify` and the MCP tool; an agent outside it gets an error and nothing is sent. Sending a pane yourself with `ask-desk`, and `nudge test`, ignore it.
 
 ### Notifications written by the agent
 
@@ -119,6 +134,8 @@ POSTed to your desk with its `Authorization` header and `Content-Type: applicati
 
 ```json
 {
+  "id": "0b8f2c1e-6a4d-4f5e-9c3b-2d7a1e8f4b60",
+  "sent_at": "2026-10-16T06:12:03Z",
   "from_agent": "api-refactor",
   "cwd": "/home/me/src/api",
   "repo": "acme/api",
@@ -131,11 +148,27 @@ POSTed to your desk with its `Authorization` header and `Content-Type: applicati
 
 | Field | Value |
 | --- | --- |
+| `id` | A new UUID for every notification, so the desk can drop duplicates |
+| `sent_at` | When nudge sent it, in UTC |
 | `from_agent` | The herdr agent to reply to: its name, or its pane id if unnamed. `null` when sent from outside an agent pane |
 | `repo` | `owner/name` from the `origin` remote, else the directory name; `null` outside git |
 | `branch` | The current branch; `null` when detached or outside git |
 | `status` | `done`, `blocked`, `question`, or `test` |
 | `message` | The agent's text; for automatic events, a note saying so plus the pane's last lines |
+
+<details>
+<summary>Signed requests, for desks you host yourself</summary>
+
+Give a desk a `signing_secret` (at least 16 characters; `nudge setup --signing-secret VALUE`, or edit the config) and every request also carries:
+
+| Header | Value |
+| --- | --- |
+| `x-nudge-timestamp` | Unix time in seconds |
+| `x-nudge-signature` | `sha256=` + hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the secret |
+
+To verify, recompute the HMAC over the timestamp, a `.` and the raw request body, compare in constant time, and reject timestamps more than a few minutes old. A hosted automation that only checks the `Authorization` header doesn't need this.
+
+</details>
 
 ## herdr actions
 
@@ -145,6 +178,7 @@ POSTed to your desk with its `Authorization` header and `Content-Type: applicati
 | `weskor.nudge.status` | Open `nudge doctor` in an overlay |
 | `weskor.nudge.ask-desk` | Send the focused pane to the desk now, skipping the rules above |
 | `weskor.nudge.toggle` | Turn auto-notify on or off (also `.enable`, `.disable`) |
+| `weskor.nudge.only-workspace`, `.only-agent`, `.all-agents` | Choose [which agents can notify](#choose-which-agents-can-notify) |
 
 Bind them in `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
 
@@ -167,9 +201,23 @@ description = "nudge: send this pane to the desk"
 
 `nudge setup` writes the config for you; [config.example.toml](config.example.toml) documents the format. To add another desk, run `nudge setup --desk research`. `--default` makes it the desk the plugin uses.
 
+Automatic notifications are tuned in an optional `[auto]` table; leave out anything you don't change:
+
+```toml
+[auto]
+min_turn_seconds = 120   # a "done" turn shorter than this isn't sent
+cooldown_seconds = 300   # at most one automatic notification per pane in this window
+tail_lines = 40          # terminal lines sent along (1 to 200)
+toast = true             # herdr toast when one is sent
+
+[scope]                  # who may notify; leave out for everyone
+workspaces = ["api"]     # herdr workspace names (or ids)
+agents = ["reviewer"]    # herdr agent names (or pane ids)
+```
+
 | Path | Holds |
 | --- | --- |
-| `~/.config/nudge/config.toml` | Desks: webhook URL, Authorization header, optional description |
+| `~/.config/nudge/config.toml` | Desks (webhook URL, Authorization header, optional description and signing secret), `[auto]` and `[scope]` |
 | `~/.local/state/nudge/state.json` | The auto-notify toggle and per-pane timestamps |
 | `~/.local/bin/nudge` | Optional link to the plugin's `nudge` command; kept current across plugin updates |
 
@@ -184,7 +232,8 @@ description = "nudge: send this pane to the desk"
 <summary>Command reference</summary>
 
 ```text
-nudge setup  [--desk NAME] [--url URL] [--authorization VALUE] [--description TEXT] [--default] [--no-test]
+nudge setup  [--desk NAME] [--url URL] [--authorization VALUE] [--description TEXT]
+             [--signing-secret VALUE] [--default] [--no-test]
 nudge notify [--desk NAME] [--status done|blocked|question] [--agent NAME] <message...|->
 nudge test   [--desk NAME] [--agent NAME]
 nudge doctor [--ping]
@@ -205,7 +254,8 @@ Start with `nudge doctor`, or `herdr plugin action invoke weskor.nudge.status` t
 | Symptom | Fix |
 | --- | --- |
 | Setup says the webhook rejected the Authorization header | Copy the header again. It's usually `Bearer <token>`; a pasted `Authorization:` prefix is fine |
-| No notification after an agent finished | `herdr plugin log list --plugin weskor.nudge` shows why it was skipped: a short turn, you were watching, cooldown, or auto-notify off |
+| No notification after an agent finished | `herdr plugin log list --plugin weskor.nudge` shows why it was skipped: a short turn, you were watching, cooldown, outside the scope, or auto-notify off |
+| `nudge notify` says the agent is outside nudge's scope | Run `weskor.nudge.all-agents`, or add the agent or its workspace to `[scope]` |
 | `from_agent` is `null` | The event wasn't sent from an agent's pane, so pass `--agent NAME` |
 | `nudge: command not found` | Run `herdr plugin action invoke weskor.nudge.setup` and accept the command install, or add `~/.local/bin` to your `PATH` |
 

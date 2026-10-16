@@ -4,7 +4,8 @@ A *desk* is whatever receives nudge's webhook: an AI assistant routine, a workfl
 
 ```text
 You receive events from coding agents via nudge. Each event is JSON:
-{from_agent, cwd, repo, branch, status, message, reply_hint}.
+{id, sent_at, from_agent, cwd, repo, branch, status, message, reply_hint}.
+If you have already handled an event with the same id, ignore it.
 
 There are two kinds of message:
 - Written by the agent (via `nudge notify`): a summary or question in its own words.
