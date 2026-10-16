@@ -6,9 +6,10 @@ Binary under test: $NUDGE_BIN (default: <repo>/bin/nudge). python3 stdlib only.
 Session commands (one long-lived sandbox + fake webhook; evidence in <repo>/.verify/<id>/):
   verify-nudge launch                      start a session, print the ready line
   verify-nudge doctor                      read-only: is the session worth driving?
-  verify-nudge seed-config [--default NAME] write the standard desks config (default desk: "desk")
+  verify-nudge seed-config [--default NAME] [--append TOML]   standard desks config (default desk: "desk"); TOML
+                                           (e.g. '[auto]\\ntail_lines = 5') is appended; \\n escapes expand
   verify-nudge seed-state JSON             write state.json (e.g. '{"auto": true}')
-  verify-nudge herdr PRESET|FILE           fake herdr fixture: none | running | agent-pane | FILE.json
+  verify-nudge herdr PRESET|FILE           fake herdr fixture: none | running | agent-pane | workspaces | FILE.json
   verify-nudge clip TEXT | --clear         fake clipboard contents (wl-paste/xclip)
   verify-nudge git-repo NAME BRANCH [ORIGIN]   create <sandbox>/NAME as a git repo (use with run --cwd NAME)
   verify-nudge link TARGET | --file | --remove  set <sandbox>/home/.local/bin/nudge ({NUDGE_ROOT} expands)
@@ -23,6 +24,7 @@ Parity:
 
 Session selection: $VERIFY_NUDGE_SESSION, else the id in <repo>/.verify/current.
 """
+import calendar
 import json
 import os
 import re
@@ -39,6 +41,11 @@ import threading
 import time
 import urllib.request
 
+try:
+    import tomllib  # python >= 3.11; only parity's scope_is assertion needs it
+except ImportError:
+    tomllib = None
+
 BIN_DIR = os.path.dirname(os.path.realpath(__file__))
 SKILL_DIR = os.path.dirname(BIN_DIR)
 REPO = os.path.realpath(os.path.join(SKILL_DIR, "..", "..", ".."))
@@ -46,8 +53,19 @@ EVIDENCE_ROOT = os.path.join(REPO, ".verify")
 
 GOOD = "Bearer good-token-0123456789abcdef"
 WRONG = "Bearer wrong-token-0123456789abcdef"
-SECRET_MARKERS = ("good-token-0123456789abcdef", "wrong-token-0123456789abcdef")
+# Signing secrets the fake desk knows (label = what its "signature" verdict names): the seeded `signed` desk's,
+# and the one parity's setup scenarios pass to `nudge setup --signing-secret`.
+SIGNING_SECRET = "sign-secret-0123456789abcdef"
+SETUP_SIGNING_SECRET = "setup-secret-fedcba9876543210"
+WEBHOOK_SECRETS = (("signed-desk", SIGNING_SECRET), ("setup", SETUP_SIGNING_SECRET))
+SECRET_MARKERS = ("good-token-0123456789abcdef", "wrong-token-0123456789abcdef", SIGNING_SECRET, SETUP_SIGNING_SECRET)
 PLUGIN_ID = "weskor.nudge"
+UUID_V4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+SENT_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+SIGNATURE = re.compile(r"sha256=[0-9a-f]{64}")
+# A UUID v4 / RFC 3339 UTC second anywhere in output, not glued to other word characters.
+UUID_V4_TEXT = re.compile(r"(?<![0-9A-Za-z-])" + UUID_V4.pattern + r"(?![0-9A-Za-z-])")
+SENT_AT_TEXT = re.compile(r"(?<![0-9A-Za-z])" + SENT_AT.pattern + r"(?![0-9A-Za-z])")
 
 
 def die(message, code=1):
@@ -96,7 +114,8 @@ def start_webhook(directory, session_id):
         os.remove(port_file)
     log = open(os.path.join(directory, "webhook.log"), "ab")
     proc = subprocess.Popen(
-        [sys.executable, os.path.join(BIN_DIR, "fake-webhook"), "--dir", directory, "--id", session_id],
+        [sys.executable, os.path.join(BIN_DIR, "fake-webhook"), "--dir", directory, "--id", session_id,
+         *[arg for label, secret in WEBHOOK_SECRETS for arg in ("--secret", f"{label}={secret}")]],
         stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
     )
     deadline = time.time() + 10
@@ -201,6 +220,46 @@ PANE_TEXT = (
     + "═══════════\n\n\n"
 )
 
+# herdr workspaces, with herdr's real JSON shapes (`agent get`, `pane get`, `workspace get` as herdr 0.9 prints them).
+# Workspace wD "api-work": pane wD:p1 agent claude-1, pane wD:p3 a plain shell. Workspace wE "web-work": pane
+# wE:p2 agent reviewer.
+WORKSPACES = {"wD": ("api-work", 1), "wE": ("web-work", 2)}
+
+
+def real_agent_get(pane, name, cwd="{RUN}/repo", focused=False):
+    ws = pane.split(":")[0]
+    return rule(["agent", "get", pane], {"id": "cli:agent:get", "result": {"agent": {
+        "name": name, "pane_id": pane, "workspace_id": ws, "tab_id": f"{ws}:t1", "focused": focused,
+        "cwd": cwd, "foreground_cwd": cwd, "agent_status": "working"}}, "type": "agent_info"})
+
+
+def pane_get(pane, agent="omp", focused=False):
+    ws = pane.split(":")[0]
+    return rule(["pane", "get", pane], {"id": "cli:pane:get", "result": {"pane": {
+        "pane_id": pane, "workspace_id": ws, "tab_id": f"{ws}:t1", "agent": agent,
+        "agent_status": "working" if agent else "idle", "focused": focused, "cwd": "{RUN}/repo"}}})
+
+
+def workspace_get(ws):
+    label, number = WORKSPACES[ws]
+    return rule(["workspace", "get", ws], {"id": "cli:workspace:get", "result": {"type": "workspace_info", "workspace": {
+        "workspace_id": ws, "label": label, "number": number, "focused": ws == "wD"}}})
+
+
+def workspaces_fixture(agent_list=True):
+    """Two workspaces; with `agent_list`, `agent list` puts claude-1 (wD:p1) on <RUN>/work for cwd matching."""
+    agents = [{"name": "claude-1", "pane_id": "wD:p1", "workspace_id": "wD", "cwd": "{RUN}/work"},
+              {"name": "reviewer", "pane_id": "wE:p2", "workspace_id": "wE", "cwd": "/elsewhere"}]
+    return fixture(
+        HERDR_VERSION, plugin_list(plugin()), PLUGIN_LOGS, NOTIFICATION_OK, PANE_OPEN_OK,
+        real_agent_get("wD:p1", "claude-1"), real_agent_get("wE:p2", "reviewer"), rule(["agent", "get", "wD:p3"], "", exit=1),
+        pane_get("wD:p1"), pane_get("wE:p2"), pane_get("wD:p3", agent=None),
+        workspace_get("wD"), workspace_get("wE"),
+        pane_read("wD:p1", PANE_TEXT), pane_read("wE:p2", PANE_TEXT),
+        rule(["agent", "list"], {"result": {"agents": agents if agent_list else []}}),
+    )
+
+
 PRESETS = {
     "none": None,
     "running": fixture(HERDR_VERSION, plugin_list(plugin()), PLUGIN_LOGS, NO_AGENTS, NOTIFICATION_OK, PANE_OPEN_OK),
@@ -209,26 +268,32 @@ PRESETS = {
         agent_get("p_1", "claude-1"), pane_read("p_1", PANE_TEXT),
         rule(["agent", "list"], {"result": {"agents": [{"name": "claude-1", "pane_id": "p_1", "cwd": "{RUN}/repo"}]}}),
     ),
+    "workspaces": workspaces_fixture(),
 }
 
 
-def desks_config(port, offline_port, default="desk"):
+def desks_config(port, offline_port, default="desk", extra=""):
+    """The standard desks; `extra` (e.g. an [auto] or [scope] table) is appended verbatim."""
     hook = f"http://127.0.0.1:{port}"
     desks = [
-        ("desk", "Main desk", f"{hook}/hook", GOOD),
-        ("research", "Research desk", f"{hook}/hook", GOOD),
-        ("badauth", None, f"{hook}/hook", WRONG),
-        ("nohook", None, f"{hook}/nope", GOOD),
-        ("broken", None, f"{hook}/fail", GOOD),
-        ("offline", None, f"http://127.0.0.1:{offline_port}/hook", GOOD),
+        ("desk", "Main desk", f"{hook}/hook", GOOD, None),
+        ("research", "Research desk", f"{hook}/hook", GOOD, None),
+        ("badauth", None, f"{hook}/hook", WRONG, None),
+        ("nohook", None, f"{hook}/nope", GOOD, None),
+        ("broken", None, f"{hook}/fail", GOOD, None),
+        ("offline", None, f"http://127.0.0.1:{offline_port}/hook", GOOD, None),
+        ("signed", "Signed desk", f"{hook}/signed", GOOD, SIGNING_SECRET),
     ]
     lines = [f'default_desk = "{default}"', ""] if default else []
-    for name, description, url, auth in desks:
+    for name, description, url, auth, secret in desks:
         lines += ["[[desk]]", f'name = "{name}"']
         if description:
             lines.append(f'description = "{description}"')
-        lines += [f'url = "{url}"', f'authorization = "{auth}"', ""]
-    return "\n".join(lines)
+        lines += [f'url = "{url}"', f'authorization = "{auth}"']
+        if secret:
+            lines.append(f'signing_secret = "{secret}"')
+        lines.append("")
+    return "\n".join(lines) + extra
 
 
 # --------------------------------------------------------------------------------------------- sandbox
@@ -584,7 +649,23 @@ class Normalizer:
     def text(self, s):
         for old, new in self.pairs:
             s = s.replace(old, new)
-        return s
+        # Per-notification id and sent_at; only well-formed values, so a malformed one stays visible in the diff.
+        s = UUID_V4_TEXT.sub("<uuid>", s)
+        return SENT_AT_TEXT.sub("<sent_at>", s)
+
+    @staticmethod
+    def webhook_request(req):
+        """Drop the receive time; replace a fresh x-nudge-timestamp and a well-formed signature (its validity is
+        the recorded "signature" verdict) with placeholders. Anything off stays raw so the diff shows it."""
+        req = dict(req)
+        received = req.pop("received_unix", None)
+        headers = dict(req.get("headers") or {})
+        if timestamp_fresh(headers.get("x-nudge-timestamp"), received):
+            headers["x-nudge-timestamp"] = "<ts>"
+        if SIGNATURE.fullmatch(headers.get("x-nudge-signature") or ""):
+            headers["x-nudge-signature"] = "sha256=<hmac>"
+        req["headers"] = headers
+        return req
 
     def epoch(self, value, t1):
         if value in self.sb.seeded:
@@ -609,6 +690,8 @@ class Normalizer:
     def record(self, rec, t1):
         rec = dict(rec)
         files = rec.pop("files", None)
+        if "webhook" in rec:
+            rec["webhook"] = [self.webhook_request(r) for r in rec["webhook"]]
         rec = self.value(rec, t1)
         # JSON text inside MCP tool results is compared as data too.
         for response in rec.get("responses_by_id", {}).values():
@@ -643,9 +726,69 @@ class Normalizer:
 
 
 def secret_leaks(rec):
+    """Desk secrets (Authorization tokens, signing secrets) found in anything nudge showed or sent outside the
+    Authorization header: output, MCP responses, webhook bodies, herdr toasts."""
     texts = [rec.get(k) for k in ("stdout", "stderr", "output")]
-    texts += [json.dumps(r) for r in rec.get("responses_by_id", {}).values()]
+    texts += [json.dumps(r, ensure_ascii=False) for r in rec.get("responses_by_id", {}).values()]
+    texts += [json.dumps(r.get("body"), ensure_ascii=False) for r in rec.get("webhook", [])]
+    texts += [json.dumps(c, ensure_ascii=False) for c in rec.get("herdr_calls", [])]
     return [m for m in SECRET_MARKERS for t in texts if isinstance(t, str) and m in t]
+
+
+def timestamp_fresh(value, received, window=60):
+    """x-nudge-timestamp is unix seconds within `window` s of when the fake desk received the request."""
+    return isinstance(value, str) and value.isdigit() and received is not None and abs(int(value) - received) <= window
+
+
+def sent_at_unix(value):
+    if not (isinstance(value, str) and SENT_AT.fullmatch(value)):
+        return None
+    return calendar.timegm(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
+
+
+def contract_checks(rec):
+    """Problems with what the desk received (signature, timestamp, id, sent_at) and with MCP notify results,
+    checked on the raw record before normalization hides the values."""
+    problems = []
+    bodies = []
+    for req in rec.get("webhook", []):
+        path, headers, body, received = req.get("path"), req.get("headers") or {}, req.get("body"), req.get("received_unix")
+        verdict = req.get("signature")
+        if verdict is not None and not verdict.startswith("valid:"):
+            problems.append(f"{path} request signature {verdict}")
+        signing = [h for h in ("x-nudge-timestamp", "x-nudge-signature") if h in headers]
+        if path != "/signed" and signing:
+            problems.append(f"{path} (desk without signing_secret) got {', '.join(signing)}")
+        if "x-nudge-timestamp" in headers and not timestamp_fresh(headers["x-nudge-timestamp"], received):
+            problems.append(f"{path} x-nudge-timestamp {headers['x-nudge-timestamp']!r} is not unix seconds within 60 s of the request")
+        if not isinstance(body, dict):
+            continue
+        bodies.append(body)
+        if not (isinstance(body.get("id"), str) and UUID_V4.fullmatch(body["id"])):
+            problems.append(f"{path} body id {body.get('id', '<missing>')!r} is not a lowercase UUID v4")
+        stamp = sent_at_unix(body.get("sent_at"))
+        if stamp is None:
+            problems.append(f"{path} body sent_at {body.get('sent_at', '<missing>')!r} is not YYYY-MM-DDTHH:MM:SSZ")
+        elif received is not None and abs(stamp - received) > 60:
+            problems.append(f"{path} body sent_at {body['sent_at']!r} is not within 60 s of the request")
+    for msg_id, response in sorted(rec.get("responses_by_id", {}).items()):
+        for item in (response.get("result") or {}).get("content") or []:
+            try:
+                result = json.loads(item["text"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (isinstance(result, dict) and result.get("ok") is True):
+                continue
+            sent = [b for b in bodies if b.get("id") == result.get("id")]
+            if not (isinstance(result.get("id"), str) and UUID_V4.fullmatch(result["id"])):
+                problems.append(f"MCP response {msg_id}: id {result.get('id', '<missing>')!r} is not a lowercase UUID v4")
+            elif not sent:
+                problems.append(f"MCP response {msg_id}: id is not the id of a request the desk received")
+            if sent_at_unix(result.get("sent_at")) is None:
+                problems.append(f"MCP response {msg_id}: sent_at {result.get('sent_at', '<missing>')!r} is not YYYY-MM-DDTHH:MM:SSZ")
+            elif sent and sent[0].get("sent_at") != result["sent_at"]:
+                problems.append(f"MCP response {msg_id}: sent_at differs from the request the desk received")
+    return problems
 
 
 # --------------------------------------------------------------------------------------------- session
@@ -707,6 +850,7 @@ def cmd_launch(argv):
     print(f"verify-nudge: ready session={sid}")
     print(f"  nudge:    {binary}")
     print(f"  webhook:  http://127.0.0.1:{port}/hook  (good Authorization: {GOOD!r}; /fail = 500; other paths = 404)")
+    print(f"  signed:   http://127.0.0.1:{port}/signed  (also needs x-nudge-signature with signing secret {SIGNING_SECRET!r})")
     print(f"  offline:  http://127.0.0.1:{s['offline_port']}/hook  (nothing listens)")
     print(f"  sandbox:  {s['run']}  (HOME, config, state, fake herdr/wl-paste/xclip)")
     print(f"  evidence: {evidence}")
@@ -736,7 +880,8 @@ def cmd_doctor(argv):
     real_home = os.path.expanduser("~")
     isolated = all(env[k].startswith(s["run"]) for k in ("HOME", "NUDGE_CONFIG", "NUDGE_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "HERDR_BIN_PATH"))
     check(isolated and not env["HOME"].startswith(real_home + "/.config"), "config/state/HOME isolated in the sandbox")
-    check(not any(k in env for k in ("DISPLAY", "WAYLAND_DISPLAY", "HERDR_PANE_ID", "NUDGE_AGENT")), "no display, pane or agent variables leak in")
+    check(not any(k in env for k in ("DISPLAY", "WAYLAND_DISPLAY", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID", "NUDGE_AGENT")),
+          "no display, pane, workspace or agent variables leak in")
     try:
         out = subprocess.run([s["nudge_bin"], "version"], capture_output=True, text=True, env=env, cwd=sb.cwd(None), timeout=60)
         check(out.returncode == 0 and out.stdout.strip() != "", "nudge version runs", out.stdout.strip() or out.stderr.strip())
@@ -775,9 +920,11 @@ def parse_common(argv, allowed):
 def report(s, sb, rec, t0, label):
     norm = Normalizer(sb, s["nudge_root"], t0).record(rec, now_ms())
     leaks = secret_leaks(rec)
+    problems = contract_checks(rec)
     s["steps"] += 1
     path = os.path.join(s["evidence"], f"{s['steps']:03d}-{label}.json")
     norm["secret_leaks"] = leaks
+    norm["contract_problems"] = problems
     with open(path, "w") as f:
         json.dump(norm, f, indent=2, ensure_ascii=False, sort_keys=True)
     persist_marks(s, sb)
@@ -785,6 +932,8 @@ def report(s, sb, rec, t0, label):
     print(f"evidence: {path}")
     if leaks:
         print(f"WARNING: secret printed: {leaks}")
+    for problem in problems:
+        print(f"WARNING: {problem}")
     return norm
 
 
@@ -845,11 +994,20 @@ def cmd_mcp(argv):
 def cmd_seed_config(argv):
     s = load_session()
     sb = session_sandbox(s)
-    if argv and not (len(argv) == 2 and argv[0] == "--default"):
-        die("usage: verify-nudge seed-config [--default NAME]", 2)
-    default = argv[1] if argv else "desk"
-    sb.write_config(desks_config(s["port"], s["offline_port"], default))
-    print(f"wrote {sb.config}: default {default!r}; desks desk + research (accept), badauth (401), nohook (404), broken (500), offline (refused)")
+    usage = "usage: verify-nudge seed-config [--default NAME] [--append TOML]"
+    opts = {"default": "desk", "append": ""}
+    it = iter(argv)
+    for flag in it:
+        if flag not in ("--default", "--append"):
+            die(usage, 2)
+        value = next(it, None)
+        if value is None:
+            die(usage, 2)
+        opts[flag[2:]] = value
+    extra = "\n" + unescape(opts["append"]) if opts["append"] else ""
+    sb.write_config(desks_config(s["port"], s["offline_port"], opts["default"], extra))
+    print(f"wrote {sb.config}: default {opts['default']!r}; desks desk + research (accept), badauth (401), nohook (404), "
+          f"broken (500), offline (refused), signed (accepts with a valid signature)" + (" + appended TOML" if extra else ""))
 
 
 def cmd_git_repo(argv):
@@ -926,7 +1084,7 @@ def cmd_env(argv):
     s = load_session()
     for key, value in session_sandbox(s).env().items():
         print(f"export {key}='{value}'")
-    print("unset DISPLAY WAYLAND_DISPLAY HERDR_PANE_ID NUDGE_AGENT HERDR_PLUGIN_ID HERDR_PLUGIN_EVENT_JSON HERDR_PLUGIN_CONTEXT_JSON")
+    print("unset DISPLAY WAYLAND_DISPLAY HERDR_PANE_ID HERDR_WORKSPACE_ID NUDGE_AGENT HERDR_PLUGIN_ID HERDR_PLUGIN_EVENT_JSON HERDR_PLUGIN_CONTEXT_JSON")
 
 
 def cmd_cleanup(argv):
@@ -951,31 +1109,83 @@ def cmd_cleanup(argv):
 # --------------------------------------------------------------------------------------------- parity scenarios
 
 
-def cmd(args, stdin=None, env=None, cwd=None, expect=None):
-    return {"do": "cmd", "argv": args, "stdin": stdin, "env": env, "cwd": cwd, "expect": expect}
+def cmd(args, stdin=None, env=None, cwd=None, expect=None, **asserts):
+    """`asserts` (all optional, see step_assertions): sends=N, toasts=[body...], has=TEXT, scope_is=(workspaces, agents)."""
+    return {"do": "cmd", "argv": args, "stdin": stdin, "env": env, "cwd": cwd, "expect": expect, **asserts}
 
 
 def pty(args, script, env=None, expect=None):
     return {"do": "pty", "argv": args, "script": script, "env": env, "expect": expect}
 
 
-def event(status, pane="p_1", env=None, expect=0):
+def event(status, pane="p_1", env=None, expect=0, **asserts):
     payload = json.dumps({"event": "pane.agent_status_changed", "data": {"pane_id": pane, "agent_status": status}})
-    return cmd(["plugin", "event"], env={"HERDR_PLUGIN_EVENT_JSON": payload, **(env or {})}, cwd="home", expect=expect)
+    return cmd(["plugin", "event"], env={"HERDR_PLUGIN_EVENT_JSON": payload, **(env or {})}, cwd="home", expect=expect, **asserts)
 
 
-def action(name, context=None, env=None, expect=0):
+def action(name, context=None, env=None, expect=0, **asserts):
     extra = dict(env or {})
     if context is not None:
         extra["HERDR_PLUGIN_CONTEXT_JSON"] = json.dumps(context)
-    return cmd(["plugin", "action", name], env=extra, cwd="home", expect=expect)
+    return cmd(["plugin", "action", name], env=extra, cwd="home", expect=expect, **asserts)
+
+
+def toasts_of(rec):
+    return sorted(c[4] for c in rec.get("herdr_calls", []) if c[:4] == ["notification", "show", "nudge", "--body"] and len(c) > 4)
+
+
+def step_assertions(rec, op):
+    """Contract assertions a scenario step opted into:
+    sends=N          the desk received exactly N requests
+    toasts=[...]     the herdr toasts (`notification show nudge --body X`) are exactly these bodies
+    has=TEXT         TEXT appears in stdout, stderr, PTY output or an MCP response
+    scope_is=(W, A)  the config file's [scope] has workspaces W and agents A (absent = [])"""
+    problems = []
+    if op.get("sends") is not None and len(rec.get("webhook", [])) != op["sends"]:
+        problems.append(f"desk received {len(rec.get('webhook', []))} requests, expected {op['sends']}")
+    if op.get("toasts") is not None and toasts_of(rec) != sorted(op["toasts"]):
+        problems.append(f"toasts {toasts_of(rec)}, expected {sorted(op['toasts'])}")
+    if op.get("has") is not None:
+        texts = [rec.get(k) or "" for k in ("stdout", "stderr", "output")]
+        texts += [json.dumps(r, ensure_ascii=False) for r in rec.get("responses_by_id", {}).values()]
+        if not any(op["has"] in t for t in texts):
+            problems.append(f"{op['has']!r} not in the output")
+    if op.get("scope_is") is not None:
+        want = {"workspaces": list(op["scope_is"][0]), "agents": list(op["scope_is"][1])}
+        cfg = (rec.get("files") or {}).get("config")
+        if tomllib is None:
+            return problems + ["harness: scope_is needs python >= 3.11 (tomllib)"]
+        try:
+            got_scope = tomllib.loads(cfg["text"]).get("scope", {}) if cfg else "no config file"
+        except tomllib.TOMLDecodeError as e:
+            got_scope = f"unparseable config: {e}"
+        got = {k: got_scope.get(k, []) for k in want} if isinstance(got_scope, dict) else got_scope
+        if got != want:
+            problems.append(f"config [scope] is {got}, expected {want}")
+    return problems
 
 
 URL = "http://127.0.0.1:{PORT}/hook"
+SIGNED_URL = "http://127.0.0.1:{PORT}/signed"
 
 
-def config(default="desk"):
-    return {"do": "config", "default": default}
+def config(default="desk", extra=""):
+    """Standard desks (see desks_config); `extra` TOML (an [auto] / [scope] table) is appended after a blank line."""
+    return {"do": "config", "default": default, "extra": extra}
+
+
+def scope(workspaces=None, agents=None):
+    """A [scope] table for config(extra=...); None leaves the key out."""
+    lines = ["[scope]"]
+    for key, names in (("workspaces", workspaces), ("agents", agents)):
+        if names is not None:
+            lines.append(f"{key} = {json.dumps(names)}")
+    return "\n".join(lines) + "\n"
+
+
+def auto(**settings):
+    """An [auto] table for config(extra=...)."""
+    return "[auto]\n" + "".join(f"{k} = {json.dumps(v)}\n" for k, v in settings.items())
 
 
 def raw_config(text):
@@ -1006,8 +1216,8 @@ def write(rel, text):
     return {"do": "write", "path": rel, "text": text}
 
 
-def mcp(calls, env=None):
-    return {"do": "mcp", "messages": mcp_messages(calls), "env": env}
+def mcp(calls, env=None, **asserts):
+    return {"do": "mcp", "messages": mcp_messages(calls), "env": env, **asserts}
 
 
 TWO_DESKS_NO_DEFAULT = (
@@ -1267,6 +1477,159 @@ def scenarios():
         ("notify_desk", {"message": "who?", "desk": "nope"}),
     ]))
     add("mcp-no-config", mcp([("list_desks", {}), ("notify_desk", {"message": "hi"})]))
+
+    # Every webhook body (all scenarios) must carry a UUID v4 `id` and a fresh `sent_at`, every MCP notify_desk
+    # result the same id/sent_at the desk received, and every request to /signed a valid signature: see
+    # contract_checks. The scenarios below add the signing, [auto], toast and [scope] journeys.
+
+    # ---- signed desks (signing_secret)
+    add("signed-notify-and-test", config(),
+        cmd(["notify", "--desk", "signed", "--agent", "a", "--status", "blocked", "signed hello"], expect=0, sends=1),
+        cmd(["test", "--desk", "signed"], expect=0, sends=1),
+        cmd(["notify", "--agent", "a", "unsigned desk"], expect=0, sends=1))
+    add("signed-doctor-ping", config("signed"), cmd(["doctor", "--ping"], expect=0, sends=1))
+    add("signed-event", config("signed"), herdr(PANE_HERDR), state({"auto": True}),
+        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"]))
+    add("signed-ask-desk", config("signed"), herdr(PANE_HERDR), action("ask-desk", {"focused_pane_id": "p_1"}, sends=1))
+    add("signed-mcp", config(), herdr(fixture(NO_AGENTS)),
+        mcp([("notify_desk", {"message": "signed via MCP", "desk": "signed", "agent": "mcp-agent"})], sends=1))
+    add("setup-signing-secret",
+        cmd(["setup", "--url", SIGNED_URL, "--authorization", GOOD, "--signing-secret", SETUP_SIGNING_SECRET], expect=0, sends=1),
+        cmd(["setup", "--description", "rerun keeps the secret"], stdin="", expect=0, sends=1),
+        cmd(["notify", "--agent", "a", "after the rerun"], expect=0, sends=1),
+        cmd(["setup", "--signing-secret", SIGNING_SECRET], stdin="", expect=0, sends=1),
+        cmd(["list"], expect=0), cmd(["list", "--json"], expect=0))
+    add("setup-signing-secret-too-short",
+        cmd(["setup", "--url", URL, "--authorization", GOOD, "--signing-secret", "too-short"], expect=1, sends=0))
+    add("config-signing-secret-too-short",
+        raw_config('default_desk = "desk"\n\n[[desk]]\nname = "desk"\nurl = "' + URL + '"\nauthorization = "' + GOOD
+                   + '"\nsigning_secret = "short"\n'),
+        cmd(["list"], expect=1, has="signing_secret"), cmd(["notify", "hi"], expect=1, sends=0))
+
+    # ---- [auto] thresholds and toasts
+    long_turn = state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 180000}}}})
+    add("auto-min-turn-lower", config(extra=auto(min_turn_seconds=30)), herdr(PANE_HERDR),
+        state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 60000}}}}),
+        event("done", sends=1, toasts=["Told the desk: claude-1 finished a turn"]))
+    add("auto-min-turn-higher", config(extra=auto(min_turn_seconds=600)), herdr(PANE_HERDR),
+        state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 300000}}}}), event("done", sends=0, toasts=[]))
+    add("auto-min-turn-zero", config(extra=auto(min_turn_seconds=0)), herdr(PANE_HERDR),
+        state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 1000}}}}), event("done", sends=1))
+    add("auto-cooldown-lower", config(extra=auto(cooldown_seconds=30)), herdr(PANE_HERDR),
+        state({"auto": True, "panes": {"p_1": {"last_auto_at": {"ago": 60000}}}}), event("blocked", sends=1))
+    add("auto-cooldown-higher", config(extra=auto(cooldown_seconds=900)), herdr(PANE_HERDR),
+        state({"auto": True, "panes": {"p_1": {"last_auto_at": {"ago": 600000}}}}),
+        event("blocked", sends=0, toasts=[], has="p_1 blocked: skipped (cooldown)"))
+    add("auto-tail-lines-5", config(extra=auto(tail_lines=5)), herdr(PANE_HERDR), state({"auto": True}), event("blocked", sends=1))
+    add("auto-tail-lines-200", config(extra=auto(tail_lines=200)), herdr(PANE_HERDR), state({"auto": True}), event("blocked", sends=1))
+    add("auto-tail-lines-ask-desk", config(extra=auto(tail_lines=3)), herdr(PANE_HERDR),
+        action("ask-desk", {"focused_pane_id": "p_1"}, sends=1))
+    add("auto-tail-lines-out-of-range", config(extra=auto(tail_lines=0)), cmd(["list"], expect=1, has="auto.tail_lines"),
+        config(extra=auto(tail_lines=201)), cmd(["list"], expect=1, has="auto.tail_lines"))
+    add("auto-bad-values", config(extra='[auto]\nmin_turn_seconds = -1\ncooldown_seconds = 1.5\ntoast = "yes"\n'),
+        cmd(["list"], expect=1, has="auto.min_turn_seconds"), cmd(["doctor"], expect=1))
+    add("auto-unknown-key", config(extra=auto(tail_lines=5, bogus=1)), herdr(PANE_HERDR), state({"auto": True}),
+        cmd(["list"], expect=1, has="auto.bogus: unknown setting"), cmd(["doctor"], expect=1, has="auto.bogus: unknown setting"),
+        cmd(["notify", "hi"], expect=1, sends=0), event("blocked", expect=1, sends=0))
+    add("auto-toast-on-done", config(extra=auto(toast=True)), herdr(PANE_HERDR), long_turn,
+        event("done", sends=1, toasts=["Told the desk: claude-1 finished a turn"]))
+    add("auto-toast-default-blocked", config(), herdr(PANE_HERDR), state({"auto": True}),
+        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"]))
+    add("auto-toast-pane-id", config(), herdr(fixture(NOTIFICATION_OK, pane_read("p_7", "build ok\n"))), state({"auto": True}),
+        event("blocked", pane="p_7", sends=1, toasts=["Told the desk: p_7 is blocked"]))
+    add("auto-toast-off", config(extra=auto(toast=False)), herdr(PANE_HERDR), long_turn,
+        event("done", sends=1, toasts=[]), {"do": "edit_state", "pane": "p_1", "key": "last_auto_at", "ago": 600000},
+        event("blocked", sends=1, toasts=[]))
+    add("auto-doctor-minutes", config(extra=auto(min_turn_seconds=300)), herdr(PRESETS["running"]), state({"auto": True}),
+        cmd(["doctor"], expect=0, has="done after 5 minutes or more"))
+
+    # ---- [scope]: herdr workspaces wD "api-work" (wD:p1 claude-1, wD:p3 shell) and wE "web-work" (wE:p2 reviewer)
+    ws_herdr = workspaces_fixture()
+    outside = "outside nudge's scope"
+    for label, table in (("workspace-label", scope(workspaces=["api-work"])), ("workspace-id", scope(workspaces=["wD"])),
+                         ("agent-name", scope(agents=["claude-1"])), ("agent-pane", scope(agents=["wD:p1"])),
+                         ("either-list", scope(workspaces=["web-work"], agents=["claude-1"])),
+                         ("empty-lists", scope(workspaces=[], agents=[]))):
+        add(f"scope-event-allowed-{label}", config(extra=table), herdr(ws_herdr), state({"auto": True}),
+            event("blocked", pane="wD:p1", sends=1, toasts=["Told the desk: claude-1 is blocked"]))
+    for label, table in (("other-workspace", scope(workspaces=["web-work", "wE"])),
+                         ("other-agent", scope(agents=["reviewer", "wE:p2"]))):
+        add(f"scope-event-outside-{label}", config(extra=table), herdr(ws_herdr), state({"auto": True}),
+            event("blocked", pane="wD:p1", sends=0, toasts=[], has=f"wD:p1 blocked: skipped ({outside})"),
+            event("blocked", pane="wE:p2", sends=1, toasts=["Told the desk: reviewer is blocked"]))
+    add("scope-event-outside-done", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
+        state({"auto": True, "panes": {"wD:p1": {"working_since": {"ago": 180000}}}}),
+        event("done", pane="wD:p1", sends=0, toasts=[], has=f"wD:p1 done: skipped ({outside})"))
+    add("scope-notify-pane", config(extra=scope(workspaces=["api-work"])), herdr(ws_herdr),
+        cmd(["notify", "in scope"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sends=1),
+        cmd(["notify", "shell pane, same workspace"], env={"HERDR_PANE_ID": "wD:p3"}, expect=0, sends=1),
+        cmd(["notify", "other workspace"], env={"HERDR_PANE_ID": "wE:p2"}, expect=1, sends=0, has=outside))
+    add("scope-notify-pane-agent", config(extra=scope(agents=["claude-1"])), herdr(ws_herdr),
+        cmd(["notify", "named agent"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sends=1),
+        cmd(["notify", "shell pane"], env={"HERDR_PANE_ID": "wD:p3"}, expect=1, sends=0, has=outside))
+    add("scope-notify-cwd-agent", config(extra=scope(workspaces=["api-work"])), herdr(ws_herdr),
+        cmd(["notify", "matched by cwd"], expect=0, sends=1),
+        config(extra=scope(workspaces=["web-work"])), cmd(["notify", "matched by cwd"], expect=1, sends=0, has=outside))
+    add("scope-notify-workspace-env", config(extra=scope(workspaces=["api-work"])), herdr(workspaces_fixture(agent_list=False)),
+        cmd(["notify", "workspace by label"], env={"HERDR_WORKSPACE_ID": "wD"}, expect=0, sends=1),
+        cmd(["notify", "other workspace"], env={"HERDR_WORKSPACE_ID": "wE"}, expect=1, sends=0, has=outside),
+        config(extra=scope(workspaces=["wE"])),
+        cmd(["notify", "workspace by id"], env={"HERDR_WORKSPACE_ID": "wE"}, expect=0, sends=1))
+    add("scope-notify-no-herdr", config(extra=scope(workspaces=["api-work"])), herdr(None),
+        cmd(["notify", "nowhere"], expect=1, sends=0, has=outside))
+    add("scope-notify-agent-flag-only", config(extra=scope(agents=["claude-1"])), herdr(fixture(NO_AGENTS)),
+        cmd(["notify", "--agent", "claude-1", "flag only, no herdr agent"]))  # unspecified by the contract: recorded, not checked
+    add("scope-test-ignores", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
+        cmd(["test"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sends=1))
+    add("scope-ask-desk-ignores", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
+        action("ask-desk", {"focused_pane_id": "wD:p1", "focused_pane_status": "blocked"}, sends=1,
+               toasts=["Sent this pane to the desk (HTTP 200)"]))
+    add("scope-mcp-allowed", config(extra=scope(workspaces=["api-work"])), herdr(ws_herdr),
+        mcp([("notify_desk", {"message": "MCP in scope"})], env={"HERDR_PANE_ID": "wD:p1"}, sends=1))
+    add("scope-mcp-outside", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
+        mcp([("notify_desk", {"message": "MCP out of scope"}), ("list_desks", {})], env={"HERDR_PANE_ID": "wD:p1"}, sends=0, has=outside))
+    add("scope-unknown-key", config(extra='[scope]\nworkspaces = ["api-work"]\nteams = ["x"]\n'),
+        cmd(["list"], expect=1, has="scope.teams: unknown setting"), cmd(["notify", "hi"], expect=1, sends=0))
+    add("scope-bad-types", config(extra='[scope]\nworkspaces = "api-work"\nagents = [1]\n'),
+        cmd(["list"], expect=1, has="scope.workspaces"))
+
+    # ---- scope actions
+    add("action-only-workspace", config(), herdr(ws_herdr), state({"auto": True}),
+        action("only-workspace", {"focused_pane_id": "wD:p1"}, sends=0,
+               toasts=['Only workspace "api-work" can notify the desk'], scope_is=(["api-work"], [])),
+        cmd(["list"], expect=0),
+        event("blocked", pane="wE:p2", sends=0, has=f"wE:p2 blocked: skipped ({outside})"),
+        event("blocked", pane="wD:p1", sends=1))
+    add("action-only-workspace-env-pane", config(), herdr(ws_herdr),
+        action("only-workspace", env={"HERDR_PANE_ID": "wE:p2"}, toasts=['Only workspace "web-work" can notify the desk'],
+               scope_is=(["web-work"], [])))
+    add("action-only-workspace-no-pane", config(), herdr(ws_herdr),  # unspecified toast: recorded, config unchanged
+        action("only-workspace", {}, expect=None, sends=0, scope_is=([], [])))
+    add("action-only-agent", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr), state({"auto": True}),
+        action("only-agent", {"focused_pane_id": "wD:p1"}, sends=0,
+               toasts=['Only agent "claude-1" can notify the desk'], scope_is=([], ["claude-1"])),
+        cmd(["list"], expect=0),
+        event("blocked", pane="wE:p2", sends=0, has=f"wE:p2 blocked: skipped ({outside})"),
+        event("blocked", pane="wD:p1", sends=1))
+    add("action-only-agent-env-pane", config(), herdr(ws_herdr),
+        action("only-agent", env={"HERDR_PANE_ID": "wE:p2"}, toasts=['Only agent "reviewer" can notify the desk'],
+               scope_is=([], ["reviewer"])))
+    add("action-only-agent-no-agent", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
+        action("only-agent", {"focused_pane_id": "wD:p3"}, toasts=["No agent in this pane"], scope_is=(["web-work"], [])),
+        action("only-agent", {}, toasts=["No agent in this pane"], scope_is=(["web-work"], [])))
+    add("action-all-agents", config(extra=scope(workspaces=["web-work"], agents=["reviewer"])), herdr(ws_herdr), state({"auto": True}),
+        action("all-agents", sends=0, toasts=["All agents can notify the desk"], scope_is=([], [])),
+        cmd(["list"], expect=0),
+        event("blocked", pane="wD:p1", sends=1))
+    add("action-scope-no-config", herdr(ws_herdr),
+        action("only-workspace", {"focused_pane_id": "wD:p1"}, expect=1, sends=0),
+        action("only-agent", {"focused_pane_id": "wD:p1"}, expect=1, sends=0),
+        action("all-agents", expect=1, sends=0))
+
+    # ---- doctor scope line
+    add("doctor-scope-all", config(), cmd(["doctor"], expect=0, has="Scope: all agents"))
+    add("doctor-scope-lists", config(extra=scope(workspaces=["api-work", "wE"], agents=["claude-1"])),
+        cmd(["doctor"], expect=0, has="Scope: workspaces"))
     return S
 
 
@@ -1280,8 +1643,8 @@ def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
     for op in ops:
         do = op["do"]
         if do == "config":
-            sb.write_config(desks_config(port, offline_port, op.get("default", "desk")))
-            setup_log.append(f"config: standard desks, default {op.get('default', 'desk')}")
+            sb.write_config(desks_config(port, offline_port, op.get("default", "desk"), "\n" + op["extra"] if op.get("extra") else ""))
+            setup_log.append(f"config: standard desks, default {op.get('default', 'desk')}" + (" + " + json.dumps(op["extra"]) if op.get("extra") else ""))
         elif do == "raw_config":
             sb.write_config(subst(op["text"]))
             setup_log.append("config: raw text " + json.dumps(op["text"][:40]))
@@ -1337,6 +1700,7 @@ def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
             checks.append(f"step {i}: {rec['expect_failures']}")
         if rec.get("missing_responses"):
             checks.append(f"step {i}: no response for ids {rec['missing_responses']}")
+        checks += [f"step {i}: {problem}" for problem in contract_checks(rec) + step_assertions(rec, op)]
         out_steps.append(norm.record(rec, t1))
     return {"name": name, "setup": [norm.text(s) for s in setup_log], "steps": out_steps, "check_failures": checks}
 
@@ -1364,11 +1728,13 @@ def cmd_parity(argv):
                 results.append({"name": name, "setup": [], "steps": [], "check_failures": [f"harness error: {type(e).__name__}: {e}"]})
         failures = [(r["name"], c) for r in results for c in r["check_failures"]]
         transcript = {
-            "harness": "verify-nudge parity v2",
+            "harness": "verify-nudge parity v3",
             "normalized": ["<RUN> = per-scenario sandbox dir", "<NUDGE_ROOT> = dirname(dirname(realpath(NUDGE_BIN)))",
                            "<PORT>/<OFFLINE_PORT> = fake webhook / closed port", "state.json epoch ms: <now>, <now-Nms> (seeded), <epoch-ms>",
                            "herdr_calls sorted (some are concurrent)", "JSON stdout and MCP responses compared as sorted-key JSON; MCP responses keyed by id",
-                           "doctor 'Recent:' line ages -> <ago>"],
+                           "doctor 'Recent:' line ages -> <ago>", "lowercase UUID v4 -> <uuid>; YYYY-MM-DDTHH:MM:SSZ -> <sent_at>",
+                           "webhook x-nudge-timestamp within 60 s -> <ts>; well-formed x-nudge-signature -> sha256=<hmac> "
+                           "(validity is the request's \"signature\" verdict); received_unix dropped"],
             "scenario_count": len(results),
             "scenarios": results,
         }

@@ -1,31 +1,53 @@
 #!/usr/bin/env python3
 """Fake desk webhook for verify-nudge. Listens on 127.0.0.1 only.
 
-usage: fake-webhook --dir DIR --id SESSION_ID [--port 0]
+usage: fake-webhook --dir DIR --id SESSION_ID [--port 0] [--secret LABEL=SECRET]...
 
-  POST /hook   200 "ok" when Authorization equals the good token, else 401 {"message":"Invalid API key"}
-  POST /fail   500 "desk exploded"
+  POST /hook     200 "ok" when Authorization equals the good token, else 401 {"message":"Invalid API key"}
+  POST /signed   like /hook, but also needs a valid x-nudge-signature (HMAC-SHA256 with one of the --secret
+                 values over "<x-nudge-timestamp>.<raw body>"); otherwise 401 {"message":"Invalid signature"}
+  POST /fail     500 "desk exploded"
   anything else (any method) 404 "no such hook"
   GET /__verify  200 SESSION_ID  (health/ownership probe for `verify-nudge doctor`; not recorded)
 
 Every other request is appended to DIR/requests.jsonl before the response is sent:
-  {"method", "path", "headers": {"authorization", "content-type", "user-agent"}, "body": <parsed JSON or raw text>}
+  {"method", "path", "headers": {"authorization", "content-type", "user-agent", "x-nudge-timestamp",
+   "x-nudge-signature"}, "body": <parsed JSON or raw text>, "received_unix": <seconds>,
+   "signature": "valid:<LABEL>" | "invalid" | "missing"}
+"signature" is present when the request carries x-nudge-signature or targets /signed ("missing" = /signed
+without one); "valid:<LABEL>" names the --secret that produced it. Secrets are never written to the log.
 Writes the bound port to DIR/webhook.port once it is listening.
 """
 import argparse
+import hashlib
+import hmac
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 GOOD_TOKEN = "Bearer good-token-0123456789abcdef"
-RECORDED_HEADERS = ("authorization", "content-type", "user-agent")
+RECORDED_HEADERS = ("authorization", "content-type", "user-agent", "x-nudge-timestamp", "x-nudge-signature")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dir", required=True)
 parser.add_argument("--id", required=True)
 parser.add_argument("--port", type=int, default=0)
+parser.add_argument("--secret", action="append", default=[], help="LABEL=SECRET a signed request may use")
 opts = parser.parse_args()
 log_path = os.path.join(opts.dir, "requests.jsonl")
+SECRETS = [tuple(item.split("=", 1)) for item in opts.secret]
+
+
+def signature_verdict(timestamp, signature, raw):
+    """'valid:<label>' when `signature` is sha256=<hex HMAC(secret, "<timestamp>.<raw>")> for a known secret."""
+    if signature is None:
+        return "missing"
+    for label, secret in SECRETS:
+        expected = "sha256=" + hmac.new(secret.encode(), (timestamp or "").encode() + b"." + raw, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(expected, signature):
+            return f"valid:{label}"
+    return "invalid"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -59,6 +81,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_any(self):
         if self.command == "GET" and self.path == "/__verify":
             return self.reply(200, opts.id)
+        received = int(time.time())
         raw = self.read_body()
         text = raw.decode("utf-8", errors="replace")
         try:
@@ -66,13 +89,18 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             body = text
         headers = {h: self.headers[h] for h in RECORDED_HEADERS if self.headers.get(h) is not None}
-        record = {"method": self.command, "path": self.path, "headers": headers, "body": body}
+        record = {"method": self.command, "path": self.path, "headers": headers, "body": body, "received_unix": received}
+        signature = self.headers.get("x-nudge-signature")
+        if signature is not None or self.path == "/signed":
+            record["signature"] = signature_verdict(self.headers.get("x-nudge-timestamp"), signature, raw)
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        if self.path == "/hook":
-            if self.headers.get("authorization") == GOOD_TOKEN:
-                return self.reply(200, "ok")
-            return self.reply(401, '{"message":"Invalid API key"}', "application/json")
+        if self.path in ("/hook", "/signed"):
+            if self.headers.get("authorization") != GOOD_TOKEN:
+                return self.reply(401, '{"message":"Invalid API key"}', "application/json")
+            if self.path == "/signed" and not record["signature"].startswith("valid:"):
+                return self.reply(401, '{"message":"Invalid signature"}', "application/json")
+            return self.reply(200, "ok")
         if self.path == "/fail":
             return self.reply(500, "desk exploded")
         return self.reply(404, "no such hook")

@@ -1,8 +1,9 @@
 # Notify, test and list
 
-A user or agent runs `nudge notify` to POST `{from_agent, cwd, repo, branch, status, message, reply_hint}` to a
-desk webhook with the desk's Authorization header, `nudge test` to send a harmless `status: "test"` ping, and
-`nudge list` to see configured desks with the default marked `*`.
+A user or agent runs `nudge notify` to POST `{id, sent_at, from_agent, cwd, repo, branch, status, message, reply_hint}`
+to a desk webhook with the desk's Authorization header (plus `x-nudge-timestamp` / `x-nudge-signature` when the desk
+has a `signing_secret`), `nudge test` to send a harmless `status: "test"` ping, and `nudge list` to see configured
+desks with the default marked `*`. Agents outside the config's `[scope]` are refused (see scope.md).
 
 ## Sub-features
 
@@ -14,6 +15,13 @@ desk webhook with the desk's Authorization header, `nudge test` to send a harmle
   `null` plus a stderr note. `reply_hint` shell-quotes odd agent names.
 - `notify-pane-state` records `self_notified_at` in state.json when run inside a herdr pane.
 - `notify-git` fills `repo` (`owner/name` from origin, else the checkout dir name) and `branch`.
+- `notify-id` every body (notify, test, plugin, MCP) has a fresh `id` (lowercase UUID v4) and `sent_at` (UTC,
+  `YYYY-MM-DDTHH:MM:SSZ`).
+- `notify-signed` a desk with `signing_secret` gets `x-nudge-timestamp: <unix seconds>` and `x-nudge-signature:
+  sha256=<hex HMAC-SHA256(secret, "<timestamp>.<raw body>")>`; desks without one get neither header. The secret is
+  never printed.
+- `notify-scope` with a non-empty `[scope]`, an agent outside it gets exit 1 `… is outside nudge's scope, so nothing
+  was sent. …` and no request; `nudge test` ignores scope.
 - `notify-errors` exit 1 for empty message, unknown desk, no/invalid config, several desks without default,
   webhook 401/404/500 (body text included) and unreachable webhook; exit 2 for usage errors and bad `--status`.
 - `test-ping` sends the fixed test message to the default or `--desk` desk.
@@ -33,7 +41,8 @@ Preconditions:
 - For pane/agent detection: `$VN herdr agent-pane` (agent `claude-1` in `p_1`), or a custom fixture file passed to `$VN herdr FILE.json`.
 - For git fields: `$VN git-repo repo feature/x git@github.com:acme/api.git`.
 
-- **Plain notify.** Run `$VN run --expect 0 -- notify Finished the auth refactor`. stdout `Notified desk "desk" (status done, HTTP 200) as agent <none>.`; stderr carries the `--agent NAME or set NUDGE_AGENT` note; `webhook[0]` is `POST /hook` with `authorization: Bearer good-token-…`, `content-type: application/json`, `user-agent: nudge/<version>` and `from_agent: null`, `repo: null`.
+- **Plain notify.** Run `$VN run --expect 0 -- notify Finished the auth refactor`. stdout `Notified desk "desk" (status done, HTTP 200) as agent <none>.`; stderr carries the `--agent NAME or set NUDGE_AGENT` note; `webhook[0]` is `POST /hook` with `authorization: Bearer good-token-…`, `content-type: application/json`, `user-agent: nudge/<version>`, no `x-nudge-*` headers, and a body with `id: "<uuid>"`, `sent_at: "<sent_at>"`, `from_agent: null`, `repo: null`; `contract_problems` is `[]`.
+- **Signed desk.** Run `$VN run --expect 0 -- notify --desk signed hi` and `$VN run -- test --desk signed`. Each `webhook[0]` is `POST /signed` with `x-nudge-timestamp: "<ts>"`, `x-nudge-signature: "sha256=<hmac>"` and `signature: "valid:signed-desk"`; `secret_leaks` is `[]`.
 - **Stdin.** Run `$VN run --stdin 'Line one\nLine two\n' --expect 0 -- notify -`. Body `message` is `Line one\nLine two`.
 - **Desk and status.** Run `$VN run --expect 0 -- notify --desk research --status blocked Need the DB password`. stdout names desk `research`, status `blocked`.
 - **Agent from flag/env.** Run `$VN run --env NUDGE_AGENT=env-agent -- notify hi` then `$VN run -- notify --agent "my agent's pane" hi`. Bodies carry the agent; the second `reply_hint` is `reply with: herdr agent prompt 'my agent'\''s pane' "..."`.
@@ -55,3 +64,6 @@ Preconditions:
 - The unreachable-webhook message embeds the HTTP client's own error text (currently `io: Connection refused (os
   error 111)`); it changes if the HTTP stack changes, and the parity diff shows it.
 - `--status` is validated before the config is read, so a bad status exits 2 even without a config.
+- `<uuid>`/`<sent_at>`/`<ts>` only replace well-formed values; anything else stays raw in the record and shows up in
+  `contract_problems` (session) or `check_failures` (parity). A signature can only be checked on `/signed`; the fake
+  desk knows the seeded secret and parity's setup secret, nothing else.

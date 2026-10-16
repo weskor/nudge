@@ -16,6 +16,9 @@ mode 600 in a mode 700 directory. In a terminal it then offers herdr auto-notify
 - `setup-auth-prefix` strips a pasted `Authorization:` prefix (any case, spaces trimmed).
 - `setup-validation` rejects non-https URLs (http only for localhost), non-printable header, placeholder values,
   bad desk names.
+- `setup-signing-secret` `--signing-secret VALUE` (printable ASCII, 16+ characters) saves `signing_secret` for the
+  desk, and the test ping is already signed; re-running setup without the flag keeps the saved secret; the flag
+  again replaces it. The secret never appears in output; invalid values exit 1 with nothing saved.
 - `setup-tty-clipboard` Enter on an empty prompt reads the clipboard (wl-paste, then xclip, then `env DISPLAY=:0 xclip`).
 - `setup-tty-manual` with no clipboard text asks to paste/type; Enter keeps the current value on update.
 - `setup-tty-hidden` the header is never echoed; only `Bearer ••••••••<last4> (N characters)` is shown.
@@ -26,7 +29,7 @@ mode 600 in a mode 700 directory. In a terminal it then offers herdr auto-notify
 
 ## How to get to it (user POV)
 
-- `nudge setup [--desk NAME] [--url URL] [--authorization VALUE] [--description TEXT] [--default] [--no-test]` in a terminal.
+- `nudge setup [--desk NAME] [--url URL] [--authorization VALUE] [--description TEXT] [--signing-secret VALUE] [--default] [--no-test]` in a terminal.
 - `printf '%s\n%s\n' "$URL" "Bearer $TOKEN" | nudge setup` (no terminal).
 - herdr action `weskor.nudge.setup` opens `nudge setup --pane` in an overlay (see plugin-actions.md for the action itself).
 
@@ -44,6 +47,7 @@ Preconditions:
 - **No test.** Run `$VN run --expect 0 -- setup --url "$URL" --authorization 'Bearer wrong-token-0123456789abcdef' --no-test`. `webhook` is `[]`, config saved.
 - **Two desks + default.** After the flags step run `$VN run -- setup --desk research --url "$URL" --authorization "$GOOD"`, `$VN run -- list` (`* desk`), `$VN run --stdin '' -- setup --desk research --default`, `$VN run -- list` (`* research`).
 - **Prefix stripped.** Run `$VN run -- setup --url "$URL" --authorization "Authorization: $GOOD"`. Saved `authorization` has no prefix; the ping used it.
+- **Signing secret.** Run `$VN run --expect 0 -- setup --url "${URL%/hook}/signed" --authorization "$GOOD" --signing-secret setup-secret-fedcba9876543210`. The ping is `POST /signed` with `signature: "valid:setup"`; `files.config.text` has `signing_secret = "setup-secret-fedcba9876543210"`; `secret_leaks` is `[]`. Then `$VN run --stdin '' -- setup --description again`: the secret line is still there and the ping is still `valid:setup`. `--signing-secret too-short` exits 1 with `files.config: null`.
 - **Interactive, clipboard.** `$VN herdr running; $VN clip "$URL"`, then `$VN pty --expect '1/2 Copy the Webhook URL[^\n]*›' --send '\r' --expect '2/2 Copy the Authorization header[^\n]*›' --clip "$GOOD" --send '\r' --expect 'Turn on auto-notify\?[^\n]*›' --send '\r' --expect 'Install the[^\n]*›' --send '\r' --expect 'Done\.' --expect-exit 0 -- setup`. Output shows the URL, `Bearer ••••••••cdef (34 characters)`, `Testing… ✓ HTTP 200`, `Saved "desk" as the default desk`; `files.state.json.auto` is `true`; `files.command_link.target` is `<NUDGE_ROOT>/bin/nudge`; `secret_leaks` is `[]`.
 - **Interactive, typed + re-ask.** `$VN clip --clear`, then `$VN pty --expect '1/2 Copy the Webhook URL[^\n]*›' --send '\r' --expect 'Paste or type the Webhook URL[^\n]*›' --send "$URL\r" --expect '2/2 Copy the Authorization header[^\n]*›' --send 'Bearer wrong-token-0123456789abcdef\r' --expect 'rejected the Authorization header' --expect '↻ Copy the Authorization header[^\n]*›' --send "$GOOD\r" --expect 'Install the[^\n]*›' --send 'n\r' --expect 'Done\.' -- setup --desk manual`. Two requests (wrong then good token); neither token text appears in `output`.
 - **Ctrl-C.** Run `$VN pty --expect '1/2 Copy the Webhook URL[^\n]*›' --send '\x03' --expect 'Cancelled; nothing saved\.' --expect-exit 1 -- setup`. `files.config` is `null`, `webhook` `[]`.
@@ -59,3 +63,6 @@ Preconditions:
 - The masked preview reveals the last 4 characters only for secrets of 16+ characters after the scheme.
 - `Install the nudge command` is skipped when a `nudge` link already exists in the sandbox home; seed or remove it
   deliberately.
+- The fake `/signed` desk only knows `sign-secret-0123456789abcdef` (label `signed-desk`) and
+  `setup-secret-fedcba9876543210` (label `setup`); any other secret is reported `invalid` and answered 401, which
+  setup reports as a rejected Authorization header.
