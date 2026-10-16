@@ -14,7 +14,8 @@ Session commands (one long-lived sandbox + fake webhook; evidence in <repo>/.ver
   verify-nudge git-repo NAME BRANCH [ORIGIN]   create <sandbox>/NAME as a git repo (use with run --cwd NAME)
   verify-nudge link TARGET | --file | --remove  set <sandbox>/home/.local/bin/nudge ({NUDGE_ROOT} expands)
   verify-nudge run [--stdin TEXT] [--stdin-file F] [--env K=V]... [--cwd DIR] [--expect N] -- ARGS...
-  verify-nudge pty [--env K=V]... [--cwd DIR] [--expect-exit N] (--expect RE | --send TEXT | --clip TEXT)... -- ARGS...
+  verify-nudge pty [--env K=V]... [--cwd DIR] [--expect-exit N] (--expect RE | --screen RE | --send TEXT | --clip TEXT)... -- ARGS...
+                                           --screen matches the rendered screen (full-screen UIs like `settings`)
   verify-nudge mcp [--env K=V]... [--call TOOL JSON]...
   verify-nudge files | requests | env
   verify-nudge cleanup                     kill what launch started, delete scratch; keep evidence
@@ -102,6 +103,182 @@ def unescape(text):
 
 def now_ms():
     return int(time.time() * 1000)
+
+
+# --------------------------------------------------------------------------------------------- terminal screen
+
+
+PTY_ROWS, PTY_COLS = 40, 120
+TERMINAL_TOKEN = re.compile(
+    r"\x1b\[([0-9;:?<>=]*)[ -/]*([@-~])"     # CSI
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"    # OSC
+    r"|\x1b[()*+][0-9A-Za-z]"                # charset designation
+    r"|\x1b(.)"                              # other two-byte escapes
+    r"|([\x00-\x1f\x7f])"                    # C0 controls
+    r"|([^\x00-\x1f\x7f\x1b]+)",             # printable text
+    re.S,
+)
+
+
+class Screen:
+    """Just enough of a VT/xterm screen to read what a full-screen (ratatui/crossterm) UI shows: cursor moves,
+    erases, the alternate screen, auto-wrap, and which cells are drawn in reverse video (the selected row).
+    Colors and other attributes are ignored. Every character is one column wide."""
+
+    def __init__(self, rows=PTY_ROWS, cols=PTY_COLS):
+        self.rows, self.cols = rows, cols
+        self.main = self._blank()
+        self.alt = self._blank()
+        self.grid = self.main
+        self.r = self.c = 0
+        self.saved = (0, 0)
+        self.reverse = False
+
+    def _blank(self):
+        return {"cells": [[(" ", False)] * self.cols for _ in range(self.rows)], "wrapped": [False] * self.rows}
+
+    def _linefeed(self):
+        if self.r < self.rows - 1:
+            self.r += 1
+            return
+        cells, wrapped = self.grid["cells"], self.grid["wrapped"]
+        cells.pop(0)
+        wrapped.pop(0)
+        cells.append([(" ", False)] * self.cols)
+        wrapped.append(False)
+
+    def _erase(self, row, start, end):
+        cells = self.grid["cells"][row]
+        for col in range(max(0, start), min(self.cols, end)):
+            cells[col] = (" ", False)
+        if end >= self.cols:
+            self.grid["wrapped"][row] = False
+
+    def _sgr(self, params):
+        codes = [int(p) if p.isdigit() else 0 for p in (params.replace(":", ";").split(";") if params else ["0"])]
+        i = 0
+        while i < len(codes):
+            code = codes[i]
+            if code in (38, 48, 58):  # extended color: skip its arguments
+                i += 3 if i + 1 < len(codes) and codes[i + 1] == 5 else 5
+                continue
+            if code == 0:
+                self.reverse = False
+            elif code == 7:
+                self.reverse = True
+            elif code == 27:
+                self.reverse = False
+            i += 1
+
+    def _csi(self, params, final):
+        private = params.startswith("?")
+        nums = [int(p) if p.isdigit() else None for p in params.lstrip("?<>=").split(";")] if params else []
+        arg = lambda i, default=1: nums[i] if i < len(nums) and nums[i] else default
+        clamp_r = lambda v: max(0, min(self.rows - 1, v))
+        clamp_c = lambda v: max(0, min(self.cols - 1, v))
+        if final in "Hf":
+            self.r, self.c = clamp_r(arg(0) - 1), clamp_c(arg(1) - 1)
+        elif final == "A":
+            self.r = clamp_r(self.r - arg(0))
+        elif final in "Be":
+            self.r = clamp_r(self.r + arg(0))
+        elif final in "Ca":
+            self.c = clamp_c(self.c + arg(0))
+        elif final == "D":
+            self.c = clamp_c(min(self.c, self.cols - 1) - arg(0))
+        elif final == "E":
+            self.r, self.c = clamp_r(self.r + arg(0)), 0
+        elif final == "F":
+            self.r, self.c = clamp_r(self.r - arg(0)), 0
+        elif final in "G`":
+            self.c = clamp_c(arg(0) - 1)
+        elif final == "d":
+            self.r = clamp_r(arg(0) - 1)
+        elif final == "J":
+            mode = arg(0, 0)
+            if mode == 0:
+                self._erase(self.r, self.c, self.cols)
+                for row in range(self.r + 1, self.rows):
+                    self._erase(row, 0, self.cols)
+            elif mode == 1:
+                for row in range(self.r):
+                    self._erase(row, 0, self.cols)
+                self._erase(self.r, 0, self.c + 1)
+            else:
+                for row in range(self.rows):
+                    self._erase(row, 0, self.cols)
+        elif final == "K":
+            mode = arg(0, 0)
+            start, end = {0: (self.c, self.cols), 1: (0, self.c + 1)}.get(mode, (0, self.cols))
+            self._erase(self.r, start, end)
+        elif final == "X":
+            self._erase(self.r, self.c, self.c + arg(0))
+        elif final == "m" and not private:
+            self._sgr(params)
+        elif final in "hl" and private and any(n in (47, 1047, 1049) for n in nums):
+            if final == "h" and self.grid is self.main:
+                self.saved = (self.r, self.c)
+                self.alt = self._blank()
+                self.grid = self.alt
+            elif final == "l" and self.grid is self.alt:
+                self.grid = self.main
+                self.r, self.c = self.saved
+        elif final == "s":
+            self.saved = (self.r, self.c)
+        elif final == "u":
+            self.r, self.c = self.saved
+
+    def feed(self, text):
+        for m in TERMINAL_TOKEN.finditer(text):
+            if m.group(2) is not None:
+                self._csi(m.group(1), m.group(2))
+            elif m.group(3) is not None:
+                if m.group(3) == "7":
+                    self.saved = (self.r, self.c)
+                elif m.group(3) == "8":
+                    self.r, self.c = self.saved
+                elif m.group(3) == "c":
+                    self.__init__(self.rows, self.cols)
+            elif m.group(4) is not None:
+                ch = m.group(4)
+                if ch == "\r":
+                    self.c = 0
+                elif ch in "\n\x0b\x0c":
+                    self._linefeed()
+                elif ch == "\b":
+                    self.c = max(0, min(self.c, self.cols - 1) - 1)
+                elif ch == "\t":
+                    self.c = min(self.cols - 1, (self.c // 8 + 1) * 8)
+            elif m.group(5) is not None:
+                for ch in m.group(5):
+                    if self.c >= self.cols:  # deferred auto-wrap
+                        self.grid["wrapped"][self.r] = True
+                        self.c = 0
+                        self._linefeed()
+                    self.grid["cells"][self.r][self.c] = (ch, self.reverse)
+                    self.c += 1
+        return self
+
+    def text(self, grid=None, marks=True):
+        """The screen as lines (trailing blanks dropped). With `marks`, each line starts with "> " when any of its
+        cells is in reverse video (the highlighted row), else "  ". Without, soft-wrapped lines are joined."""
+        grid = grid or self.grid
+        lines = []
+        continuing = False
+        for cells, wrapped in zip(grid["cells"], grid["wrapped"]):
+            line = "".join(ch for ch, _ in cells)
+            if marks:
+                lines.append(("> " if any(rev for _, rev in cells) else "  ") + line.rstrip())
+                continue
+            piece = line if wrapped else line.rstrip()
+            if continuing:
+                lines[-1] += piece
+            else:
+                lines.append(piece)
+            continuing = wrapped
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return lines
 
 
 # --------------------------------------------------------------------------------------------- fake webhook
@@ -258,6 +435,26 @@ def workspaces_fixture(agent_list=True):
         pane_read("wD:p1", PANE_TEXT), pane_read("wE:p2", PANE_TEXT),
         rule(["agent", "list"], {"result": {"agents": agents if agent_list else []}}),
     )
+
+
+# `nudge settings` lists every open workspace (label, else id) and agent (name, else pane id).
+SETTINGS_WORKSPACES = [
+    {"workspace_id": "wD", "label": "api-work", "number": 1, "focused": True},
+    {"workspace_id": "wE", "label": "web-work", "number": 2, "focused": False},
+    {"workspace_id": "wF", "label": "", "number": 3, "focused": False},
+]
+SETTINGS_AGENTS = [
+    {"name": "claude-1", "pane_id": "wD:p1", "workspace_id": "wD", "cwd": "/srv/api", "focused": True},
+    {"name": "reviewer", "pane_id": "wE:p2", "workspace_id": "wE", "cwd": "/srv/web", "focused": False},
+    {"pane_id": "wF:p4", "workspace_id": "wF", "cwd": "/srv/misc", "focused": False},
+]
+
+
+def settings_herdr(workspaces=SETTINGS_WORKSPACES, agents=SETTINGS_AGENTS):
+    """herdr for `nudge settings`: `workspace list` / `agent list` (herdr's JSON shapes), toasts succeed."""
+    return fixture(HERDR_VERSION, NOTIFICATION_OK,
+                   rule(["workspace", "list"], {"id": "cli:workspace:list", "result": {"workspaces": workspaces}}),
+                   rule(["agent", "list"], {"id": "cli:agent:list", "result": {"agents": agents}}))
 
 
 PRESETS = {
@@ -489,11 +686,16 @@ class Sandbox:
         return record
 
     def run_pty(self, args, script, env=None, cwd=None, timeout=15):
+        """Steps: ["expect", RE] (raw output after the previous match), ["screen", RE] (the rendered screen, see
+        Screen; multiline mode), ["send", TEXT], ["clip", TEXT]. With any "screen" step the record keeps the screens
+        it matched (`screens`) and the text left on the normal screen (`output`) instead of the raw bytes."""
         import fcntl
         import termios
+        # Compile first: a bad pattern must not leave a child waiting on a terminal nobody reads.
+        patterns = {i: re.compile(arg, re.M if op == "screen" else 0) for i, (op, arg) in enumerate(script) if op in ("expect", "screen")}
         self.mark()
         master, slave = os.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", PTY_ROWS, PTY_COLS, 0, 0))
 
         def controlling_tty():
             os.setsid()
@@ -520,11 +722,23 @@ class Sandbox:
                 else:
                     eof = True
 
+        def rendered():
+            return Screen().feed(buf.decode(errors="replace")).text()
+
+        def settle(deadline, quiet=0.25):
+            """Read until the program has written nothing for `quiet` s (it is waiting for a key)."""
+            last, since = len(buf), time.time()
+            while not eof and time.time() < deadline and time.time() - since < quiet:
+                pump(0.05)
+                if len(buf) != last:
+                    last, since = len(buf), time.time()
+
         pos = 0
         failures = []
-        for op, arg in script:
+        screens = []
+        for i, (op, arg) in enumerate(script):
             if op == "expect":
-                pattern = re.compile(arg)
+                pattern = patterns[i]
                 deadline = time.time() + timeout
                 while True:
                     text = buf.decode(errors="replace")
@@ -534,6 +748,21 @@ class Sandbox:
                         break
                     if eof or time.time() > deadline:
                         failures.append(f"expect {arg!r} not seen")
+                        break
+                    pump(0.05)
+            elif op == "screen":
+                pattern = patterns[i]
+                deadline = time.time() + timeout
+                while True:
+                    if pattern.search("\n".join(rendered())):
+                        settle(deadline)
+                        lines = rendered()
+                        if pattern.search("\n".join(lines)):
+                            screens.append({"screen": arg, "lines": lines})
+                            break
+                    if eof or time.time() > deadline:
+                        failures.append(f"screen {arg!r} not seen")
+                        screens.append({"screen": arg, "lines": rendered(), "not_seen": True})
                         break
                     pump(0.05)
             elif op == "send":
@@ -554,8 +783,14 @@ class Sandbox:
             proc.wait()
             code = "timeout"
         os.close(master)
+        raw = buf.decode(errors="replace")
         record = {"kind": "pty", "argv": args, "script": [list(s) for s in script], "env": env or {}, "exit": code,
-                  "output": buf.decode(errors="replace"), "expect_failures": failures}
+                  "output": raw, "expect_failures": failures}
+        if any(op == "screen" for op, _ in script):
+            # ratatui redraws only changed cells, so the raw bytes are cursor-addressed fragments; keep what was on
+            # screen instead (the raw bytes still go through the secret check, then are dropped by Normalizer).
+            final = Screen().feed(raw)
+            record.update(output="\n".join(final.text(final.main, marks=False)), screens=screens, raw_output=raw)
         record.update(self.side_effects())
         record["files"] = self.files()
         return record
@@ -690,6 +925,7 @@ class Normalizer:
     def record(self, rec, t1):
         rec = dict(rec)
         files = rec.pop("files", None)
+        rec.pop("raw_output", None)  # screen-mode PTY steps: kept for the secret check only
         if "webhook" in rec:
             rec["webhook"] = [self.webhook_request(r) for r in rec["webhook"]]
         rec = self.value(rec, t1)
@@ -728,7 +964,8 @@ class Normalizer:
 def secret_leaks(rec):
     """Desk secrets (Authorization tokens, signing secrets) found in anything nudge showed or sent outside the
     Authorization header: output, MCP responses, webhook bodies, herdr toasts."""
-    texts = [rec.get(k) for k in ("stdout", "stderr", "output")]
+    texts = [rec.get(k) for k in ("stdout", "stderr", "output", "raw_output")]
+    texts += ["\n".join(s["lines"]) for s in rec.get("screens", [])]
     texts += [json.dumps(r, ensure_ascii=False) for r in rec.get("responses_by_id", {}).values()]
     texts += [json.dumps(r.get("body"), ensure_ascii=False) for r in rec.get("webhook", [])]
     texts += [json.dumps(c, ensure_ascii=False) for c in rec.get("herdr_calls", [])]
@@ -908,7 +1145,7 @@ def parse_common(argv, allowed):
         if flag == "--env":
             key, _, value = next(it).partition("=")
             opts["env"][key] = value
-        elif flag in ("--expect", "--send", "--clip") and allowed.get(flag) == "step":
+        elif flag in ("--expect", "--screen", "--send", "--clip") and allowed.get(flag) == "step":
             opts["steps"].append([flag[2:], next(it)])
         elif flag == "--call":
             opts["calls"].append((next(it), json.loads(next(it))))
@@ -960,7 +1197,8 @@ def cmd_run(argv):
 def cmd_pty(argv):
     s = load_session()
     sb = session_sandbox(s)
-    opts, rest = parse_common(argv, {"--env": 1, "--cwd": 1, "--expect-exit": 1, "--expect": "step", "--send": "step", "--clip": "step"})
+    opts, rest = parse_common(argv, {"--env": 1, "--cwd": 1, "--expect-exit": 1, "--expect": "step", "--screen": "step",
+                                     "--send": "step", "--clip": "step"})
     t0 = now_ms()
     rec = sb.run_pty(rest, opts["steps"], env=opts["env"], cwd=opts.get("cwd"))
     report(s, sb, rec, t0, "pty-" + slug(rest))
@@ -1114,8 +1352,9 @@ def cmd(args, stdin=None, env=None, cwd=None, expect=None, **asserts):
     return {"do": "cmd", "argv": args, "stdin": stdin, "env": env, "cwd": cwd, "expect": expect, **asserts}
 
 
-def pty(args, script, env=None, expect=None):
-    return {"do": "pty", "argv": args, "script": script, "env": env, "expect": expect}
+def pty(args, script, env=None, expect=None, **asserts):
+    """`script` steps: ["expect"|"screen", RE], ["send", TEXT], ["clip", TEXT] (see Sandbox.run_pty); asserts as cmd."""
+    return {"do": "pty", "argv": args, "script": script, "env": env, "expect": expect, **asserts}
 
 
 def event(status, pane="p_1", env=None, expect=0, **asserts):
@@ -1134,34 +1373,66 @@ def toasts_of(rec):
     return sorted(c[4] for c in rec.get("herdr_calls", []) if c[:4] == ["notification", "show", "nudge", "--body"] and len(c) > 4)
 
 
-def step_assertions(rec, op):
+def shown_texts(rec):
+    """Everything nudge showed: stdout, stderr, PTY output and screens, MCP responses."""
+    texts = [rec.get(k) or "" for k in ("stdout", "stderr", "output")]
+    texts += ["\n".join(s["lines"]) for s in rec.get("screens", [])]
+    return texts + [json.dumps(r, ensure_ascii=False) for r in rec.get("responses_by_id", {}).values()]
+
+
+def step_assertions(rec, op, config_before=None):
     """Contract assertions a scenario step opted into:
-    sends=N          the desk received exactly N requests
-    toasts=[...]     the herdr toasts (`notification show nudge --body X`) are exactly these bodies
-    has=TEXT         TEXT appears in stdout, stderr, PTY output or an MCP response
-    scope_is=(W, A)  the config file's [scope] has workspaces W and agents A (absent = [])"""
+    sends=N              the desk received exactly N requests
+    toasts=[...]         the herdr toasts (`notification show nudge --body X`) are exactly these bodies
+    has=TEXT|[TEXT...]   each TEXT appears in stdout, stderr, PTY output/screens or an MCP response
+    lacks=[TEXT...]      none of these appear there
+    scope_is=(W, A)      the config file's [scope] has workspaces W and agents A (absent = [])
+    config_keys={K: V}   the config's top-level key K parses to V (None = absent), e.g. {"auto": {...}, "scope": None}
+    state_auto=BOOL      state.json `auto` after the step
+    config_mode=MODE     the config file's permission bits, e.g. "600"
+    herdr_has=[ARGV...]  each of these herdr calls was made (exact argv)
+    config_unchanged=1   the config text is byte-for-byte what it was before the step"""
     problems = []
+    cfg = (rec.get("files") or {}).get("config")
     if op.get("sends") is not None and len(rec.get("webhook", [])) != op["sends"]:
         problems.append(f"desk received {len(rec.get('webhook', []))} requests, expected {op['sends']}")
     if op.get("toasts") is not None and toasts_of(rec) != sorted(op["toasts"]):
         problems.append(f"toasts {toasts_of(rec)}, expected {sorted(op['toasts'])}")
-    if op.get("has") is not None:
-        texts = [rec.get(k) or "" for k in ("stdout", "stderr", "output")]
-        texts += [json.dumps(r, ensure_ascii=False) for r in rec.get("responses_by_id", {}).values()]
-        if not any(op["has"] in t for t in texts):
-            problems.append(f"{op['has']!r} not in the output")
+    for text in [op["has"]] if isinstance(op.get("has"), str) else op.get("has") or []:
+        if not any(text in t for t in shown_texts(rec)):
+            problems.append(f"{text!r} not in the output")
+    for text in op.get("lacks") or []:
+        if any(text in t for t in shown_texts(rec)):
+            problems.append(f"{text!r} shown, expected absent")
+    if op.get("state_auto") is not None:
+        got = ((rec.get("files") or {}).get("state") or {}).get("json", {}).get("auto")
+        if got != op["state_auto"]:
+            problems.append(f"state.json auto is {got}, expected {op['state_auto']}")
+    if op.get("config_unchanged") and (cfg or {}).get("text") != config_before:
+        problems.append("config text changed, expected unchanged")
+    if op.get("config_mode") is not None and (cfg or {}).get("mode") != op["config_mode"]:
+        problems.append(f"config mode {(cfg or {}).get('mode')}, expected {op['config_mode']}")
+    for argv in op.get("herdr_has") or []:
+        if argv not in rec.get("herdr_calls", []):
+            problems.append(f"no herdr call {argv}")
+    if op.get("scope_is") is None and op.get("config_keys") is None:
+        return problems
+    if tomllib is None:
+        return problems + ["harness: scope_is/config_keys need python >= 3.11 (tomllib)"]
+    try:
+        parsed = tomllib.loads(cfg["text"]) if cfg else "no config file"
+    except tomllib.TOMLDecodeError as e:
+        parsed = f"unparseable config: {e}"
     if op.get("scope_is") is not None:
         want = {"workspaces": list(op["scope_is"][0]), "agents": list(op["scope_is"][1])}
-        cfg = (rec.get("files") or {}).get("config")
-        if tomllib is None:
-            return problems + ["harness: scope_is needs python >= 3.11 (tomllib)"]
-        try:
-            got_scope = tomllib.loads(cfg["text"]).get("scope", {}) if cfg else "no config file"
-        except tomllib.TOMLDecodeError as e:
-            got_scope = f"unparseable config: {e}"
+        got_scope = parsed.get("scope", {}) if isinstance(parsed, dict) else parsed
         got = {k: got_scope.get(k, []) for k in want} if isinstance(got_scope, dict) else got_scope
         if got != want:
             problems.append(f"config [scope] is {got}, expected {want}")
+    for key, want in (op.get("config_keys") or {}).items():
+        got = parsed.get(key) if isinstance(parsed, dict) else parsed
+        if got != want:
+            problems.append(f"config {key} is {got!r}, expected {want!r}")
     return problems
 
 
@@ -1236,6 +1507,35 @@ AGENT_HERDR = fixture(HERDR_VERSION, NOTIFICATION_OK, NO_AGENTS)
 
 def setup_tty_url_prompt():
     return ["expect", r"1/2 Copy the Webhook URL[^\n]*›"]
+
+
+def on_screen(*parts, cursor=None):
+    """A `screen` step: the literal `parts` appear on the rendered screen in this order; `cursor` is literal text on
+    the highlighted (reverse-video) row."""
+    pattern = r"(?s)\A(?=.*" + ".*".join(re.escape(p) for p in parts) + ")"
+    if cursor is not None:
+        pattern += rf"(?=.*^> [^\n]*{re.escape(cursor)})"
+    return ["screen", pattern]
+
+
+ESCAPE_SEQUENCE = r"\x1b\[[0-9;?]*[ -/]*[@-~]"
+
+
+def drawn(text):
+    """An `expect` step for `text` drawn by ratatui onto blank cells: style codes may sit between its characters,
+    and a space may be a cursor jump over a cell that was already blank."""
+    return ["expect", f"(?:{ESCAPE_SEQUENCE})*".join(f"(?: |(?:{ESCAPE_SEQUENCE})+)" if ch == " " else re.escape(ch) for ch in text)]
+
+
+def keys(text):
+    return ["send", text]
+
+
+SETTINGS_HELP = "↑↓ move  space pick  ←→ change  t test  s save  q quit"
+SETTINGS_UNSAVED = "Unsaved changes: press q again to discard them, or s to save."
+SETTINGS_NOTHING_TICKED = "Tick at least one workspace or agent, or choose Every agent."
+UP, DOWN, LEFT, RIGHT, ESC, CTRL_C = "\\e[A", "\\e[B", "\\e[D", "\\e[C", "\\e", "\\x03"
+
 
 
 def scenarios():
@@ -1630,6 +1930,120 @@ def scenarios():
     add("doctor-scope-all", config(), cmd(["doctor"], expect=0, has="Scope: all agents"))
     add("doctor-scope-lists", config(extra=scope(workspaces=["api-work", "wE"], agents=["claude-1"])),
         cmd(["doctor"], expect=0, has="Scope: workspaces"))
+
+    # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Toast, 2 Shortest turn, 3 Cooldown, 4 Terminal lines,
+    # 5 Every agent, 6 Only these, then one per workspace, agent and desk. settings_herdr() lists workspaces api-work,
+    # web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4 (unnamed): rows 7-9, 10-12, desks 13-19
+    # (desk, research, badauth, nohook, broken, offline, signed).
+    set_herdr = herdr(settings_herdr())
+    hidden = ["/hook", "/signed", "/nope", "/fail", "Bearer"]  # desk rows never show URL paths or secrets
+    saved, unchanged = "Saved nudge settings to ", "No changes saved."
+    add("settings-no-terminal", config(), set_herdr,
+        cmd(["settings"], expect=2, sends=0, config_unchanged=True,
+            has=["nudge: settings needs a terminal; edit ", "/home/.config/nudge/config.toml instead (see config.example.toml)"]),
+        cmd(["settings", "--pane"], expect=2, toasts=[], config_unchanged=True, has="settings needs a terminal"),
+        cmd(["settings", "extra"], expect=2))
+    add("settings-no-terminal-no-config", cmd(["settings"], expect=2, has="settings needs a terminal"))
+    add("settings-no-config", set_herdr,
+        pty(["settings"], [["expect", r'nudge: no config at [^\n]*Run "nudge setup" to add a desk\.']], expect=1))
+    add("settings-render", config(), set_herdr, state({"auto": True}),
+        pty(["settings"], [
+            on_screen("nudge settings", "Automatic notifications", "[x] Auto-notify", "[x] Toast when one is sent",
+                      "Shortest turn sent    ◂ 2 minutes ▸", "Cooldown per pane     ◂ 5 minutes ▸", "Terminal lines sent   ◂ 40 ▸",
+                      "Who can notify", "(•) Every agent", "( ) Only these:",
+                      "Workspaces", "[ ] api-work", "[ ] web-work", "[ ] wF ", "Agents", "[ ] claude-1", "[ ] reviewer", "[ ] wF:p4",
+                      "Desk the plugin notifies", "(•) desk  127.0.0.1", "( ) research  127.0.0.1", "( ) signed  127.0.0.1  signed",
+                      SETTINGS_HELP, cursor="[x] Auto-notify"),
+            keys("q")], expect=0, has=unchanged, lacks=hidden, sends=0, toasts=[], config_unchanged=True,
+            herdr_has=[["workspace", "list"], ["agent", "list"]]))
+    add("settings-cursor-no-herdr", config(), herdr(None),
+        pty(["settings"], [
+            on_screen("Workspaces", "none open in herdr", "Agents", "none open in herdr", cursor="[ ] Auto-notify"),
+            keys("k" + UP),  # already at the top
+            keys("jjjjjjj"), on_screen(cursor="(•) desk  127.0.0.1"),  # headers, blanks, "none open" are not stops
+            keys("j" * 10), on_screen(cursor="( ) signed  127.0.0.1  signed"),  # clamps at the last desk
+            keys(UP), on_screen(cursor="( ) offline  127.0.0.1"),
+            keys("q")], expect=0, has=unchanged, config_unchanged=True))
+    add("settings-save", config(), set_herdr, state({"auto": True}),
+        pty(["settings"], [
+            on_screen("[x] Auto-notify", cursor="[x] Auto-notify"),
+            keys(" "), on_screen(cursor="[ ] Auto-notify"),
+            keys("jj" + RIGHT), on_screen(cursor="Shortest turn sent    ◂ 3 minutes ▸"),
+            keys("+"), on_screen(cursor="◂ 5 minutes ▸"),
+            keys("h"), on_screen(cursor="Shortest turn sent    ◂ 3 minutes ▸"),
+            keys("j\\r"), on_screen(cursor="Cooldown per pane     ◂ 10 minutes ▸"),  # Enter cycles up
+            keys("j" + LEFT), on_screen(cursor="Terminal lines sent   ◂ 20 ▸"),
+            keys("--"), on_screen(cursor="Terminal lines sent   ◂ 10 ▸"),  # the second "-" stays at the smallest preset
+            keys("l"), on_screen(cursor="Terminal lines sent   ◂ 20 ▸"),
+            keys("jjj "), on_screen("( ) Every agent", "(•) Only these:", cursor="[x] api-work"),  # ticking selects Only these
+            keys("jjjj\\r"), on_screen(cursor="[x] reviewer"),
+            keys("jjj\\r"), on_screen("( ) desk  127.0.0.1", cursor="(•) research  127.0.0.1"),
+            keys("s")], expect=0, has=saved, sends=0, toasts=[], state_auto=False, config_mode="600",
+            config_keys={"default_desk": "research", "auto": {"min_turn_seconds": 180, "cooldown_seconds": 600, "tail_lines": 20},
+                         "scope": {"workspaces": ["api-work"], "agents": ["reviewer"]}}),
+        cmd(["list"], expect=0),
+        pty(["settings"], [
+            on_screen("[ ] Auto-notify", "◂ 3 minutes ▸", "◂ 10 minutes ▸", "◂ 20 ▸", "( ) Every agent", "(•) Only these:",
+                      "[x] api-work", "[ ] web-work", "[ ] claude-1", "[x] reviewer", "( ) desk", "(•) research"),
+            keys("q")], expect=0, has=unchanged, config_unchanged=True))
+    add("settings-presets-snap-and-wrap", config(extra=auto(min_turn_seconds=90, cooldown_seconds=45, tail_lines=200)), set_herdr,
+        pty(["settings"], [
+            on_screen("◂ 90 seconds ▸", "◂ 45 seconds ▸", "◂ 200 ▸"),
+            keys("j "), on_screen(cursor="[ ] Toast when one is sent"),
+            keys("jl"), on_screen(cursor="◂ 2 minutes ▸"),  # 90 s snaps up to the 120 s preset
+            keys("jh"), on_screen(cursor="◂ 0 seconds ▸"),  # 45 s snaps down to 0
+            keys("j "), on_screen(cursor="Terminal lines sent   ◂ 10 ▸"),  # Space cycles up and wraps 200 -> 10
+            keys("s")], expect=0, has=saved, state_auto=False,
+            config_keys={"auto": {"toast": False, "cooldown_seconds": 0, "tail_lines": 10}, "scope": None, "default_desk": "desk"}))
+    add("settings-only-these-empty-then-discard", config(), set_herdr, state({"auto": True}),
+        pty(["settings"], [
+            on_screen(cursor="[x] Auto-notify"),
+            keys("jjjjjj "), on_screen("( ) Every agent", cursor="(•) Only these:"),
+            keys("s"), on_screen(SETTINGS_NOTHING_TICKED),
+            keys("q"), on_screen(SETTINGS_UNSAVED, cursor="(•) Only these:"),
+            keys("j"), on_screen(SETTINGS_UNSAVED, cursor="[ ] api-work"),  # another key disarms the discard...
+            keys(ESC), on_screen(SETTINGS_UNSAVED, cursor="[ ] api-work"),  # ...so Esc only warns again
+            keys(CTRL_C)], expect=0, has=unchanged, sends=0, toasts=[], state_auto=True, config_unchanged=True))
+    add("settings-test-ping", config(), set_herdr,
+        pty(["settings"], [
+            on_screen(SETTINGS_HELP),
+            keys("j" * 19), on_screen(cursor="( ) signed  127.0.0.1  signed"),
+            keys("t"), drawn('Testing "signed"…'), on_screen('✓ "signed" received a test ping (HTTP 200)'),
+            keys("kkkk"), on_screen(cursor="( ) badauth"),
+            # The status line is one clipped row: at 120 columns this one loses its last words ("…again with nu").
+            keys("t"), on_screen('✗ desk "badauth" webhook returned HTTP 401', "; copy the Authorization header again"),
+            keys("j"), on_screen(cursor="( ) nohook"),
+            keys("t"), on_screen('✗ desk "nohook" webhook returned HTTP 404: no such hook; copy the Webhook URL again with nudge setup'),
+            keys("k" * 16 + "t"), on_screen("Move to a desk to test it.", cursor="[ ] Auto-notify"),
+            keys("q")], expect=0, sends=3, has=unchanged, config_unchanged=True))
+    add("settings-pane", config(), set_herdr,
+        pty(["settings", "--pane"], [
+            on_screen(cursor="[ ] Auto-notify"), keys(" "), on_screen(cursor="[x] Auto-notify"), keys("s")],
+            expect=0, has=saved, toasts=["Settings saved"], state_auto=True,
+            herdr_has=[["notification", "show", "nudge", "--body", "Settings saved"]]),
+        pty(["settings", "--pane"], [on_screen(cursor="[x] Auto-notify"), keys("q")],
+            expect=0, has=unchanged, toasts=[], config_unchanged=True))
+    add("settings-scope-not-open",
+        config(extra=scope(workspaces=["api-work", "old-ws", "wE"], agents=["claude-1", "gone-agent"])), set_herdr,
+        pty(["settings"], [
+            on_screen("( ) Every agent", "(•) Only these:", "[x] api-work", "[x] web-work", "[ ] wF ", "[x] old-ws  (not open)",
+                      "[x] claude-1", "[ ] reviewer", "[ ] wF:p4", "[x] gone-agent  (not open)"),
+            keys("j" * 12 + " "), on_screen(cursor="[x] reviewer"),
+            keys("s")], expect=0, has=saved,
+            scope_is=(["api-work", "web-work", "old-ws"], ["claude-1", "reviewer", "gone-agent"])),
+        pty(["settings"], [
+            on_screen("[x] old-ws  (not open)", "[x] reviewer", "[x] gone-agent  (not open)"),
+            keys("j" * 10 + " "), on_screen(cursor="[ ] old-ws  (not open)"),
+            keys("s")], expect=0, has=saved, scope_is=(["api-work", "web-work"], ["claude-1", "reviewer", "gone-agent"])))
+    add("settings-every-agent", config(extra=scope(workspaces=["api-work"])), set_herdr,
+        pty(["settings"], [
+            on_screen("( ) Every agent", "(•) Only these:", "[x] api-work"),
+            keys("jjjjj "), on_screen(cursor="(•) Every agent"),
+            keys("s")], expect=0, has=saved, config_keys={"scope": None}))
+    add("action-settings-pane", herdr(PRESETS["running"]),
+        action("settings", sends=0, toasts=[],
+               herdr_has=[["plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "settings", "--focus"]]))
+    add("action-settings-pane-fails", action("settings", expect=1, has="could not open the settings pane"))
     return S
 
 
@@ -1676,21 +2090,21 @@ def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             open(path, "w").write(op["text"])
             setup_log.append(f"file {op['path']}")
-        elif do == "cmd":
-            env = {k: subst(v) for k, v in (op["env"] or {}).items()}
-            rec = sb.run_cmd([subst(a) for a in op["argv"]], stdin=subst(op["stdin"]), env=env, cwd=op["cwd"])
-            steps.append((rec, op))
-        elif do == "pty":
-            script = [[k, subst(v)] for k, v in op["script"]]
-            rec = sb.run_pty([subst(a) for a in op["argv"]], script, env=op["env"])
-            steps.append((rec, op))
-        elif do == "mcp":
-            rec = sb.run_mcp(op["messages"], env=op["env"])
-            steps.append((rec, op))
+        elif do in ("cmd", "pty", "mcp"):
+            before = sb.files()["config"]
+            if do == "cmd":
+                env = {k: subst(v) for k, v in (op["env"] or {}).items()}
+                rec = sb.run_cmd([subst(a) for a in op["argv"]], stdin=subst(op["stdin"]), env=env, cwd=op["cwd"])
+            elif do == "pty":
+                script = [[k, subst(v)] for k, v in op["script"]]
+                rec = sb.run_pty([subst(a) for a in op["argv"]], script, env=op["env"])
+            else:
+                rec = sb.run_mcp(op["messages"], env=op["env"])
+            steps.append((rec, op, before and before["text"]))
     t1 = now_ms()
     norm = Normalizer(sb, root, t0)
     out_steps = []
-    for i, (rec, op) in enumerate(steps, start=1):
+    for i, (rec, op, config_before) in enumerate(steps, start=1):
         leaks = secret_leaks(rec)
         if leaks:
             checks.append(f"step {i}: secret printed {sorted(set(leaks))}")
@@ -1700,7 +2114,7 @@ def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
             checks.append(f"step {i}: {rec['expect_failures']}")
         if rec.get("missing_responses"):
             checks.append(f"step {i}: no response for ids {rec['missing_responses']}")
-        checks += [f"step {i}: {problem}" for problem in contract_checks(rec) + step_assertions(rec, op)]
+        checks += [f"step {i}: {problem}" for problem in contract_checks(rec) + step_assertions(rec, op, config_before)]
         out_steps.append(norm.record(rec, t1))
     return {"name": name, "setup": [norm.text(s) for s in setup_log], "steps": out_steps, "check_failures": checks}
 
@@ -1728,13 +2142,15 @@ def cmd_parity(argv):
                 results.append({"name": name, "setup": [], "steps": [], "check_failures": [f"harness error: {type(e).__name__}: {e}"]})
         failures = [(r["name"], c) for r in results for c in r["check_failures"]]
         transcript = {
-            "harness": "verify-nudge parity v3",
+            "harness": "verify-nudge parity v4",
             "normalized": ["<RUN> = per-scenario sandbox dir", "<NUDGE_ROOT> = dirname(dirname(realpath(NUDGE_BIN)))",
                            "<PORT>/<OFFLINE_PORT> = fake webhook / closed port", "state.json epoch ms: <now>, <now-Nms> (seeded), <epoch-ms>",
                            "herdr_calls sorted (some are concurrent)", "JSON stdout and MCP responses compared as sorted-key JSON; MCP responses keyed by id",
                            "doctor 'Recent:' line ages -> <ago>", "lowercase UUID v4 -> <uuid>; YYYY-MM-DDTHH:MM:SSZ -> <sent_at>",
                            "webhook x-nudge-timestamp within 60 s -> <ts>; well-formed x-nudge-signature -> sha256=<hmac> "
-                           "(validity is the request's \"signature\" verdict); received_unix dropped"],
+                           "(validity is the request's \"signature\" verdict); received_unix dropped",
+                           "PTY steps with `screen` expectations: rendered screens (`screens`, highlighted rows '> ') and the "
+                           "normal-screen text left at exit (`output`) instead of raw bytes"],
             "scenario_count": len(results),
             "scenarios": results,
         }

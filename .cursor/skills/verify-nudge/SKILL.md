@@ -1,6 +1,6 @@
 ---
 name: verify-nudge
-description: Drive the real `nudge` CLI / herdr-plugin binary (any build, via $NUDGE_BIN) the way a user or herdr does, in a sandbox with a fake desk webhook (signature-checking), fake herdr and fake clipboard, and capture proof. Use to verify notify/list/test, setup (scripted and interactive PTY), doctor, request signing, plugin events/actions/startup, [auto] settings, [scope] and the MCP server, or to diff two builds (e.g. before/after a change, in CI) with `verify-nudge parity`.
+description: Drive the real `nudge` CLI / herdr-plugin binary (any build, via $NUDGE_BIN) the way a user or herdr does, in a sandbox with a fake desk webhook (signature-checking), fake herdr and fake clipboard, and capture proof. Use to verify notify/list/test, setup (scripted and interactive PTY), the full-screen `nudge settings` editor (PTY, rendered-screen matching), doctor, request signing, plugin events/actions/startup, [auto] settings, [scope] and the MCP server, or to diff two builds (e.g. before/after a change, in CI) with `verify-nudge parity`.
 ---
 
 # verify-nudge
@@ -99,10 +99,19 @@ lists `secret_leaks` and `contract_problems` (see Parity), and the command print
 
   Steps run in order. `--expect RE` waits (15 s) for a regex in output after the previous match; `--send TEXT`
   waits 0.2 s (so the prompt has switched to raw mode) then types it (`\r` Enter, `\x03` Ctrl-C, `\x7f`
-  backspace); `--clip TEXT` changes the fake clipboard mid-run. Prompts end with `›`; stable prompt strings:
-  `1/2 Copy the Webhook URL`, `2/2 Copy the Authorization header`, `↻ Copy the …` (re-ask), `No clipboard text
-  found. Paste or type the …`, `Turn on auto-notify?`, `Install the nudge command`, `Save anyway?`,
-  `Press any key to close` (`--pane`).
+  backspace, `\e` Esc, `\e[A`/`\e[B`/`\e[C`/`\e[D` arrows); `--clip TEXT` changes the fake clipboard mid-run. Prompts end
+  with `›`; stable prompt strings: `1/2 Copy the Webhook URL`, `2/2 Copy the Authorization header`, `↻ Copy the …`
+  (re-ask), `No clipboard text found. Paste or type the …`, `Turn on auto-notify?`, `Install the nudge command`, `Save
+  anyway?`, `Press any key to close` (`--pane`).
+- Full-screen UI (`nudge settings`, ratatui): its bytes are cursor-addressed redraws of changed cells, so match the
+  rendered screen instead: `--screen RE` waits for RE (multiline mode) on a 120x40 terminal emulation in which each
+  row starts with `> ` when it is highlighted (the cursor row) and `  ` otherwise, then for 0.25 s of quiet, and keeps
+  that screen in the record's `screens`. With any `--screen` step, `output` is the text left on the normal screen after
+  exit (`Saved nudge settings to …` / `No changes saved.`), not the raw bytes. Recipe: [features/settings.md](features/settings.md).
+
+  ```sh
+  $VN pty --screen 'Auto-notify' --send ' ' --screen '^> .*\[x\] Auto-notify' --send s --expect-exit 0 -- settings
+  ```
 - MCP over stdio (sends `initialize` protocol `2025-06-18`, `notifications/initialized`, `tools/list`, then each call):
 
   ```sh
@@ -144,7 +153,7 @@ NUDGE_BIN=/path/to/new/nudge $VN parity .verify/parity/new.json
 diff -u .verify/parity/old.json .verify/parity/new.json
 ```
 
-Runs the fixed scenario list (169 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
+Runs the fixed scenario list (183 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
 with its own fakes and one shared fake webhook, then writes one JSON transcript with sorted keys. Per step it
 records the same fields as `run`, with JSON payloads (webhook bodies, `list --json` stdout as `stdout_json`, MCP
 responses keyed by JSON-RPC id with JSON tool text as `text_json`, state.json) compared as data. Multi-line text is
@@ -162,12 +171,16 @@ a `/signed` request whose signature is `invalid`/`missing`, `x-nudge-*` headers 
 `signing_secret`, an `x-nudge-timestamp` that is not unix seconds within 60 s, a webhook body without a lowercase UUID v4
 `id` or a `sent_at` in that format within 60 s, and an MCP `notify_desk` result whose `id`/`sent_at` is missing or is
 not the request the desk received. Steps may also assert `sends=N` (requests the desk got), `toasts=[…]` (exact
-`notification show nudge --body` bodies), `has=TEXT` (in the output) and `scope_is=(workspaces, agents)` (the config's
-`[scope]` after the step; needs python ≥ 3.11 for `tomllib`). The command prints the failures and exits 1 if there are
+`notification show nudge --body` bodies), `has=TEXT|[…]` / `lacks=[…]` (in / not in the output, PTY screens included),
+`scope_is=(workspaces, agents)` (the config's `[scope]` after the step), `config_keys={key: value}` (top-level config
+keys after the step, `None` = absent), `state_auto=BOOL`, `config_mode="600"`, `config_unchanged=True` (config text
+identical to before the step) and `herdr_has=[argv…]` (exact herdr calls made); TOML checks need python ≥ 3.11 for
+`tomllib`. PTY steps that use `screen` expectations record the matched `screens` and the normal-screen `output` instead
+of raw bytes (the raw bytes are still scanned for secrets). The command prints the failures and exits 1 if there are
 any (0 otherwise), so CI can run it directly:
 `NUDGE_BIN=$PWD/target/release/nudge .cursor/skills/verify-nudge/bin/verify-nudge parity $RUNNER_TEMP/parity.json`.
 Two runs of the same binary must produce identical files — if not, the harness has a nondeterminism bug; fix it
-before trusting a cross-build diff. Transcripts from an older harness (`"harness"` other than `verify-nudge parity v3`)
+before trusting a cross-build diff. Transcripts from an older harness (`"harness"` other than `verify-nudge parity v4`)
 differ in scenarios and normalization; regenerate both sides with the same harness before diffing.
 
 ## Evidence
