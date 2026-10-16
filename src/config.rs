@@ -56,16 +56,15 @@ impl Auto {
     pub(crate) fn cooldown_ms(self) -> i64 {
         i64::from(self.cooldown_seconds) * 1000
     }
+}
 
-    /// `min_turn_seconds` in words: "2 minutes", "1 minute", "90 seconds".
-    pub(crate) fn min_turn_words(self) -> String {
-        let seconds = self.min_turn_seconds;
-        match (seconds / 60, seconds % 60) {
-            (1, 0) => "1 minute".to_owned(),
-            (minutes @ 2.., 0) => format!("{minutes} minutes"),
-            (_, _) if seconds == 1 => "1 second".to_owned(),
-            (_, _) => format!("{seconds} seconds"),
-        }
+/// A duration in words: "2 minutes", "1 minute", "90 seconds", "0 seconds".
+pub(crate) fn seconds_in_words(seconds: u32) -> String {
+    match (seconds / 60, seconds % 60) {
+        (1, 0) => "1 minute".to_owned(),
+        (minutes @ 2.., 0) => format!("{minutes} minutes"),
+        (_, _) if seconds == 1 => "1 second".to_owned(),
+        (_, _) => format!("{seconds} seconds"),
     }
 }
 
@@ -927,16 +926,9 @@ authorization = "Token xyz"
     }
 
     #[test]
-    fn min_turn_in_words() {
-        let words = |seconds| {
-            Auto {
-                min_turn_seconds: seconds,
-                ..Auto::default()
-            }
-            .min_turn_words()
-        };
+    fn durations_in_words() {
         assert_eq!(
-            [words(120), words(60), words(90), words(1), words(0)],
+            [120, 60, 90, 1, 0].map(super::seconds_in_words),
             ["2 minutes", "1 minute", "90 seconds", "1 second", "0 seconds"]
         );
     }

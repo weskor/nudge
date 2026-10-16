@@ -5,8 +5,8 @@ use std::path::Path;
 
 use crate::clipboard::{read_clipboard, runtime_dir};
 use crate::config::{
-    Auto, Config, Desk, check_authorization, check_webhook_url, default_config_path, read_config, upsert_desk,
-    validate_desk, write_config,
+    Auto, Config, Desk, check_authorization, check_webhook_url, default_config_path, read_config, seconds_in_words,
+    upsert_desk, validate_desk, write_config,
 };
 use crate::context::{Env, System};
 use crate::error::{Blame, DeskError, Error, Result};
@@ -206,11 +206,13 @@ fn offer_extras(env: &Env) -> Result<()> {
                 Mark::Ok,
                 Style::Dim.paint(&info.plugin_root)
             );
-            let min_turn = read_config(&default_config_path(env))
-                .ok()
-                .flatten()
-                .map_or_else(Auto::default, |config| config.auto)
-                .min_turn_words();
+            let min_turn = seconds_in_words(
+                read_config(&default_config_path(env))
+                    .ok()
+                    .flatten()
+                    .map_or_else(Auto::default, |config| config.auto)
+                    .min_turn_seconds,
+            );
             eprintln!(
                 "{}",
                 Style::Dim

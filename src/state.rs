@@ -64,6 +64,11 @@ fn read_state(path: &Path) -> State {
         .unwrap_or_default()
 }
 
+/// Whether auto-notify is on, without taking the lock or rewriting the file.
+pub(crate) fn auto_enabled(env: &Env) -> bool {
+    read_state(&state_dir(env).join("state.json")).auto
+}
+
 /// An exclusive lock: a directory next to the state file, removed on drop.
 #[derive(Debug)]
 struct Lock(PathBuf);

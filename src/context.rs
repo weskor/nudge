@@ -294,6 +294,47 @@ pub(crate) fn workspace_label(workspace_id: &str, env: &Env, cwd: &Path, run: &d
         .filter(|label| !label.is_empty())
 }
 
+#[derive(Debug, Deserialize)]
+struct WorkspaceList {
+    result: WorkspaceListResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceListResult {
+    workspaces: Vec<ListedWorkspace>,
+}
+
+/// A workspace from `herdr workspace list`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub(crate) struct ListedWorkspace {
+    pub(crate) workspace_id: String,
+    pub(crate) label: Option<String>,
+}
+
+impl ListedWorkspace {
+    /// How the workspace is shown and stored in `[scope]`: its label, else its id.
+    pub(crate) fn name(&self) -> &str {
+        self.label
+            .as_deref()
+            .filter(|label| !label.is_empty())
+            .unwrap_or(&self.workspace_id)
+    }
+}
+
+/// Open herdr workspaces, in sidebar order; empty if herdr is unavailable.
+pub(crate) fn herdr_workspaces(env: &Env, run: &dyn Run) -> Vec<ListedWorkspace> {
+    herdr_json::<WorkspaceList>(&["workspace", "list"], env, Path::new("/"), run)
+        .map(|list| list.result.workspaces)
+        .unwrap_or_default()
+}
+
+/// The `herdr agent prompt` targets of all running agents; empty if herdr is unavailable.
+pub(crate) fn herdr_agents(env: &Env, run: &dyn Run) -> Vec<String> {
+    herdr_json::<AgentList>(&["agent", "list"], env, Path::new("/"), run)
+        .map(|list| list.result.agents.iter().map(HerdrAgent::target).collect())
+        .unwrap_or_default()
+}
+
 /// Whether `sender` may notify under `scope`. Only when the scope names workspaces does it ask herdr for the
 /// sender's workspace (from its pane, if not known yet) and that workspace's label.
 pub(crate) fn in_scope(scope: &Scope, sender: &Sender, env: &Env, run: &dyn Run) -> bool {

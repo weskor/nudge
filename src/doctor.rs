@@ -2,12 +2,12 @@
 use std::path::Path;
 
 use crate::clipboard::CLIPBOARD_TOOLS;
-use crate::config::{Auto, default_config_path, default_desk_name, read_config};
+use crate::config::{Auto, default_config_path, default_desk_name, read_config, seconds_in_words};
 use crate::context::{Env, Run as _, System};
 use crate::error::{Blame, Error, Result};
 use crate::install::{PLUGIN_ID, Plugin, command_link, nudge_root, plugin, plugin_logs};
 use crate::notify::{Origin, current_dir, ping_desk};
-use crate::state::{now_ms, state_dir, update_state};
+use crate::state::{auto_enabled, now_ms, state_dir};
 use crate::tty::{Mark, Style, wait_for_key};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,25 +164,26 @@ fn ago(unix_ms: i64) -> String {
     }
 }
 
-fn check_plugin(env: &Env) -> Result<Vec<Check>> {
+fn check_plugin(env: &Env) -> Vec<Check> {
     let Some(herdr_version) = System.run(&[env.herdr(), "--version"], Path::new("/")) else {
-        return Ok(vec![Check::new(Level::Warn, "herdr not found").fix(
-            "nudge notify works without herdr; the plugin and replies need https://herdr.dev",
-        )]);
+        return vec![
+            Check::new(Level::Warn, "herdr not found")
+                .fix("nudge notify works without herdr; the plugin and replies need https://herdr.dev"),
+        ];
     };
     let info = match plugin(env, &System) {
         Plugin::HerdrUnavailable => {
-            return Ok(vec![
+            return vec![
                 Check::new(Level::Warn, format!("{herdr_version}, but its server isn't reachable"))
                     .fix("start herdr, then run nudge doctor again"),
-            ]);
+            ];
         }
         Plugin::NotInstalled => {
-            return Ok(vec![
+            return vec![
                 Check::new(Level::Fail, "herdr plugin not installed")
                     .detail(herdr_version)
                     .fix("herdr plugin install weskor/nudge"),
-            ]);
+            ];
         }
         Plugin::Installed(info) => info,
     };
@@ -205,10 +206,10 @@ fn check_plugin(env: &Env) -> Result<Vec<Check>> {
         .ok()
         .flatten()
         .map_or_else(Auto::default, |config| config.auto);
-    let auto = if update_state(env, |state| state.auto)? {
+    let auto = if auto_enabled(env) {
         Check::new(Level::Ok, "Auto-notify on").detail(format!(
             "blocked, or done after {} or more while you're not watching",
-            rules.min_turn_words()
+            seconds_in_words(rules.min_turn_seconds)
         ))
     } else {
         Check::new(Level::Warn, "Auto-notify off").fix(format!("herdr plugin action invoke {PLUGIN_ID}.enable"))
@@ -226,7 +227,7 @@ fn check_plugin(env: &Env) -> Result<Vec<Check>> {
         };
         checks.push(Check::new(level, format!("Recent: {line}")).detail(ago(log.started_unix_ms)));
     }
-    Ok(checks)
+    checks
 }
 
 fn check_command(env: &Env) -> Check {
@@ -275,7 +276,7 @@ pub(crate) fn doctor(ping: bool, pane: bool, env: &Env) -> Result<u8> {
     );
     println!();
     let mut checks = check_config(ping, env)?;
-    checks.extend(check_plugin(env)?);
+    checks.extend(check_plugin(env));
     checks.extend([check_command(env), check_clipboard(env)]);
     for check in &checks {
         check.print();

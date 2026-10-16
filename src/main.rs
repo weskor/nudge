@@ -8,6 +8,7 @@ mod install;
 mod mcp;
 mod notify;
 mod plugin;
+mod settings;
 mod setup;
 mod state;
 mod tty;
@@ -30,6 +31,7 @@ const USAGE: &str = "Usage:
   nudge notify [--desk NAME] [--status done|blocked|question] [--agent NAME] <message...|->
   nudge test   [--desk NAME] [--agent NAME]
   nudge doctor [--ping]
+  nudge settings
   nudge list   [--json]
   nudge mcp
 
@@ -45,6 +47,8 @@ const USAGE: &str = "Usage:
   test     Send a status \"test\" ping.
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
+  settings Change auto-notify, who can notify and the default desk in a
+           full-screen editor (herdr action weskor.nudge.settings).
   list     Show configured desks (* = default).
   mcp      Run the stdio MCP server (tools notify_desk, list_desks).
 
@@ -260,6 +264,10 @@ fn run(words: Vec<String>, env: &Env) -> Result<u8> {
         "doctor" => {
             no_args(rest, "doctor")?;
             doctor::doctor(args.ping, args.pane, env)
+        }
+        "settings" => {
+            no_args(rest, "settings")?;
+            settings::settings(args.pane, env)
         }
         "list" => {
             no_args(rest, "list")?;

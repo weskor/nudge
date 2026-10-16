@@ -1,6 +1,7 @@
 //! herdr plugin entrypoints (see herdr-plugin.toml), reached through `nudge plugin …`:
 //!   event          `pane.agent_status_changed` hook
-//!   action <id>    enable | disable | toggle | ask-desk | setup | status | only-workspace | only-agent | all-agents
+//!   action <id>    enable | disable | toggle | ask-desk | setup | status | settings | only-workspace | only-agent |
+//!                  all-agents
 //!   startup        server start: keep `~/.local/bin/nudge` pointing at this install
 //!
 //! Decisions and failures go to stderr, which herdr keeps in `herdr plugin log list`.
@@ -244,7 +245,7 @@ impl Plugin<'_> {
                 let sent = self.send_pane(&config, &pane_id, status, Trigger::Manual)?;
                 self.toast(&format!("Sent this pane to the desk (HTTP {})", sent.http_status));
             }
-            "setup" | "status" => self.open_pane(action)?,
+            "setup" | "status" | "settings" => self.open_pane(action)?,
             "only-workspace" => {
                 let Some(workspace_id) = pane_id.and_then(|pane| pane_workspace(&pane, self.env, &self.home, &System))
                 else {

@@ -1,6 +1,6 @@
 id = "weskor.nudge"
 name = "Nudge"
-version = "0.6.0"
+version = "0.7.0"
 min_herdr_version = "0.9.0"
 description = "Tell your AI desk (a webhook automation) when an agent finishes or is blocked; the desk replies with herdr agent prompt."
 platforms = ["linux", "macos"]
@@ -26,6 +26,11 @@ command = ["sh", "bin/nudge", "plugin", "action", "setup"]
 id = "status"
 title = "Nudge: status"
 command = ["sh", "bin/nudge", "plugin", "action", "status"]
+
+[[actions]]
+id = "settings"
+title = "Nudge: settings"
+command = ["sh", "bin/nudge", "plugin", "action", "settings"]
 
 [[actions]]
 id = "ask-desk"
@@ -73,3 +78,9 @@ id = "status"
 title = "Nudge status"
 placement = "overlay"
 command = ["sh", "bin/nudge", "doctor", "--pane"]
+
+[[panes]]
+id = "settings"
+title = "Nudge settings"
+placement = "overlay"
+command = ["sh", "bin/nudge", "settings", "--pane"]
