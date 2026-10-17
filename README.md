@@ -72,7 +72,7 @@ The plugin listens to herdr's agent status changes. It notifies your default des
 | Rule | Why |
 | --- | --- |
 | The agent is `blocked`, or `done` after a turn of at least 2 minutes | A quick reply isn't worth a desk run |
-| You aren't looking at the pane | You already know |
+| You aren't looking at the pane, or you said you're [away](#away-from-your-desk) | You already know |
 | The agent didn't send its own `nudge notify` during the turn | Its own message says more than terminal output |
 | No automatic notification for that pane in the last 5 minutes | Rate limit, and a brake on reply loops |
 | The agent is in [scope](#choose-which-agents-can-notify) | You decide which agents may reach the desk |
@@ -81,6 +81,20 @@ The plugin listens to herdr's agent status changes. It notifies your default des
 The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. When it's sent, herdr shows a toast ("Told the desk: api-refactor is blocked"). Every decision, including skipped events and why, is in `herdr plugin log list --plugin weskor.nudge`, and `nudge doctor` shows the most recent ones.
 
 The 2 minutes, 5 minutes, 40 lines and the toast are [settings](#settings).
+
+### Away from your desk
+
+nudge counts the pane that's focused in herdr as one you're watching, even if you walked away and left the window open. Before you leave, run `weskor.nudge.away-on` (or `weskor.nudge.away` to toggle, or tick it in [settings](#settings)): until you run `weskor.nudge.away-off`, every agent's `blocked` and long `done` reach the desk, including the pane on screen, and even with auto-notify off. The other rules (turn length, cooldown, scope) still apply. `nudge doctor` shows when away mode is on.
+
+A keybinding makes it one keystroke:
+
+```toml
+[[keys.command]]
+key = "prefix+a"
+type = "plugin_action"
+command = "weskor.nudge.away"
+description = "nudge: away from desk on/off"
+```
 
 ### Choose which agents can notify
 
@@ -102,6 +116,7 @@ Both write the `[scope]` table in the config. Scope applies to automatic notific
 ┌ nudge settings ──────────────────────────────────────────────┐
 │Automatic notifications                                       │
 │  [x] Auto-notify                                             │
+│  [ ] Away from my desk: notify even for the pane on screen   │
 │  [x] Toast when one is sent                                  │
 │  Shortest turn sent    ◂ 2 minutes ▸                         │
 │  Cooldown per pane     ◂ 5 minutes ▸                         │
@@ -212,6 +227,7 @@ To verify, recompute the HMAC over the timestamp, a `.` and the raw request body
 | `weskor.nudge.settings` | Open [settings](#settings) in an overlay |
 | `weskor.nudge.ask-desk` | Send the focused pane to the desk now, skipping the rules above |
 | `weskor.nudge.toggle` | Turn auto-notify on or off (also `.enable`, `.disable`) |
+| `weskor.nudge.away` | Tell nudge you're [away from your desk](#away-from-your-desk) or back (also `.away-on`, `.away-off`) |
 | `weskor.nudge.only-workspace`, `.only-agent`, `.all-agents` | Choose [which agents can notify](#choose-which-agents-can-notify) |
 
 Bind them in `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
@@ -290,6 +306,7 @@ Start with `nudge doctor`, or `herdr plugin action invoke weskor.nudge.status` t
 | --- | --- |
 | Setup says the webhook rejected the Authorization header | Copy the header again. It's usually `Bearer <token>`; a pasted `Authorization:` prefix is fine |
 | No notification after an agent finished | `herdr plugin log list --plugin weskor.nudge` shows why it was skipped: a short turn, you were watching, cooldown, outside the scope, or auto-notify off |
+| No notification while I was away, with herdr still open | The agent's pane was focused, so nudge thought you were watching. Turn on [away mode](#away-from-your-desk) before you leave |
 | `nudge notify` says the agent is outside nudge's scope | Run `weskor.nudge.all-agents`, or add the agent or its workspace to `[scope]` |
 | `from_agent` is `null` | The event wasn't sent from an agent's pane, so pass `--agent NAME` |
 | `nudge: command not found` | Run `herdr plugin action invoke weskor.nudge.setup` and accept the command install, or add `~/.local/bin` to your `PATH` |
