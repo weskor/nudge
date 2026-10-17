@@ -1,8 +1,8 @@
 # Settings
 
 `nudge settings [--pane]` is a full-screen terminal editor (alternate screen, a box titled ` nudge settings `) for
-auto-notify, the `[auto]` settings, `[scope]` (who can notify) and the default desk. It reads the config, state.json
-`auto`, and the open workspaces/agents from `herdr workspace list` / `herdr agent list`; nothing changes until `s`,
+auto-notify, away mode, the `[auto]` settings, `[scope]` (who can notify) and the default desk. It reads the config,
+state.json `auto` and `away`, and the open workspaces/agents from `herdr workspace list` / `herdr agent list`; nothing changes until `s`,
 which rewrites the config (mode 600) and state.json and prints `Saved nudge settings to <path>.` after leaving the
 screen. Quitting without saving prints `No changes saved.`. herdr opens it as an overlay through the
 `settings` action / entrypoint (`--pane` adds a `Settings saved` toast).
@@ -14,7 +14,8 @@ screen. Quitting without saving prints `No changes saved.`. herdr opens it as an
   `settings extra` is a usage error (exit 2).
 - `settings-no-config` in a terminal without a config: exit 1, `nudge: no config at … Run "nudge setup" to add a desk.`,
   before drawing anything.
-- `settings-rows` in order (cursor starts on the first): `[x]/[ ] Auto-notify`, `[x]/[ ] Toast when one is sent`,
+- `settings-rows` in order (cursor starts on the first): `[x]/[ ] Auto-notify`, `[x]/[ ] Away from my desk: notify
+  even for the pane on screen`, `[x]/[ ] Toast when one is sent`,
   `Shortest turn sent    ◂ 2 minutes ▸`, `Cooldown per pane     ◂ 5 minutes ▸`, `Terminal lines sent   ◂ 40 ▸`,
   `( )/(•) Every agent`, `( )/(•) Only these:`, one `[ ]/[x] <name>` per workspace (label, else id) then per agent
   (name, else pane id) — open ones first, then names only the config has with `  (not open)` — then one
@@ -29,7 +30,8 @@ screen. Quitting without saving prints `No changes saved.`. herdr opens it as an
   the default.
 - `settings-save` `s` re-reads the config, writes `[auto]` with only non-default keys, `[scope]` with the ticked names
   (a workspace matched by id in the config is saved under its label; removed entirely for `Every agent`),
-  `default_desk`, and state.json `auto`. `Only these` with nothing ticked refuses: status `Tick at least one workspace
+  `default_desk`, and state.json `auto` and `away` (`"away": true` when ticked, key absent when not; other state is
+  kept). `Only these` with nothing ticked refuses: status `Tick at least one workspace
   or agent, or choose Every agent.`, nothing written. `--pane` also runs `herdr notification show nudge --body
   "Settings saved"`.
 - `settings-quit` `q`/Esc/Ctrl-C quit at once without edits; with unsaved edits the first shows `Unsaved changes: press
@@ -50,7 +52,7 @@ screen. Quitting without saving prints `No changes saved.`. herdr opens it as an
 
 Preconditions:
 
-- `$VN seed-config`; `$VN seed-state '{"auto": true}'` to start with auto-notify on.
+- `$VN seed-config`; `$VN seed-state '{"auto": true}'` to start with auto-notify on (`"away": true` for away mode on).
 - A herdr fixture with `workspace list` / `agent list` rules (parity's `settings_herdr()`: workspaces `api-work`, `web-work`,
   unlabelled `wF`; agents `claude-1`, `reviewer`, unnamed `wF:p4`), e.g. a JSON file for `$VN herdr FILE.json`:
   `{"rules":[{"argv":["workspace","list"],"stdout":{"result":{"workspaces":[{"workspace_id":"wD","label":"api-work"}]}}},
@@ -61,16 +63,20 @@ Preconditions:
 - **No config.** Before seeding: `$VN pty --expect 'no config at' --expect-exit 1 -- settings`.
 - **Render.** `$VN pty --screen 'Auto-notify' --send q --expect-exit 0 -- settings`; the record's `screens[0].lines` is
   the screen (rows marked `> ` are highlighted = cursor), `output` is `No changes saved.`.
-- **Edit and save.** e.g. `$VN pty --screen '^> .*Auto-notify' --send ' ' --send 'jj\e[C' --screen '^> .*3 minutes' --send s
+- **Edit and save.** e.g. `$VN pty --screen '^> .*Auto-notify' --send ' ' --send 'jjj\e[C' --screen '^> .*3 minutes' --send s
   --expect-exit 0 -- settings`: `files.config.text` gains `[auto]` / `min_turn_seconds = 180`, `files.state.json.auto`
   flips, `output` is `Saved nudge settings to <RUN>/home/.config/nudge/config.toml.`. Re-open to see the saved values.
+- **Away.** `$VN pty --screen '^> .*Auto-notify' --send j --screen '^> .*\[ \] Away from my desk' --send ' '
+  --screen '^> .*\[x\] Away from my desk' --send s --expect-exit 0 -- settings`: `files.state.json` gains `"away": true`
+  (`auto` as before). Re-open: the row shows `[x]`; untick and save: the `away` key is gone. A state set by
+  `plugin action away-on` opens ticked too. Parity: `settings-away`, `settings-away-from-action`.
 - **Test ping.** Move to the `signed` desk and send `t`: the record's `webhook` has the `/signed` request with
   `signature: "valid:signed-desk"`, and the screen the `✓ "signed" received a test ping (HTTP 200)` status.
 - **Pane.** `-- settings --pane` then save: `herdr_calls` has `notification show nudge --body Settings saved`.
 - **Action.** `$VN herdr running; $VN run --cwd home -- plugin action settings`: `herdr_calls` is the `plugin pane open`
   call above.
 - **Proof.** `files.config` (text, mode 600), `files.state`, `webhook`, `herdr_calls`, the `screens` snapshots; parity
-  scenarios `settings-*` and `action-settings-*` assert them (`config_keys`, `scope_is`, `state_auto`,
+  scenarios `settings-*` and `action-settings-*` assert them (`config_keys`, `scope_is`, `state_auto`, `state_keys`,
   `config_unchanged`, `toasts`, `herdr_has`, `lacks`).
 
 ## Gotchas

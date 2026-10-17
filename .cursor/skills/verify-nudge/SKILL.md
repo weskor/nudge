@@ -1,6 +1,6 @@
 ---
 name: verify-nudge
-description: Drive the real `nudge` CLI / herdr-plugin binary (any build, via $NUDGE_BIN) the way a user or herdr does, in a sandbox with a fake desk webhook (signature-checking), fake herdr and fake clipboard, and capture proof. Use to verify notify/list/test, setup (scripted and interactive PTY), the full-screen `nudge settings` editor (PTY, rendered-screen matching), doctor, request signing, plugin events/actions/startup, [auto] settings, [scope] and the MCP server, or to diff two builds (e.g. before/after a change, in CI) with `verify-nudge parity`.
+description: Drive the real `nudge` CLI / herdr-plugin binary (any build, via $NUDGE_BIN) the way a user or herdr does, in a sandbox with a fake desk webhook (signature-checking), fake herdr and fake clipboard, and capture proof. Use to verify notify/list/test, setup (scripted and interactive PTY), the full-screen `nudge settings` editor (PTY, rendered-screen matching), doctor, request signing, plugin events/actions/startup, away mode, [auto] settings, [scope] and the MCP server, or to diff two builds (e.g. before/after a change, in CI) with `verify-nudge parity`.
 ---
 
 # verify-nudge
@@ -49,7 +49,7 @@ the build.
    $VN seed-config [--default NAME]   # desks: desk (default) research badauth(401) nohook(404) broken(500) offline(refused) signed(signing_secret)
    $VN seed-config --append '[scope]\nworkspaces = ["api-work"]'   # standard desks + an [auto]/[scope] table (\n expands)
    $VN herdr running                  # or: none | agent-pane | workspaces | path/to/fixture.json
-   $VN seed-state '{"auto": true, "panes": {"p_1": {"working_since": {"ago": 180000}}}}'
+   $VN seed-state '{"auto": true, "panes": {"p_1": {"working_since": {"ago": 180000}}}}'   # add "away": true for away mode
    $VN clip 'http://127.0.0.1:<port>/hook'     # or: $VN clip --clear
    $VN git-repo repo feature/x git@github.com:acme/api.git   # <sandbox>/repo, for `run --cwd repo`
    $VN link /opt/old-nudge/bin/nudge  # ~/.local/bin/nudge in the sandbox; or {NUDGE_ROOT}/bin/nudge | --file | --remove
@@ -120,7 +120,8 @@ lists `secret_leaks` and `contract_problems` (see Parity), and the command print
 
 - herdr plugin entrypoints are plain commands with herdr's env, e.g.
   `$VN run --cwd home --env 'HERDR_PLUGIN_EVENT_JSON={"data":{"pane_id":"p_1","agent_status":"blocked"}}' -- plugin event`,
-  `$VN run --cwd home --env 'HERDR_PLUGIN_CONTEXT_JSON={"focused_pane_id":"p_1","focused_pane_status":"blocked"}' -- plugin action ask-desk`.
+  `$VN run --cwd home --env 'HERDR_PLUGIN_CONTEXT_JSON={"focused_pane_id":"p_1","focused_pane_status":"blocked"}' -- plugin action ask-desk`,
+  `$VN run --cwd home -- plugin action away-on` (away mode: state.json `away`, see features/plugin-actions.md).
 - Inspect without running nudge: `$VN files`, `$VN requests` (raw webhook log), `$VN env` (exports, for a manual shell —
   prefer `run`).
 
@@ -153,7 +154,7 @@ NUDGE_BIN=/path/to/new/nudge $VN parity .verify/parity/new.json
 diff -u .verify/parity/old.json .verify/parity/new.json
 ```
 
-Runs the fixed scenario list (183 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
+Runs the fixed scenario list (198 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
 with its own fakes and one shared fake webhook, then writes one JSON transcript with sorted keys. Per step it
 records the same fields as `run`, with JSON payloads (webhook bodies, `list --json` stdout as `stdout_json`, MCP
 responses keyed by JSON-RPC id with JSON tool text as `text_json`, state.json) compared as data. Multi-line text is
@@ -173,7 +174,8 @@ a `/signed` request whose signature is `invalid`/`missing`, `x-nudge-*` headers 
 not the request the desk received. Steps may also assert `sends=N` (requests the desk got), `toasts=[…]` (exact
 `notification show nudge --body` bodies), `has=TEXT|[…]` / `lacks=[…]` (in / not in the output, PTY screens included),
 `scope_is=(workspaces, agents)` (the config's `[scope]` after the step), `config_keys={key: value}` (top-level config
-keys after the step, `None` = absent), `state_auto=BOOL`, `config_mode="600"`, `config_unchanged=True` (config text
+keys after the step, `None` = absent), `state_auto=BOOL`, `state_keys={key: value}` (top-level state.json keys after the
+step, `None` = absent, e.g. `{"away": None}`), `config_mode="600"`, `config_unchanged=True` (config text
 identical to before the step) and `herdr_has=[argv…]` (exact herdr calls made); TOML checks need python ≥ 3.11 for
 `tomllib`. PTY steps that use `screen` expectations record the matched `screens` and the normal-screen `output` instead
 of raw bytes (the raw bytes are still scanned for secrets). The command prints the failures and exits 1 if there are
@@ -181,7 +183,9 @@ any (0 otherwise), so CI can run it directly:
 `NUDGE_BIN=$PWD/target/release/nudge .cursor/skills/verify-nudge/bin/verify-nudge parity $RUNNER_TEMP/parity.json`.
 Two runs of the same binary must produce identical files — if not, the harness has a nondeterminism bug; fix it
 before trusting a cross-build diff. Transcripts from an older harness (`"harness"` other than `verify-nudge parity v4`)
-differ in scenarios and normalization; regenerate both sides with the same harness before diffing.
+differ in scenarios and normalization; regenerate both sides with the same harness before diffing. A build without
+away mode (before 0.8.0) fails the `*away*` scenarios and the `settings-*` cursor steps (the `Away from my desk` row
+moves every cursor stop below `Auto-notify` down by one): that is the expected diff, not a harness problem.
 
 ## Evidence
 

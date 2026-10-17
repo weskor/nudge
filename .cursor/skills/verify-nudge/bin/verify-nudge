@@ -1389,6 +1389,7 @@ def step_assertions(rec, op, config_before=None):
     scope_is=(W, A)      the config file's [scope] has workspaces W and agents A (absent = [])
     config_keys={K: V}   the config's top-level key K parses to V (None = absent), e.g. {"auto": {...}, "scope": None}
     state_auto=BOOL      state.json `auto` after the step
+    state_keys={K: V}    state.json's top-level key K is V after the step (None = absent), e.g. {"away": None}
     config_mode=MODE     the config file's permission bits, e.g. "600"
     herdr_has=[ARGV...]  each of these herdr calls was made (exact argv)
     config_unchanged=1   the config text is byte-for-byte what it was before the step"""
@@ -1408,6 +1409,12 @@ def step_assertions(rec, op, config_before=None):
         got = ((rec.get("files") or {}).get("state") or {}).get("json", {}).get("auto")
         if got != op["state_auto"]:
             problems.append(f"state.json auto is {got}, expected {op['state_auto']}")
+    for key, want in (op.get("state_keys") or {}).items():
+        saved = ((rec.get("files") or {}).get("state") or {}).get("json")
+        present = isinstance(saved, dict) and key in saved
+        if (want is None and present) or (want is not None and (not present or saved[key] != want)):
+            got = repr(saved[key]) if present else "absent"
+            problems.append(f"state.json {key} is {got}, expected {'absent' if want is None else repr(want)}")
     if op.get("config_unchanged") and (cfg or {}).get("text") != config_before:
         problems.append("config text changed, expected unchanged")
     if op.get("config_mode") is not None and (cfg or {}).get("mode") != op["config_mode"]:
@@ -1931,10 +1938,69 @@ def scenarios():
     add("doctor-scope-lists", config(extra=scope(workspaces=["api-work", "wE"], agents=["claude-1"])),
         cmd(["doctor"], expect=0, has="Scope: workspaces"))
 
-    # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Toast, 2 Shortest turn, 3 Cooldown, 4 Terminal lines,
-    # 5 Every agent, 6 Only these, then one per workspace, agent and desk. settings_herdr() lists workspaces api-work,
-    # web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4 (unnamed): rows 7-9, 10-12, desks 13-19
+    # ---- away mode: state.json `away` (absent while off). Away lifts only the "you are looking at this pane" and
+    # "auto-notify is off" skips; min turn, cooldown, "already notified" and [scope] still apply.
+    away_on = "Away: the desk hears from every agent, even the pane on screen"
+    away_off = "Back: nudge stays quiet for the pane you're looking at"
+    looking = "skipped (you are looking at this pane)"
+    focused_herdr = herdr(fixture(agent_get("p_1", "claude-1", focused=True), pane_read("p_1", PANE_TEXT), NOTIFICATION_OK))
+    add("action-away-toggle", herdr(AGENT_HERDR),
+        action("away", sends=0, toasts=[away_on], state_keys={"away": True}),
+        action("away", sends=0, toasts=[away_off], state_keys={"away": None}),
+        action("away-on", toasts=[away_on], state_keys={"away": True}),
+        action("away-on", toasts=[away_on], state_keys={"away": True}),
+        action("away-off", toasts=[away_off], state_keys={"away": None}),
+        action("away-off", toasts=[away_off], state_keys={"away": None}))
+    add("action-away-keeps-state", herdr(AGENT_HERDR), state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 180000}}}}),
+        action("away-on", toasts=[away_on], state_auto=True, state_keys={"away": True}),
+        action("disable", toasts=["Auto-notify off"], state_auto=False, state_keys={"away": True}),
+        action("away-off", toasts=[away_off], state_auto=False, state_keys={"away": None}))
+    add("away-event-focused-blocked", config(), focused_herdr, state({"auto": True}),
+        event("blocked", sends=0, toasts=[], has=f"p_1 blocked: {looking}"),
+        action("away-on", toasts=[away_on]),
+        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"], has="p_1 blocked: notified desk (HTTP 200)"))
+    add("away-event-focused-done", config(), focused_herdr, state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 180000}}}}),
+        event("done", sends=0, toasts=[], has=f"p_1 done: {looking}"),
+        action("away-on", toasts=[away_on]),
+        {"do": "edit_state", "pane": "p_1", "key": "working_since", "ago": 180000},
+        event("done", sends=1, toasts=["Told the desk: claude-1 finished a turn"], has="p_1 done: notified desk (HTTP 200)"))
+    add("away-event-auto-off", config(), herdr(PANE_HERDR), state({"away": True}),
+        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"], state_keys={"away": True}),
+        action("away-off", toasts=[away_off]),
+        {"do": "edit_state", "pane": "p_1", "key": "last_auto_at", "ago": 600000},
+        event("blocked", sends=0, toasts=[], has="p_1 blocked: skipped (auto-notify is off)"))
+    add("away-event-focused-auto-off", config(), focused_herdr, state({"away": True}),
+        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"]))
+    add("away-event-min-turn", config(), focused_herdr, state({"away": True, "panes": {"p_1": {"working_since": {"ago": 30000}}}}),
+        event("done", sends=0, toasts=[], has="p_1 done: skipped (turn shorter than 120s)"))
+    add("away-event-cooldown", config(), focused_herdr, state({"auto": True, "away": True, "panes": {"p_1": {"last_auto_at": {"ago": 60000}}}}),
+        event("blocked", sends=0, toasts=[], has="p_1 blocked: skipped (cooldown)"))
+    add("away-event-self-notified", config(), focused_herdr,
+        state({"away": True, "panes": {"p_1": {"working_since": {"ago": 180000}, "self_notified_at": {"ago": 10000}}}}),
+        event("done", sends=0, toasts=[], has="p_1 done: skipped (agent already notified the desk this turn)"))
+    away_ws_herdr = herdr(fixture(real_agent_get("wD:p1", "claude-1", focused=True), pane_get("wD:p1", focused=True), *ws_herdr["rules"]))
+    add("away-event-scope", config(extra=scope(workspaces=["web-work"])), away_ws_herdr, state({"away": True}),
+        event("blocked", pane="wD:p1", sends=0, toasts=[], has=f"wD:p1 blocked: skipped ({outside})"),
+        event("blocked", pane="wE:p2", sends=1, toasts=["Told the desk: reviewer is blocked"]))
+    away_doctor = ["✓ Away mode on  notifying even for the pane you're looking at",
+                   "    → when you're back: herdr plugin action invoke weskor.nudge.away-off"]
+    add("doctor-away", config(), herdr(PRESETS["running"]), state({"auto": True}),
+        cmd(["doctor"], expect=0, lacks=["Away mode", "away-off"]),
+        action("away-on", toasts=[away_on]),
+        cmd(["doctor"], expect=0, has=["✓ Auto-notify on  blocked, or done after 2 minutes or more while you're not watching\n"
+                                       + "\n".join(away_doctor) + "\n"]),
+        action("away-off", toasts=[away_off]),
+        cmd(["doctor"], expect=0, lacks=["Away mode", "away-off"]))
+    add("doctor-away-auto-off", config(), herdr(PRESETS["running"]), state({"away": True}),
+        cmd(["doctor"], expect=0, has=["! Auto-notify off\n    → herdr plugin action invoke weskor.nudge.enable\n"
+                                       + "\n".join(away_doctor) + "\n"]))
+    add("doctor-away-no-herdr", config(), state({"away": True}), cmd(["doctor"], expect=0, lacks=["Away mode"]))
+
+    # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
+    # 6 Every agent, 7 Only these, then one per workspace, agent and desk. settings_herdr() lists workspaces api-work,
+    # web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4 (unnamed): rows 8-10, 11-13, desks 14-20
     # (desk, research, badauth, nohook, broken, offline, signed).
+    away_row = "Away from my desk: notify even for the pane on screen"
     set_herdr = herdr(settings_herdr())
     hidden = ["/hook", "/signed", "/nope", "/fail", "Bearer"]  # desk rows never show URL paths or secrets
     saved, unchanged = "Saved nudge settings to ", "No changes saved."
@@ -1948,7 +2014,7 @@ def scenarios():
         pty(["settings"], [["expect", r'nudge: no config at [^\n]*Run "nudge setup" to add a desk\.']], expect=1))
     add("settings-render", config(), set_herdr, state({"auto": True}),
         pty(["settings"], [
-            on_screen("nudge settings", "Automatic notifications", "[x] Auto-notify", "[x] Toast when one is sent",
+            on_screen("nudge settings", "Automatic notifications", "[x] Auto-notify", "[ ] " + away_row, "[x] Toast when one is sent",
                       "Shortest turn sent    ◂ 2 minutes ▸", "Cooldown per pane     ◂ 5 minutes ▸", "Terminal lines sent   ◂ 40 ▸",
                       "Who can notify", "(•) Every agent", "( ) Only these:",
                       "Workspaces", "[ ] api-work", "[ ] web-work", "[ ] wF ", "Agents", "[ ] claude-1", "[ ] reviewer", "[ ] wF:p4",
@@ -1960,7 +2026,7 @@ def scenarios():
         pty(["settings"], [
             on_screen("Workspaces", "none open in herdr", "Agents", "none open in herdr", cursor="[ ] Auto-notify"),
             keys("k" + UP),  # already at the top
-            keys("jjjjjjj"), on_screen(cursor="(•) desk  127.0.0.1"),  # headers, blanks, "none open" are not stops
+            keys("jjjjjjjj"), on_screen(cursor="(•) desk  127.0.0.1"),  # headers, blanks, "none open" are not stops
             keys("j" * 10), on_screen(cursor="( ) signed  127.0.0.1  signed"),  # clamps at the last desk
             keys(UP), on_screen(cursor="( ) offline  127.0.0.1"),
             keys("q")], expect=0, has=unchanged, config_unchanged=True))
@@ -1968,7 +2034,7 @@ def scenarios():
         pty(["settings"], [
             on_screen("[x] Auto-notify", cursor="[x] Auto-notify"),
             keys(" "), on_screen(cursor="[ ] Auto-notify"),
-            keys("jj" + RIGHT), on_screen(cursor="Shortest turn sent    ◂ 3 minutes ▸"),
+            keys("jjj" + RIGHT), on_screen(cursor="Shortest turn sent    ◂ 3 minutes ▸"),
             keys("+"), on_screen(cursor="◂ 5 minutes ▸"),
             keys("h"), on_screen(cursor="Shortest turn sent    ◂ 3 minutes ▸"),
             keys("j\\r"), on_screen(cursor="Cooldown per pane     ◂ 10 minutes ▸"),  # Enter cycles up
@@ -1978,7 +2044,7 @@ def scenarios():
             keys("jjj "), on_screen("( ) Every agent", "(•) Only these:", cursor="[x] api-work"),  # ticking selects Only these
             keys("jjjj\\r"), on_screen(cursor="[x] reviewer"),
             keys("jjj\\r"), on_screen("( ) desk  127.0.0.1", cursor="(•) research  127.0.0.1"),
-            keys("s")], expect=0, has=saved, sends=0, toasts=[], state_auto=False, config_mode="600",
+            keys("s")], expect=0, has=saved, sends=0, toasts=[], state_auto=False, state_keys={"away": None}, config_mode="600",
             config_keys={"default_desk": "research", "auto": {"min_turn_seconds": 180, "cooldown_seconds": 600, "tail_lines": 20},
                          "scope": {"workspaces": ["api-work"], "agents": ["reviewer"]}}),
         cmd(["list"], expect=0),
@@ -1989,7 +2055,7 @@ def scenarios():
     add("settings-presets-snap-and-wrap", config(extra=auto(min_turn_seconds=90, cooldown_seconds=45, tail_lines=200)), set_herdr,
         pty(["settings"], [
             on_screen("◂ 90 seconds ▸", "◂ 45 seconds ▸", "◂ 200 ▸"),
-            keys("j "), on_screen(cursor="[ ] Toast when one is sent"),
+            keys("jj "), on_screen(cursor="[ ] Toast when one is sent"),
             keys("jl"), on_screen(cursor="◂ 2 minutes ▸"),  # 90 s snaps up to the 120 s preset
             keys("jh"), on_screen(cursor="◂ 0 seconds ▸"),  # 45 s snaps down to 0
             keys("j "), on_screen(cursor="Terminal lines sent   ◂ 10 ▸"),  # Space cycles up and wraps 200 -> 10
@@ -1998,7 +2064,7 @@ def scenarios():
     add("settings-only-these-empty-then-discard", config(), set_herdr, state({"auto": True}),
         pty(["settings"], [
             on_screen(cursor="[x] Auto-notify"),
-            keys("jjjjjj "), on_screen("( ) Every agent", cursor="(•) Only these:"),
+            keys("jjjjjjj "), on_screen("( ) Every agent", cursor="(•) Only these:"),
             keys("s"), on_screen(SETTINGS_NOTHING_TICKED),
             keys("q"), on_screen(SETTINGS_UNSAVED, cursor="(•) Only these:"),
             keys("j"), on_screen(SETTINGS_UNSAVED, cursor="[ ] api-work"),  # another key disarms the discard...
@@ -2007,14 +2073,14 @@ def scenarios():
     add("settings-test-ping", config(), set_herdr,
         pty(["settings"], [
             on_screen(SETTINGS_HELP),
-            keys("j" * 19), on_screen(cursor="( ) signed  127.0.0.1  signed"),
+            keys("j" * 20), on_screen(cursor="( ) signed  127.0.0.1  signed"),
             keys("t"), drawn('Testing "signed"…'), on_screen('✓ "signed" received a test ping (HTTP 200)'),
             keys("kkkk"), on_screen(cursor="( ) badauth"),
             # The status line is one clipped row: at 120 columns this one loses its last words ("…again with nu").
             keys("t"), on_screen('✗ desk "badauth" webhook returned HTTP 401', "; copy the Authorization header again"),
             keys("j"), on_screen(cursor="( ) nohook"),
             keys("t"), on_screen('✗ desk "nohook" webhook returned HTTP 404: no such hook; copy the Webhook URL again with nudge setup'),
-            keys("k" * 16 + "t"), on_screen("Move to a desk to test it.", cursor="[ ] Auto-notify"),
+            keys("k" * 17 + "t"), on_screen("Move to a desk to test it.", cursor="[ ] Auto-notify"),
             keys("q")], expect=0, sends=3, has=unchanged, config_unchanged=True))
     add("settings-pane", config(), set_herdr,
         pty(["settings", "--pane"], [
@@ -2023,22 +2089,40 @@ def scenarios():
             herdr_has=[["notification", "show", "nudge", "--body", "Settings saved"]]),
         pty(["settings", "--pane"], [on_screen(cursor="[x] Auto-notify"), keys("q")],
             expect=0, has=unchanged, toasts=[], config_unchanged=True))
+    add("settings-away", config(), set_herdr, state({"auto": True}),
+        pty(["settings"], [
+            on_screen("[x] Auto-notify", "[ ] " + away_row, "[x] Toast when one is sent", cursor="[x] Auto-notify"),
+            keys("j"), on_screen(cursor="[ ] " + away_row),
+            keys(" "), on_screen(cursor="[x] " + away_row),
+            keys("s")], expect=0, has=saved, sends=0, toasts=[], state_auto=True, state_keys={"away": True}),
+        pty(["settings"], [
+            on_screen("[x] Auto-notify", "[x] " + away_row, cursor="[x] Auto-notify"),
+            keys("q")], expect=0, has=unchanged, config_unchanged=True, state_auto=True, state_keys={"away": True}),
+        pty(["settings"], [
+            on_screen("[x] " + away_row), keys("j\\r"), on_screen(cursor="[ ] " + away_row),  # Enter flips it too
+            keys("s")], expect=0, has=saved, state_auto=True, state_keys={"away": None}),
+        pty(["settings"], [on_screen("[x] Auto-notify", "[ ] " + away_row), keys("q")], expect=0, has=unchanged))
+    add("settings-away-from-action", config(), set_herdr, action("away-on", toasts=[away_on]),
+        pty(["settings", "--pane"], [
+            on_screen("[ ] Auto-notify", "[x] " + away_row, cursor="[ ] Auto-notify"),
+            keys(" "), on_screen(cursor="[x] Auto-notify"), keys("s")],
+            expect=0, has=saved, toasts=["Settings saved"], state_auto=True, state_keys={"away": True}))
     add("settings-scope-not-open",
         config(extra=scope(workspaces=["api-work", "old-ws", "wE"], agents=["claude-1", "gone-agent"])), set_herdr,
         pty(["settings"], [
             on_screen("( ) Every agent", "(•) Only these:", "[x] api-work", "[x] web-work", "[ ] wF ", "[x] old-ws  (not open)",
                       "[x] claude-1", "[ ] reviewer", "[ ] wF:p4", "[x] gone-agent  (not open)"),
-            keys("j" * 12 + " "), on_screen(cursor="[x] reviewer"),
+            keys("j" * 13 + " "), on_screen(cursor="[x] reviewer"),
             keys("s")], expect=0, has=saved,
             scope_is=(["api-work", "web-work", "old-ws"], ["claude-1", "reviewer", "gone-agent"])),
         pty(["settings"], [
             on_screen("[x] old-ws  (not open)", "[x] reviewer", "[x] gone-agent  (not open)"),
-            keys("j" * 10 + " "), on_screen(cursor="[ ] old-ws  (not open)"),
+            keys("j" * 11 + " "), on_screen(cursor="[ ] old-ws  (not open)"),
             keys("s")], expect=0, has=saved, scope_is=(["api-work", "web-work"], ["claude-1", "reviewer", "gone-agent"])))
     add("settings-every-agent", config(extra=scope(workspaces=["api-work"])), set_herdr,
         pty(["settings"], [
             on_screen("( ) Every agent", "(•) Only these:", "[x] api-work"),
-            keys("jjjjj "), on_screen(cursor="(•) Every agent"),
+            keys("jjjjjj "), on_screen(cursor="(•) Every agent"),
             keys("s")], expect=0, has=saved, config_keys={"scope": None}))
     add("action-settings-pane", herdr(PRESETS["running"]),
         action("settings", sends=0, toasts=[],

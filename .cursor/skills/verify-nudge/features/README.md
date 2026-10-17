@@ -53,9 +53,9 @@ four H2 sections in this order: `Sub-features`, `How to get to it (user POV)`, `
 
 - [Notify, test and list](./notify.md): send a notification or test ping to a desk; agent, git and stdin detection; id/sent_at; request signing; desk errors; listing desks.
 - [Setup](./setup.md): connect a desk scripted (flags/stdin, `--signing-secret`) or interactively in a terminal (clipboard, typing, hidden header, re-asks, Ctrl-C).
-- [Doctor](./doctor.md): health report for config, scope, webhook ping, herdr plugin, auto-notify, command link, clipboard.
-- [Plugin auto-notify](./plugin-auto-notify.md): `pane.agent_status_changed` events become desk notifications under the turn/focus/cooldown rules (`[auto]` settings), with redaction and a "Told the desk" toast.
-- [Plugin actions and startup](./plugin-actions.md): toggle/enable/disable, ask-desk, setup/status/settings overlays, scope actions, startup command-link repoint.
+- [Doctor](./doctor.md): health report for config, scope, webhook ping, herdr plugin, auto-notify, away mode, command link, clipboard.
+- [Plugin auto-notify](./plugin-auto-notify.md): `pane.agent_status_changed` events become desk notifications under the turn/focus/cooldown rules (`[auto]` settings, away mode), with redaction and a "Told the desk" toast.
+- [Plugin actions and startup](./plugin-actions.md): toggle/enable/disable, away/away-on/away-off, ask-desk, setup/status/settings overlays, scope actions, startup command-link repoint.
 - [Scope](./scope.md): `[scope]` limits which workspaces/agents may notify (events, notify, MCP); only-workspace / only-agent / all-agents actions; doctor's scope line.
-- [Settings](./settings.md): the full-screen `nudge settings` editor (auto-notify, `[auto]` values, who can notify, default desk, test pings, save/discard) and its herdr `settings` action.
+- [Settings](./settings.md): the full-screen `nudge settings` editor (auto-notify, away mode, `[auto]` values, who can notify, default desk, test pings, save/discard) and its herdr `settings` action.
 - [MCP server](./mcp.md): `nudge mcp` with `list_desks` and `notify_desk`.

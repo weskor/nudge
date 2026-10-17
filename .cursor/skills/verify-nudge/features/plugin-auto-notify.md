@@ -5,8 +5,9 @@ turns in state.json and notifies the default desk with the pane's last `auto.tai
 rules and blank runs removed, secrets redacted) when an agent is `blocked`, or `done` after a turn of
 `auto.min_turn_seconds` (120) or more, unless auto-notify is off, the pane is focused, the agent already ran
 `nudge notify` this turn, the pane is in its `auto.cooldown_seconds` (300) cooldown, or the agent is outside
-`[scope]`. After a successful notification it toasts `Told the desk: …` unless `auto.toast = false`. Every decision
-for done/blocked goes to stderr as `[nudge] <pane> <status>: …`.
+`[scope]`. Away mode (state.json `"away": true`) lifts the first two of those skips: you said you left your desk, so
+the pane on screen and auto-notify being off no longer stop a notification. After a successful notification it toasts
+`Told the desk: …` unless `auto.toast = false`. Every decision for done/blocked goes to stderr as `[nudge] <pane> <status>: …`.
 
 ## Sub-features
 
@@ -23,6 +24,9 @@ for done/blocked goes to stderr as `[nudge] <pane> <status>: …`.
   after the other rules decide to notify.
 - `event-skips` `auto-notify is off` (default), `you are looking at this pane`, `agent already notified the desk
   this turn`, `cooldown`.
+- `event-away` with state.json `away` true, `you are looking at this pane` and `auto-notify is off` no longer skip
+  (blocked and long done notify as usual, toast included); min turn, cooldown, `agent already notified the desk this
+  turn` and `[scope]` still skip. Without `away` (absent key) the rules are unchanged.
 - `event-payload` body: `id` (UUID v4), `sent_at`, `from_agent` = herdr agent name (else pane id), `cwd` = agent cwd
   (else HOME), git repo/branch of that cwd, message lead + `Last terminal output (secrets redacted):` + tail, or
   `No terminal output captured.`; signed (`x-nudge-*`) when the default desk has a `signing_secret`.
@@ -54,6 +58,7 @@ Preconditions:
 - **Thresholds.** `$VN seed-config --append '[auto]\nmin_turn_seconds = 30'` and a 60 s turn (`{"ago": 60000}`): `done` notifies (default would skip). `min_turn_seconds = 600` with a 300 s turn skips. `cooldown_seconds = 30` with `last_auto_at` 60 s ago notifies; `cooldown_seconds = 900` with 600 s ago skips `cooldown`.
 - **Tail.** `--append '[auto]\ntail_lines = 5'`, event `blocked`: the message tail has 5 lines. `tail_lines = 0` or `201`: `$VN run --expect 1 -- list` lists `auto.tail_lines`.
 - **Toast off.** `--append '[auto]\ntoast = false'`: the notification is sent but `herdr_calls` has no `notification show`.
+- **Away.** With the focused fixture and `{"auto": true}`, event `blocked` skips `you are looking at this pane`; run `$VN run --cwd home -- plugin action away-on`, repeat the event: `notified desk (HTTP 200)`, one request, toast `Told the desk: claude-1 is blocked`. Same for `done` after re-seeding a 180 s turn. `$VN seed-state '{"away": true}'` (auto off) with `agent-pane`: `blocked` notifies; after `away-off` it skips `auto-notify is off`. Away with a 30 s turn, `last_auto_at` 60 s ago, `self_notified_at` in the turn, or an out-of-`[scope]` pane still skips (`turn shorter than 120s`, `cooldown`, `agent already notified the desk this turn`, `outside nudge's scope`). Parity: `away-event-*`.
 - **Unknown key.** `--append '[auto]\nbogus = 1'`: `list`, `notify` and the event exit 1 with `auto.bogus: unknown setting`; nothing sent.
 - **Proof.** The event records' `webhook` body is what the desk saw; check redaction there, not in the fixture.
 
