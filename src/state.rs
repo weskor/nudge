@@ -31,6 +31,10 @@ pub(crate) struct State {
     /// terminal output.
     #[serde(default)]
     pub(crate) auto: bool,
+    /// You said you left your desk: notify even for the focused pane, and even with auto-notify off. Set with the
+    /// `away` herdr action or in `nudge settings`; absent from the file while off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) away: bool,
     #[serde(default)]
     pub(crate) panes: BTreeMap<String, PaneState>,
 }
@@ -64,9 +68,9 @@ fn read_state(path: &Path) -> State {
         .unwrap_or_default()
 }
 
-/// Whether auto-notify is on, without taking the lock or rewriting the file.
-pub(crate) fn auto_enabled(env: &Env) -> bool {
-    read_state(&state_dir(env).join("state.json")).auto
+/// The state as saved, without taking the lock or rewriting the file.
+pub(crate) fn current_state(env: &Env) -> State {
+    read_state(&state_dir(env).join("state.json"))
 }
 
 /// An exclusive lock: a directory next to the state file, removed on drop.

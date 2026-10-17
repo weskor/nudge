@@ -53,6 +53,7 @@ pub(crate) enum Decision {
 /// - `blocked` always qualifies; `done` only after a turn of at least `rules.min_turn_seconds` with a known start.
 /// - Skipped when auto-notify is off, you are looking at the pane (`focused`), the agent already ran
 ///   `nudge notify` this turn, or the pane is in its `rules.cooldown_seconds` cooldown.
+/// - Away mode (`state.away`) overrides the first two: you said you're not at your desk.
 pub(crate) fn decide(
     state: &mut State,
     pane_id: &str,
@@ -79,10 +80,10 @@ pub(crate) fn decide(
         HerdrStatus::Blocked => Settled::Blocked,
     };
 
-    if !state.auto {
+    if !state.auto && !state.away {
         return Decision::Skip("auto-notify is off".into());
     }
-    if focused {
+    if focused && !state.away {
         return Decision::Skip("you are looking at this pane".into());
     }
     let self_notified_since = turn_start.unwrap_or(now - rules.min_turn_ms());
@@ -375,6 +376,25 @@ mod tests {
             last(&mut state, &[(0, Working), (300, Done)]),
             Decision::Notify(Settled::Done)
         );
+    }
+
+    #[test]
+    fn away_mode_notifies_for_the_focused_pane_and_with_auto_off_but_keeps_the_other_rules() {
+        let mut state = State {
+            auto: false,
+            away: true,
+            ..State::default()
+        };
+        let decisions = run(&mut state, &[(0, Working), (60, Blocked)], true);
+        assert_eq!(decisions[1], Decision::Notify(Settled::Blocked));
+        let quick = run(&mut state, &[(70, Working), (80, Done)], true);
+        assert_eq!(
+            quick[1],
+            skip("turn shorter than 120s"),
+            "short turns still don't count"
+        );
+        state.away = false;
+        assert_eq!(last(&mut state, &[(500, Blocked)]), skip("auto-notify is off"));
     }
 
     #[test]

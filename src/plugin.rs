@@ -1,7 +1,7 @@
 //! herdr plugin entrypoints (see herdr-plugin.toml), reached through `nudge plugin …`:
 //!   event          `pane.agent_status_changed` hook
-//!   action <id>    enable | disable | toggle | ask-desk | setup | status | settings | only-workspace | only-agent |
-//!                  all-agents
+//!   action <id>    enable | disable | toggle | away | away-on | away-off | ask-desk | setup | status | settings |
+//!                  only-workspace | only-agent | all-agents
 //!   startup        server start: keep `~/.local/bin/nudge` pointing at this install
 //!
 //! Decisions and failures go to stderr, which herdr keeps in `herdr plugin log list`.
@@ -228,6 +228,21 @@ impl Plugin<'_> {
                     state.auto
                 })?;
                 self.toast(if auto { "Auto-notify on" } else { "Auto-notify off" });
+            }
+            "away" | "away-on" | "away-off" => {
+                let away = update_state(self.env, |state| {
+                    state.away = match action {
+                        "away-on" => true,
+                        "away-off" => false,
+                        _ => !state.away,
+                    };
+                    state.away
+                })?;
+                self.toast(if away {
+                    "Away: the desk hears from every agent, even the pane on screen"
+                } else {
+                    "Back: nudge stays quiet for the pane you're looking at"
+                });
             }
             "ask-desk" => {
                 let Some(pane_id) = pane_id else {

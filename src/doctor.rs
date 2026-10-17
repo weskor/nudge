@@ -7,7 +7,7 @@ use crate::context::{Env, Run as _, System};
 use crate::error::{Blame, Error, Result};
 use crate::install::{PLUGIN_ID, Plugin, command_link, nudge_root, plugin, plugin_logs};
 use crate::notify::{Origin, current_dir, ping_desk};
-use crate::state::{auto_enabled, now_ms, state_dir};
+use crate::state::{current_state, now_ms, state_dir};
 use crate::tty::{Mark, Style, wait_for_key};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,7 +206,8 @@ fn check_plugin(env: &Env) -> Vec<Check> {
         .ok()
         .flatten()
         .map_or_else(Auto::default, |config| config.auto);
-    let auto = if auto_enabled(env) {
+    let saved = current_state(env);
+    let auto = if saved.auto {
         Check::new(Level::Ok, "Auto-notify on").detail(format!(
             "blocked, or done after {} or more while you're not watching",
             seconds_in_words(rules.min_turn_seconds)
@@ -215,6 +216,15 @@ fn check_plugin(env: &Env) -> Vec<Check> {
         Check::new(Level::Warn, "Auto-notify off").fix(format!("herdr plugin action invoke {PLUGIN_ID}.enable"))
     };
     let mut checks = vec![status, build, auto];
+    if saved.away {
+        checks.push(
+            Check::new(Level::Ok, "Away mode on")
+                .detail("notifying even for the pane you're looking at")
+                .fix(format!(
+                    "when you're back: herdr plugin action invoke {PLUGIN_ID}.away-off"
+                )),
+        );
+    }
     let logs = plugin_logs(env, &System);
     let recent: Vec<_> = logs.iter().filter(|log| !log.stderr.trim().is_empty()).collect();
     for log in recent.iter().skip(recent.len().saturating_sub(5)) {

@@ -1,6 +1,6 @@
 id = "weskor.nudge"
 name = "Nudge"
-version = "0.7.0"
+version = "0.8.0"
 min_herdr_version = "0.9.0"
 description = "Tell your AI desk (a webhook automation) when an agent finishes or is blocked; the desk replies with herdr agent prompt."
 platforms = ["linux", "macos"]
@@ -51,6 +51,21 @@ command = ["sh", "bin/nudge", "plugin", "action", "enable"]
 id = "disable"
 title = "Nudge: turn auto-notify off"
 command = ["sh", "bin/nudge", "plugin", "action", "disable"]
+
+[[actions]]
+id = "away"
+title = "Nudge: away from desk (toggle)"
+command = ["sh", "bin/nudge", "plugin", "action", "away"]
+
+[[actions]]
+id = "away-on"
+title = "Nudge: I'm away from my desk"
+command = ["sh", "bin/nudge", "plugin", "action", "away-on"]
+
+[[actions]]
+id = "away-off"
+title = "Nudge: I'm back at my desk"
+command = ["sh", "bin/nudge", "plugin", "action", "away-off"]
 
 [[actions]]
 id = "only-workspace"

@@ -13,7 +13,7 @@ use crate::config::{Auto, Config, Scope, default_config_path, load_config, secon
 use crate::context::{Env, ListedWorkspace, Run as _, System, herdr_agents, herdr_workspaces};
 use crate::error::{Blame, Error, Result};
 use crate::notify::{Origin, current_dir, ping_desk};
-use crate::state::{auto_enabled, update_state};
+use crate::state::{State, current_state, update_state};
 
 const TURN_STEPS: [u32; 9] = [0, 30, 60, 120, 180, 300, 600, 900, 1800];
 const COOLDOWN_STEPS: [u32; 8] = [0, 60, 120, 300, 600, 900, 1800, 3600];
@@ -48,6 +48,7 @@ fn cycle(value: u32, steps: &[u32]) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
     AutoOn,
+    Away,
     Toast,
     MinTurn,
     Cooldown,
@@ -116,6 +117,7 @@ enum Edits {
 #[derive(Clone, Debug)]
 pub(crate) struct Settings {
     auto_on: bool,
+    away: bool,
     auto: Auto,
     only: bool,
     workspaces: Vec<Choice>,
@@ -154,7 +156,7 @@ fn choices(live: Vec<(String, Vec<String>)>, saved: &[String]) -> Vec<Choice> {
 }
 
 impl Settings {
-    pub(crate) fn new(config: &Config, auto_on: bool, workspaces: &[ListedWorkspace], agents: &[String]) -> Self {
+    pub(crate) fn new(config: &Config, saved: &State, workspaces: &[ListedWorkspace], agents: &[String]) -> Self {
         let live_workspaces = workspaces
             .iter()
             .map(|workspace| {
@@ -173,7 +175,8 @@ impl Settings {
             .map(|agent| (agent.clone(), vec![agent.clone()]))
             .collect();
         Self {
-            auto_on,
+            auto_on: saved.auto,
+            away: saved.away,
             auto: config.auto,
             only: !config.scope.is_everyone(),
             workspaces: workspace_choices,
@@ -200,6 +203,7 @@ impl Settings {
     fn rows(&self) -> Vec<Row> {
         let mut rows = vec![
             Row::AutoOn,
+            Row::Away,
             Row::Toast,
             Row::MinTurn,
             Row::Cooldown,
@@ -229,6 +233,7 @@ impl Settings {
             Row::Cooldown => (&mut auto.cooldown_seconds, &COOLDOWN_STEPS[..]),
             Row::TailLines => (&mut auto.tail_lines, &TAIL_STEPS[..]),
             Row::AutoOn
+            | Row::Away
             | Row::Toast
             | Row::Everyone
             | Row::OnlyThese
@@ -246,6 +251,7 @@ impl Settings {
     fn toggle(&mut self, row: Row) {
         match row {
             Row::AutoOn => self.auto_on = !self.auto_on,
+            Row::Away => self.away = !self.away,
             Row::Toast => self.auto.toast = !self.auto.toast,
             Row::MinTurn => self.auto.min_turn_seconds = cycle(self.auto.min_turn_seconds, &TURN_STEPS),
             Row::Cooldown => self.auto.cooldown_seconds = cycle(self.auto.cooldown_seconds, &COOLDOWN_STEPS),
@@ -335,8 +341,10 @@ impl Settings {
         }
     }
 
-    pub(crate) const fn auto_on(&self) -> bool {
-        self.auto_on
+    /// Write the edited toggles into `state` (pane timestamps stay as they are).
+    pub(crate) const fn apply_state(&self, state: &mut State) {
+        state.auto = self.auto_on;
+        state.away = self.away;
     }
 
     /// The lines to draw, and which one the cursor is on.
@@ -361,6 +369,14 @@ impl Settings {
             &mut lines,
             Some(Row::AutoOn),
             Line::from(format!("  {} Auto-notify", check(self.auto_on))),
+        );
+        push(
+            &mut lines,
+            Some(Row::Away),
+            Line::from(format!(
+                "  {} Away from my desk: notify even for the pane on screen",
+                check(self.away)
+            )),
         );
         push(
             &mut lines,
@@ -503,8 +519,7 @@ fn save(settings: &Settings, env: &Env) -> Result<()> {
     let mut config = load_config(&path)?;
     settings.apply(&mut config);
     write_config(&path, &config)?;
-    let auto_on = settings.auto_on();
-    update_state(env, |state| state.auto = auto_on)?;
+    update_state(env, |state| settings.apply_state(state))?;
     Ok(())
 }
 
@@ -544,10 +559,9 @@ pub(crate) fn settings(pane: bool, env: &Env) -> Result<u8> {
         )));
     }
     let config = load_config(&path)?;
-    let auto_on = auto_enabled(env);
     let mut settings = Settings::new(
         &config,
-        auto_on,
+        &current_state(env),
         &herdr_workspaces(env, &System),
         &herdr_agents(env, &System),
     );
@@ -573,6 +587,7 @@ mod tests {
     use super::{Key, Outcome, Row, Settings, cycle, step};
     use crate::config::{Auto, Config, Desk, Scope};
     use crate::context::ListedWorkspace;
+    use crate::state::State;
 
     fn desk(name: &str) -> Desk {
         Desk {
@@ -600,7 +615,7 @@ mod tests {
         };
         Settings::new(
             &config,
-            false,
+            &State::default(),
             &[workspace("w1", "Base"), workspace("wD", "web-app")],
             &["builder".into(), "reviewer".into()],
         )
@@ -653,7 +668,12 @@ mod tests {
             ..Auto::default()
         };
         assert_eq!(config.auto, expected);
-        assert!(ui.auto_on());
+        let mut state = State::default();
+        ui.apply_state(&mut state);
+        assert!(state.auto && !state.away);
+        tap(&mut ui, Row::Away, Key::Toggle);
+        ui.apply_state(&mut state);
+        assert!(state.away);
         assert_eq!(config.default_desk.as_deref(), Some("research"));
         assert!(config.scope.is_everyone());
     }
