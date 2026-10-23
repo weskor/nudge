@@ -113,34 +113,39 @@ Both write the `[scope]` table in the config. Scope applies to automatic notific
 `herdr plugin action invoke weskor.nudge.settings` (or `nudge settings` in a terminal) opens an editor for everything above, with the workspaces and agents that are open in herdr right now:
 
 ```text
-┌ nudge settings ──────────────────────────────────────────────┐
-│Automatic notifications                                       │
-│  [x] Auto-notify                                             │
-│  [ ] Away from my desk: notify even for the pane on screen   │
-│  [x] Toast when one is sent                                  │
-│  Shortest turn sent    ◂ 2 minutes ▸                         │
-│  Cooldown per pane     ◂ 5 minutes ▸                         │
-│  Terminal lines sent   ◂ 40 ▸                                │
+╭ nudge settings ─────────────────────────────────── ● unsaved ╮
 │                                                              │
-│Who can notify                                                │
-│  ( ) Every agent                                             │
-│  (•) Only these:                                             │
-│      Workspaces                                              │
-│        [ ] Base                                              │
-│        [x] api                                               │
-│      Agents                                                  │
-│        [ ] builder                                           │
-│        [x] reviewer                                          │
+│  Mode                                                        │
+│    [x] Auto-notify                                           │
+│    [ ] Away from my desk                                     │
 │                                                              │
-│Desk the plugin notifies                                      │
-│  (•) bridge  desks.example                                   │
-│  ( ) local  127.0.0.1  signed                                │
+│  Automatic notifications                                     │
+│    [x] Toast when one is sent                                │
+│        Shortest turn sent    ◂ 2 minutes ▸                   │
+│        Cooldown per pane       5 minutes                     │
+│        Terminal lines sent     40                            │
 │                                                              │
-│↑↓ move  space pick  ←→ change  t test  s save  q quit        │
-└──────────────────────────────────────────────────────────────┘
+│  Who can notify                                              │
+│    ( ) Every agent                                           │
+│    (•) Only these:                                           │
+│        Workspaces                                            │
+│          [ ] Base  1 agent                                   │
+│          [x] api   2 agents                                  │
+│        Agents                                                │
+│          [ ] builder   api · backend                         │
+│          [x] reviewer  api · backend                         │
+│                                                              │
+│  Default desk                                                │
+│    (•) bridge  desks.example                                 │
+│    ( ) local   127.0.0.1  signed                             │
+│  ──────────────────────────────────────────────────────────  │
+│  Skip done turns shorter than this. Blocked agents always    │
+│  count.                                                      │
+│  ↑↓ move  space pick  ←→ change  t test  s save  q quit      │
+╰──────────────────────────────────────────────────────────────╯
 ```
 
-`t` sends a test ping to the desk under the cursor. Nothing changes until you press `s`; `q` twice throws edits away. Desks show only their host, never the URL path or secrets.
+The line under the list explains the row under the cursor. The workspace and agent lists only appear when you pick "Only these", and each agent shows its workspace and directory. `t` sends a test ping to the desk under the cursor. Nothing changes until you press `s`; `q` twice throws edits away. Desks show only their host, never the URL path or secrets.
 
 ### Notifications written by the agent
 

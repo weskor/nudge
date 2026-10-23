@@ -1,6 +1,7 @@
 # Settings
 
-`nudge settings [--pane]` is a full-screen terminal editor (alternate screen, a box titled ` nudge settings `) for
+`nudge settings [--pane]` is a full-screen terminal editor (alternate screen, a centered rounded box titled
+` nudge settings `, `● unsaved` at the top right while there are unsaved edits) for
 auto-notify, away mode, the `[auto]` settings, `[scope]` (who can notify) and the default desk. It reads the config,
 state.json `auto` and `away`, and the open workspaces/agents from `herdr workspace list` / `herdr agent list`; nothing changes until `s`,
 which rewrites the config (mode 600) and state.json and prints `Saved nudge settings to <path>.` after leaving the
@@ -14,20 +15,23 @@ screen. Quitting without saving prints `No changes saved.`. herdr opens it as an
   `settings extra` is a usage error (exit 2).
 - `settings-no-config` in a terminal without a config: exit 1, `nudge: no config at … Run "nudge setup" to add a desk.`,
   before drawing anything.
-- `settings-rows` in order (cursor starts on the first): `[x]/[ ] Auto-notify`, `[x]/[ ] Away from my desk: notify
-  even for the pane on screen`, `[x]/[ ] Toast when one is sent`,
-  `Shortest turn sent    ◂ 2 minutes ▸`, `Cooldown per pane     ◂ 5 minutes ▸`, `Terminal lines sent   ◂ 40 ▸`,
-  `( )/(•) Every agent`, `( )/(•) Only these:`, one `[ ]/[x] <name>` per workspace (label, else id) then per agent
-  (name, else pane id) — open ones first, then names only the config has with `  (not open)` — then one
-  `( )/(•) <desk>  <host>[  signed]` per desk (radio = default desk; never the URL path or secrets). Headers
-  (`Automatic notifications`, `Who can notify`, `Workspaces`, `Agents`, `Desk the plugin notifies`), blanks and
-  `none open in herdr` (empty list) are not cursor stops. Footer: status line, then
-  `↑↓ move  space pick  ←→ change  t test  s save  q quit`.
+- `settings-rows` in order (cursor starts on the first): under `Mode`, `[x]/[ ] Auto-notify`, `[x]/[ ] Away from my
+  desk`; under `Automatic notifications`, `[x]/[ ] Toast when one is sent`, then the value rows `Shortest turn sent`,
+  `Cooldown per pane`, `Terminal lines sent`, each label padded to 22 columns, then `◂ 2 minutes ▸` under the cursor or
+  `  2 minutes` elsewhere; under `Who can notify`, `( )/(•) Every agent`, `( ) Only these…` / `(•) Only these:`. Only
+  while `Only these` is picked: `Workspaces`, one `[ ]/[x] <name>` per workspace (label, else id; detail `N agent(s)`
+  open in it), `Agents`, one per agent (name, else pane id; detail `<workspace> · <cwd basename>`), open ones first,
+  then names only the config has with the detail `(not open)`; names are padded so details line up. Under `Default
+  desk`, one `( )/(•) <desk>  <host>[  signed]` per desk, names padded the same way (radio = default desk; never the URL
+  path or secrets). Headers, sub-headers, blanks and `none open in herdr` (empty list) are not cursor stops, and
+  neither are the hidden lists. Footer, below a rule: the status (✓ green, ✗ red, other yellow), or else a dim
+  description of the row under the cursor, in 2 rows (up to 4 for a long status), then
+  `↑↓ move  space pick  ←→ change  t test  s save  q quit`. Highlight = the cursor row in reverse video.
 - `settings-keys` ↑/k ↓/j move (clamped at both ends); ←/h/- and →/l/+ step a value row to the next preset (shortest
   turn 0,30,60,120,180,300,600,900,1800 s; cooldown 0,60,120,300,600,900,1800,3600 s; lines 10,20,40,80,120,200;
   custom values snap to the next preset in that direction; the ends stay put); Enter/Space flips a checkbox, cycles a
-  value row up (wrapping), picks a radio, ticks a workspace/agent (which also selects `Only these`) or makes a desk
-  the default.
+  value row up (wrapping), picks a radio (`Only these` shows the lists, `Every agent` hides them; ticks are kept),
+  ticks a workspace/agent or makes a desk the default.
 - `settings-save` `s` re-reads the config, writes `[auto]` with only non-default keys, `[scope]` with the ticked names
   (a workspace matched by id in the config is saved under its label; removed entirely for `Every agent`),
   `default_desk`, and state.json `auto` and `away` (`"away": true` when ticked, key absent when not; other state is
@@ -89,7 +93,9 @@ Preconditions:
   are only scanned for secrets. Transient states (the `Testing "<desk>"…` status) are only in the raw bytes: parity
   matches them with an escape-tolerant `expect`.
 - Opening settings only reads state.json; quitting without saving leaves it untouched (and doesn't create it).
-- The status line wraps (up to 4 rows) above the help line, so long test-ping errors keep their fix hint, e.g.
-  `…; copy the Authorization header again with` / `nudge setup` on the next row at 120 columns.
+- The box is 70–96 columns wide (its widest line, within the screen), so the status wraps (up to 4 rows) at about
+  64 columns: match a long status in pieces, e.g. `✗ desk "badauth" webhook returned HTTP 401` and, on the next row,
+  `copy the Authorization header again with nudge setup`. Value rows show `◂ ▸` only under the cursor, so assert
+  unfocused values as `<label padded to 22>  <value>` (e.g. `Shortest turn sent      2 minutes`).
 - Send keys only after a `--screen` step: the first key before the UI is in raw mode would be lost or echoed. Esc must be
   its own `--send` (an Esc followed by more bytes in one write is parsed as an escape sequence).

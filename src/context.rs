@@ -328,10 +328,29 @@ pub(crate) fn herdr_workspaces(env: &Env, run: &dyn Run) -> Vec<ListedWorkspace>
         .unwrap_or_default()
 }
 
-/// The `herdr agent prompt` targets of all running agents; empty if herdr is unavailable.
-pub(crate) fn herdr_agents(env: &Env, run: &dyn Run) -> Vec<String> {
+/// A running agent from `herdr agent list`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ListedAgent {
+    /// Its `herdr agent prompt` target: its name, else its pane id.
+    pub(crate) name: String,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) cwd: Option<String>,
+}
+
+/// All running agents; empty if herdr is unavailable.
+pub(crate) fn herdr_agents(env: &Env, run: &dyn Run) -> Vec<ListedAgent> {
     herdr_json::<AgentList>(&["agent", "list"], env, Path::new("/"), run)
-        .map(|list| list.result.agents.iter().map(HerdrAgent::target).collect())
+        .map(|list| {
+            list.result
+                .agents
+                .into_iter()
+                .map(|agent| ListedAgent {
+                    name: agent.target(),
+                    workspace_id: agent.workspace_id,
+                    cwd: agent.cwd.or(agent.foreground_cwd),
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 

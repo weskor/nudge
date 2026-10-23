@@ -1997,10 +1997,11 @@ def scenarios():
     add("doctor-away-no-herdr", config(), state({"away": True}), cmd(["doctor"], expect=0, lacks=["Away mode"]))
 
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
-    # 6 Every agent, 7 Only these, then one per workspace, agent and desk. settings_herdr() lists workspaces api-work,
-    # web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4 (unnamed): rows 8-10, 11-13, desks 14-20
-    # (desk, research, badauth, nohook, broken, offline, signed).
-    away_row = "Away from my desk: notify even for the pane on screen"
+    # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per
+    # desk. settings_herdr() lists workspaces api-work, web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4
+    # (unnamed): with "Only these" rows 8-10, 11-13, desks 14-20, else desks 8-14 (desk, research, badauth, nohook,
+    # broken, offline, signed). Value rows show ◂ ▸ only under the cursor; names are padded so details line up.
+    away_row = "Away from my desk"
     set_herdr = herdr(settings_herdr())
     hidden = ["/hook", "/signed", "/nope", "/fail", "Bearer"]  # desk rows never show URL paths or secrets
     saved, unchanged = "Saved nudge settings to ", "No changes saved."
@@ -2014,22 +2015,29 @@ def scenarios():
         pty(["settings"], [["expect", r'nudge: no config at [^\n]*Run "nudge setup" to add a desk\.']], expect=1))
     add("settings-render", config(), set_herdr, state({"auto": True}),
         pty(["settings"], [
-            on_screen("nudge settings", "Automatic notifications", "[x] Auto-notify", "[ ] " + away_row, "[x] Toast when one is sent",
-                      "Shortest turn sent    ◂ 2 minutes ▸", "Cooldown per pane     ◂ 5 minutes ▸", "Terminal lines sent   ◂ 40 ▸",
-                      "Who can notify", "(•) Every agent", "( ) Only these:",
-                      "Workspaces", "[ ] api-work", "[ ] web-work", "[ ] wF ", "Agents", "[ ] claude-1", "[ ] reviewer", "[ ] wF:p4",
-                      "Desk the plugin notifies", "(•) desk  127.0.0.1", "( ) research  127.0.0.1", "( ) signed  127.0.0.1  signed",
-                      SETTINGS_HELP, cursor="[x] Auto-notify"),
+            on_screen("nudge settings", "Mode", "[x] Auto-notify", "[ ] " + away_row, "Automatic notifications",
+                      "[x] Toast when one is sent", "Shortest turn sent      2 minutes", "Cooldown per pane       5 minutes",
+                      "Terminal lines sent     40", "Who can notify", "(•) Every agent", "( ) Only these…",
+                      "Default desk", "(•) desk      127.0.0.1", "( ) research  127.0.0.1", "( ) signed    127.0.0.1  signed",
+                      "Tell the desk when an agent is blocked", SETTINGS_HELP, cursor="[x] Auto-notify"),
+            keys("jjjjjjj "), on_screen("● unsaved", "( ) Every agent", "Workspaces", "[ ] api-work  1 agent",
+                                        "[ ] web-work  1 agent", "[ ] wF        1 agent", "Agents", "[ ] claude-1  api-work · api",
+                                        "[ ] reviewer  web-work · web", "[ ] wF:p4     wF · misc", cursor="(•) Only these:"),
+            keys("k "), on_screen("( ) Only these…", cursor="(•) Every agent"),
+            keys("q"), on_screen(SETTINGS_UNSAVED),
             keys("q")], expect=0, has=unchanged, lacks=hidden, sends=0, toasts=[], config_unchanged=True,
             herdr_has=[["workspace", "list"], ["agent", "list"]]))
     add("settings-cursor-no-herdr", config(), herdr(None),
         pty(["settings"], [
-            on_screen("Workspaces", "none open in herdr", "Agents", "none open in herdr", cursor="[ ] Auto-notify"),
+            on_screen("( ) Only these…", cursor="[ ] Auto-notify"),
             keys("k" + UP),  # already at the top
-            keys("jjjjjjjj"), on_screen(cursor="(•) desk  127.0.0.1"),  # headers, blanks, "none open" are not stops
-            keys("j" * 10), on_screen(cursor="( ) signed  127.0.0.1  signed"),  # clamps at the last desk
-            keys(UP), on_screen(cursor="( ) offline  127.0.0.1"),
-            keys("q")], expect=0, has=unchanged, config_unchanged=True))
+            keys("jjjjjjjj"), on_screen(cursor="(•) desk      127.0.0.1"),  # headers and blanks are not stops
+            keys("j" * 10), on_screen(cursor="( ) signed    127.0.0.1  signed"),  # clamps at the last desk
+            keys(UP), on_screen(cursor="( ) offline   127.0.0.1"),
+            keys("k" * 6 + " "), on_screen("Workspaces", "none open in herdr", "Agents", "none open in herdr",
+                                          cursor="(•) Only these:"),
+            keys("j"), on_screen(cursor="(•) desk      127.0.0.1"),  # "none open" is not a stop either
+            keys("qq")], expect=0, has=unchanged, config_unchanged=True))
     add("settings-save", config(), set_herdr, state({"auto": True}),
         pty(["settings"], [
             on_screen("[x] Auto-notify", cursor="[x] Auto-notify"),
@@ -2041,20 +2049,22 @@ def scenarios():
             keys("j" + LEFT), on_screen(cursor="Terminal lines sent   ◂ 20 ▸"),
             keys("--"), on_screen(cursor="Terminal lines sent   ◂ 10 ▸"),  # the second "-" stays at the smallest preset
             keys("l"), on_screen(cursor="Terminal lines sent   ◂ 20 ▸"),
-            keys("jjj "), on_screen("( ) Every agent", "(•) Only these:", cursor="[x] api-work"),  # ticking selects Only these
+            keys("jj "), on_screen("( ) Every agent", "Workspaces", cursor="(•) Only these:"),  # shows the lists
+            keys("j "), on_screen(cursor="[x] api-work"),
             keys("jjjj\\r"), on_screen(cursor="[x] reviewer"),
-            keys("jjj\\r"), on_screen("( ) desk  127.0.0.1", cursor="(•) research  127.0.0.1"),
+            keys("jjj\\r"), on_screen("( ) desk      127.0.0.1", cursor="(•) research  127.0.0.1"),
             keys("s")], expect=0, has=saved, sends=0, toasts=[], state_auto=False, state_keys={"away": None}, config_mode="600",
             config_keys={"default_desk": "research", "auto": {"min_turn_seconds": 180, "cooldown_seconds": 600, "tail_lines": 20},
                          "scope": {"workspaces": ["api-work"], "agents": ["reviewer"]}}),
         cmd(["list"], expect=0),
         pty(["settings"], [
-            on_screen("[ ] Auto-notify", "◂ 3 minutes ▸", "◂ 10 minutes ▸", "◂ 20 ▸", "( ) Every agent", "(•) Only these:",
+            on_screen("[ ] Auto-notify", "Shortest turn sent      3 minutes", "Cooldown per pane       10 minutes",
+                      "Terminal lines sent     20", "( ) Every agent", "(•) Only these:",
                       "[x] api-work", "[ ] web-work", "[ ] claude-1", "[x] reviewer", "( ) desk", "(•) research"),
             keys("q")], expect=0, has=unchanged, config_unchanged=True))
     add("settings-presets-snap-and-wrap", config(extra=auto(min_turn_seconds=90, cooldown_seconds=45, tail_lines=200)), set_herdr,
         pty(["settings"], [
-            on_screen("◂ 90 seconds ▸", "◂ 45 seconds ▸", "◂ 200 ▸"),
+            on_screen("Shortest turn sent      90 seconds", "Cooldown per pane       45 seconds", "Terminal lines sent     200"),
             keys("jj "), on_screen(cursor="[ ] Toast when one is sent"),
             keys("jl"), on_screen(cursor="◂ 2 minutes ▸"),  # 90 s snaps up to the 120 s preset
             keys("jh"), on_screen(cursor="◂ 0 seconds ▸"),  # 45 s snaps down to 0
@@ -2073,13 +2083,13 @@ def scenarios():
     add("settings-test-ping", config(), set_herdr,
         pty(["settings"], [
             on_screen(SETTINGS_HELP),
-            keys("j" * 20), on_screen(cursor="( ) signed  127.0.0.1  signed"),
+            keys("j" * 20), on_screen(cursor="( ) signed    127.0.0.1  signed"),
             keys("t"), drawn('Testing "signed"…'), on_screen('✓ "signed" received a test ping (HTTP 200)'),
             keys("kkkk"), on_screen(cursor="( ) badauth"),
-            # The status line is one clipped row: at 120 columns this one loses its last words ("…again with nu").
-            keys("t"), on_screen('✗ desk "badauth" webhook returned HTTP 401', "; copy the Authorization header again"),
+            # The status wraps inside the box (up to 4 rows), so the fix hint stays whole on the next row.
+            keys("t"), on_screen('✗ desk "badauth" webhook returned HTTP 401', "copy the Authorization header again with nudge setup"),
             keys("j"), on_screen(cursor="( ) nohook"),
-            keys("t"), on_screen('✗ desk "nohook" webhook returned HTTP 404: no such hook; copy the Webhook URL again with nudge setup'),
+            keys("t"), on_screen('✗ desk "nohook" webhook returned HTTP 404: no such hook;', "Webhook URL again with nudge setup"),
             keys("k" * 17 + "t"), on_screen("Move to a desk to test it.", cursor="[ ] Auto-notify"),
             keys("q")], expect=0, sends=3, has=unchanged, config_unchanged=True))
     add("settings-pane", config(), set_herdr,
@@ -2110,19 +2120,20 @@ def scenarios():
     add("settings-scope-not-open",
         config(extra=scope(workspaces=["api-work", "old-ws", "wE"], agents=["claude-1", "gone-agent"])), set_herdr,
         pty(["settings"], [
-            on_screen("( ) Every agent", "(•) Only these:", "[x] api-work", "[x] web-work", "[ ] wF ", "[x] old-ws  (not open)",
-                      "[x] claude-1", "[ ] reviewer", "[ ] wF:p4", "[x] gone-agent  (not open)"),
+            on_screen("( ) Every agent", "(•) Only these:", "[x] api-work  1 agent", "[x] web-work  1 agent",
+                      "[ ] wF        1 agent", "[x] old-ws    (not open)", "[x] claude-1    api-work · api",
+                      "[ ] reviewer    web-work · web", "[ ] wF:p4       wF · misc", "[x] gone-agent  (not open)"),
             keys("j" * 13 + " "), on_screen(cursor="[x] reviewer"),
             keys("s")], expect=0, has=saved,
             scope_is=(["api-work", "web-work", "old-ws"], ["claude-1", "reviewer", "gone-agent"])),
         pty(["settings"], [
-            on_screen("[x] old-ws  (not open)", "[x] reviewer", "[x] gone-agent  (not open)"),
-            keys("j" * 11 + " "), on_screen(cursor="[ ] old-ws  (not open)"),
+            on_screen("[x] old-ws    (not open)", "[x] reviewer", "[x] gone-agent  (not open)"),
+            keys("j" * 11 + " "), on_screen(cursor="[ ] old-ws    (not open)"),
             keys("s")], expect=0, has=saved, scope_is=(["api-work", "web-work"], ["claude-1", "reviewer", "gone-agent"])))
     add("settings-every-agent", config(extra=scope(workspaces=["api-work"])), set_herdr,
         pty(["settings"], [
             on_screen("( ) Every agent", "(•) Only these:", "[x] api-work"),
-            keys("jjjjjj "), on_screen(cursor="(•) Every agent"),
+            keys("jjjjjj "), on_screen("( ) Only these…", cursor="(•) Every agent"),
             keys("s")], expect=0, has=saved, config_keys={"scope": None}))
     add("action-settings-pane", herdr(PRESETS["running"]),
         action("settings", sends=0, toasts=[],
