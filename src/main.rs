@@ -12,6 +12,7 @@ mod settings;
 mod setup;
 mod state;
 mod tty;
+mod ui;
 mod watch;
 
 use std::io::Read as _;

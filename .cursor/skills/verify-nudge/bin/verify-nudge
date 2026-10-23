@@ -1512,10 +1512,6 @@ PANE_HERDR = PRESETS["agent-pane"]
 AGENT_HERDR = fixture(HERDR_VERSION, NOTIFICATION_OK, NO_AGENTS)
 
 
-def setup_tty_url_prompt():
-    return ["expect", r"1/2 Copy the Webhook URL[^\n]*›"]
-
-
 def on_screen(*parts, cursor=None):
     """A `screen` step: the literal `parts` appear on the rendered screen in this order; `cursor` is literal text on
     the highlighted (reverse-video) row."""
@@ -1541,7 +1537,10 @@ def keys(text):
 SETTINGS_HELP = "↑↓ move  space pick  ←→ change  t test  s save  q quit"
 SETTINGS_UNSAVED = "Unsaved changes: press q again to discard them, or s to save."
 SETTINGS_NOTHING_TICKED = "Tick at least one workspace or agent, or choose Every agent."
+SETUP_HELP = "↑↓ move  enter paste/next  space tick  ctrl-s test & save  esc quit"
+SETUP_HELP_NO_TEST = "↑↓ move  enter paste/next  space tick  ctrl-s save  esc quit"
 UP, DOWN, LEFT, RIGHT, ESC, CTRL_C = "\\e[A", "\\e[B", "\\e[D", "\\e[C", "\\e", "\\x03"
+CTRL_S, CTRL_U = "\\x13", "\\x15"
 
 
 
@@ -1651,59 +1650,76 @@ def scenarios():
     add("setup-missing-values", cmd(["setup"], stdin="", expect=1), cmd(["setup", "--url", URL], stdin="", expect=1))
     add("setup-existing-bad-toml", raw_config(BAD_TOML), cmd(["setup", "--url", URL, "--authorization", GOOD], expect=1))
 
-    # ---- setup, interactive (PTY)
+    # ---- setup, interactive (PTY): a full-screen form. Cursor stops: Webhook URL, Authorization, Description, then
+    # (when offered) Make "<desk>" the default desk, Turn on auto-notify, Install the nudge command, then the button.
+    done = "Done. Check everything any time with nudge doctor."
     add("setup-tty-clipboard", herdr(PRESETS["running"]), clip(URL),
         pty(["setup"], [
-            setup_tty_url_prompt(), ["send", "\\r"],
-            ["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["clip", GOOD], ["send", "\\r"],
-            ["expect", r"Turn on auto-notify\?[^\n]*›"], ["send", "\\r"],
-            ["expect", r"Install the[^\n]*nudge[^\n]*›"], ["send", "\\r"],
-            ["expect", r"Done\."]], expect=0))
-    add("setup-tty-manual-and-401",
+            on_screen("nudge setup", 'Desk "desk"  new desk', "Webhook URL    ▏Enter pastes from the clipboard",
+                      "Authorization  Enter pastes from the clipboard", "Description    optional", "After saving",
+                      "[x] Turn on auto-notify        herdr plugin enabled", "[x] Install the nudge command  into ~/.local/bin",
+                      "[ Test and save ]", "Copy the Webhook URL", SETUP_HELP, cursor="Webhook URL"),
+            keys("\\r"), on_screen("/hook  ✓", cursor="Authorization  ▏Enter pastes"),
+            ["clip", GOOD], keys("\\r"), on_screen("Authorization  Bearer ••••••••cdef  (34 characters)  ✓", cursor="Description"),
+            keys(CTRL_S)], expect=0, sends=1, state_auto=True,
+            has=["✓ Test ping: HTTP 200, the desk received it", '✓ Saved "desk" as the default desk', "✓ auto-notify on",
+                 "✓ nudge command ", done]))
+    add("setup-tty-paste-typed-and-401",
         pty(["setup", "--desk", "manual"], [
-            setup_tty_url_prompt(), ["send", "\\r"],
-            ["expect", r"No clipboard text found\. Paste or type the Webhook URL[^\n]*›"], ["send", URL + "\\r"],
-            ["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["send", WRONG + "\\r"],
-            ["expect", r"rejected the Authorization header"],
-            ["expect", r"↻ Copy the Authorization header[^\n]*›"], ["send", "  Authorization: " + GOOD + "\\r"],
-            ["expect", r"Install the[^\n]*›"], ["send", "n\\r"],
-            ["expect", r"Done\."]], expect=0))
+            on_screen("herdr isn't running: for auto-notify, run nudge setup in herdr", cursor="Webhook URL"),
+            keys("\\r"), on_screen("No clipboard text found. Type or paste the Webhook URL here.", cursor="Webhook URL"),
+            keys("\\e[200~" + URL + "\\e[201~\\r"), on_screen("/hook  ✓", cursor="Authorization"),  # bracketed paste
+            keys(WRONG), on_screen("Authorization  ••••••••••", cursor="Authorization"),  # typed: dots only
+            keys(CTRL_S), on_screen("✗ the webhook rejected the Authorization header", cursor="Authorization"),
+            keys("  Authorization: " + GOOD), keys(DOWN + DOWN + " "), on_screen(cursor="[ ] Install the nudge command"),
+            keys(CTRL_S)], expect=0, sends=2,
+            has=["✓ Test ping: HTTP 200", '✓ Saved "manual" as the default desk', "herdr isn't running", done],
+            lacks=["✓ nudge command"]))
     add("setup-tty-url-retry",
         pty(["setup"], [
-            setup_tty_url_prompt(), ["send", "http://example.com/hook\\r"],
-            ["expect", r"https URL"],
-            setup_tty_url_prompt(), ["send", "http://127.0.0.1:{PORT}/nope\\r"],
-            ["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["send", GOOD + "\\r"],
-            ["expect", r"no webhook at that URL"],
-            ["expect", r"↻ Copy the Webhook URL[^\n]*›"], ["send", "http://127.0.0.1:{PORT}/hoo\x7fok\\r"],
-            ["expect", r"Install the[^\n]*›"], ["send", "no\\r"],
-            ["expect", r"Done\."]], expect=0))
+            on_screen(cursor="Webhook URL"),
+            keys("http://example.com/hook\\r"), on_screen("https URL", cursor="Webhook URL"),  # Enter stays on a bad value
+            keys(CTRL_U + "http://127.0.0.1:{PORT}/nope\\r"), on_screen(cursor="Authorization"),
+            keys(GOOD + CTRL_S), on_screen("✗ there's no webhook at that URL", cursor="Webhook URL"),
+            keys(CTRL_U + "http://127.0.0.1:{PORT}/hoo\\x7fok" + CTRL_S)], expect=0, sends=2, has=[done]))
     add("setup-tty-500-save-anyway-no",
         pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], [
-            ["expect", r"Save anyway\?[^\n]*›"], ["send", "\\r"]], expect=1))
+            on_screen("[ Test and save ]", cursor="Webhook URL"),
+            keys(CTRL_S), on_screen("desk exploded. Press Enter to save it anyway.", cursor="[ Save anyway ]"),
+            keys(ESC)], expect=1, sends=1, has="Cancelled; nothing saved."))
     add("setup-tty-500-save-anyway-yes",
         pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD, "--no-test"], [
-            ["expect", r"Install the[^\n]*›"], ["send", "n\\r"], ["expect", r"Done\."]], expect=0),
+            on_screen("[ Save ]", SETUP_HELP_NO_TEST, cursor="Webhook URL"), keys(CTRL_S)], expect=0, sends=0, has=[done],
+            lacks=["Test ping"]),
         pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], [
-            ["expect", r"Save anyway\?[^\n]*›"], ["send", "maybe\\r"],
-            ["expect", r"Save anyway\?[^\n]*›"], ["send", "y\\r"],
-            ["expect", r"Install the[^\n]*›"], ["send", "n\\r"], ["expect", r"Done\."]], expect=0))
+            on_screen(cursor="Webhook URL"), keys(CTRL_S), on_screen(cursor="[ Save anyway ]"),
+            keys("\\r")], expect=0, sends=1, has=["! Saved without a successful test ping", done]))
     add("setup-tty-ctrl-c",
-        pty(["setup"], [setup_tty_url_prompt(), ["send", "\\x03"], ["expect", r"Cancelled; nothing saved\."]], expect=1),
-        pty(["setup", "--url", URL], [["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["send", "Bearer typed\\x03"],
-                                      ["expect", r"Cancelled"]], expect=1))
+        pty(["setup"], [on_screen(cursor="Webhook URL"), keys(CTRL_C)], expect=1, has="Cancelled; nothing saved."),
+        pty(["setup", "--url", URL], [on_screen(cursor="Webhook URL"), keys(DOWN + "Bearer typed" + CTRL_C)],
+            expect=1, has="Cancelled; nothing saved."),
+        pty(["setup"], [on_screen(cursor="Webhook URL"), keys("h"), on_screen(cursor="Webhook URL    h▏"),
+                        keys(ESC), on_screen("Press Esc again to leave without saving."), keys(ESC)],
+            expect=1, has="Cancelled; nothing saved."))
     add("setup-tty-update-keep", config(), herdr(fixture(HERDR_VERSION, plugin_list(), NO_AGENTS)),
         pty(["setup"], [
-            setup_tty_url_prompt(), ["send", "\\r"],
-            ["expect", r"or Enter to keep the current one[^\n]*›"], ["send", "\\r"],
-            ["expect", r"2/2 Copy the Authorization header[^\n]*›"], ["send", "\\r"],
-            ["expect", r"or Enter to keep the current one[^\n]*›"], ["send", "\\r"],
-            ["expect", r"Install the[^\n]*›"], ["send", "n\\r"], ["expect", r"Done\."]], expect=0))
+            on_screen('Desk "desk"  saved desk', "/hook▏  ✓", "Bearer ••••••••cdef  (34 characters)  ✓",
+                      "herdr plugin not installed: herdr plugin install weskor/nudge", cursor="Webhook URL"),
+            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "desk" as the default desk', "! The herdr plugin isn't installed", done]))
+    add("setup-tty-make-default", config(),
+        pty(["setup", "--desk", "research"], [
+            on_screen('Desk "research"  saved desk', '[ ] Make "research" the default desk', cursor="Webhook URL"),
+            keys(DOWN * 3 + " "), on_screen(cursor='[x] Make "research" the default desk'),
+            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "research" as the default desk', done],
+            config_keys={"default_desk": "research"}))
     add("setup-tty-plugin-decline-auto", herdr(fixture(HERDR_VERSION, plugin_list(plugin(enabled=False)))), link("/opt/old/bin/nudge"),
         pty(["setup", "--url", URL, "--authorization", GOOD], [
-            ["expect", r"Turn on auto-notify\?[^\n]*›"], ["send", "n\\r"], ["expect", r"Done\."]], expect=0))
+            on_screen("[x] Turn on auto-notify        herdr plugin disabled", "✓ nudge command  ", ".local/bin/nudge",
+                      cursor="Webhook URL"),
+            keys(DOWN * 3 + " "), on_screen(cursor="[ ] Turn on auto-notify"),
+            keys(CTRL_S)], expect=0, sends=1, state_auto=False, has=["! auto-notify off", done]))
     add("setup-tty-pane-wait", pty(["setup", "--pane"], [
-        setup_tty_url_prompt(), ["send", "\\x03"], ["expect", "Press any key to close"], ["send", "x"]], expect=1))
+        on_screen(cursor="Webhook URL"), keys(CTRL_C), ["expect", "Press any key to close"], ["send", "x"]], expect=1))
 
     # ---- doctor
     add("doctor-no-config", cmd(["doctor"], expect=1))

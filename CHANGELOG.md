@@ -5,6 +5,7 @@ All notable changes to nudge are listed here. Versions follow [Semantic Versioni
 ## Unreleased
 
 - **A clearer settings editor.** `nudge settings` is now a centered, colored box. Auto-notify and away mode have their own section at the top. A line under the list explains the row under the cursor. The workspace and agent lists appear only when you pick "Only these", and each agent shows its workspace and directory, so panes named like `w1:p5` are easier to tell apart. The default desk section is now called "Default desk", and the title shows "● unsaved" while you have changes that aren't saved.
+- **Setup is a form.** `nudge setup` in a terminal (and the `weskor.nudge.setup` overlay) is now a full-screen form in the same style as settings, instead of a series of prompts. Press Enter on an empty field to paste the clipboard, or type or paste into it (bracketed paste works). The Authorization header shows only dots while you type and a masked preview afterwards. Auto-notify and the command install are checkboxes, an existing desk can be made the default from there, and a failed test ping sends the cursor back to the field it blames, or offers "Save anyway" when it blames neither. Scripted setup (flags or stdin) is unchanged.
 
 ## 0.8.0
 

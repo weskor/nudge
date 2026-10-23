@@ -22,8 +22,8 @@ then use the matching feature file as the recipe. `VN=.cursor/skills/verify-nudg
 
 - Commands: `$VN run [--stdin T] [--env K=V] [--cwd D] [--expect N] -- <nudge args>`.
 - Terminal journeys: `$VN pty (--expect RE | --screen RE | --send TEXT | --clip TEXT)... [--expect-exit N] -- <nudge args>`;
-  always `--expect` the prompt (ends with `›`) before `--send`. Full-screen UIs (`settings`) use `--screen RE` (the
-  rendered screen, highlighted row prefixed `> `) instead of `--expect`.
+  `--send` only after an `--expect` or `--screen` step has matched, so the program is in raw mode. Full-screen UIs
+  (`settings`, the interactive `setup` form) use `--screen RE` (the rendered screen, highlighted row prefixed `> `).
 - MCP: `$VN mcp --call TOOL 'JSON' ...`.
 - herdr plugin entrypoints run with `--cwd home` and herdr's variables: `HERDR_PLUGIN_EVENT_JSON`,
   `HERDR_PLUGIN_CONTEXT_JSON`, `HERDR_PANE_ID`, `HERDR_PLUGIN_ID`.

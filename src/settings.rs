@@ -6,36 +6,19 @@ use std::path::Path;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph, Wrap};
 
 use crate::config::{Auto, Config, Scope, default_config_path, load_config, seconds_in_words, write_config};
 use crate::context::{Env, ListedAgent, ListedWorkspace, Run as _, System, herdr_agents, herdr_workspaces};
 use crate::error::{Blame, Error, Result};
 use crate::notify::{Origin, current_dir, ping_desk};
 use crate::state::{State, current_state, update_state};
+use crate::ui::{self, DIM, GOOD, HEADER, VALUE, View, WARN, aligned, check, radio, toggle};
 
 const TURN_STEPS: [u32; 9] = [0, 30, 60, 120, 180, 300, 600, 900, 1800];
 const COOLDOWN_STEPS: [u32; 8] = [0, 60, 120, 300, 600, 900, 1800, 3600];
 const TAIL_STEPS: [u32; 6] = [10, 20, 40, 80, 120, 200];
-
-// Colors are the terminal's own palette, so they follow its theme.
-const HEADER: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-const VALUE: Style = Style::new().fg(Color::Cyan);
-const KEY: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-const ON: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
-const WARN: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-const DIM: Style = Style::new().add_modifier(Modifier::DIM);
-const BORDER: Style = Style::new().fg(Color::DarkGray);
-/// The row under the cursor: one plain reversed bar, whatever colors its parts have.
-const CURSOR: Style = Style::new()
-    .fg(Color::Reset)
-    .bg(Color::Reset)
-    .add_modifier(Modifier::REVERSED)
-    .add_modifier(Modifier::BOLD)
-    .remove_modifier(Modifier::DIM);
 
 const HELP: [(&str, &str); 6] = [
     ("↑↓", "move"),
@@ -45,9 +28,6 @@ const HELP: [(&str, &str); 6] = [
     ("s", "save"),
     ("q", "quit"),
 ];
-/// The box is as wide as its content within these bounds (and the screen).
-const MIN_WIDTH: u16 = 70;
-const MAX_WIDTH: u16 = 96;
 
 /// The next preset above (`up`) or below `value`; stays put at either end. Values between presets snap to the
 /// nearest one in that direction.
@@ -519,7 +499,7 @@ impl Settings {
                 let is_default = self.default_desk.as_deref() == Some(desk.name.as_str());
                 let mut rest = vec![Span::styled(desk.host.clone(), DIM)];
                 if desk.signed {
-                    rest.push(Span::styled("  signed", Style::new().fg(Color::Green)));
+                    rest.push(Span::styled("  signed", GOOD));
                 }
                 (radio(is_default), Span::raw(desk.name.clone()), rest)
             })
@@ -532,60 +512,6 @@ impl Settings {
             .unwrap_or(0);
         (items.into_iter().map(|(_, line)| line).collect(), selected)
     }
-
-    /// The status if there is one, else what the row under the cursor does.
-    fn note(&self) -> Line<'static> {
-        let Some(status) = &self.status else {
-            return Line::styled(self.current().map_or("", describe), DIM);
-        };
-        let color = if status.starts_with('✓') {
-            Color::Green
-        } else if status.starts_with('✗') {
-            Color::Red
-        } else {
-            Color::Yellow
-        };
-        Line::styled(status.clone(), Style::new().fg(color).add_modifier(Modifier::BOLD))
-    }
-}
-
-fn check(checked: bool) -> Span<'static> {
-    if checked {
-        Span::styled("[x]", ON)
-    } else {
-        Span::styled("[ ]", DIM)
-    }
-}
-
-fn radio(picked: bool) -> Span<'static> {
-    if picked {
-        Span::styled("(•)", ON)
-    } else {
-        Span::styled("( )", DIM)
-    }
-}
-
-fn toggle(mark: Span<'static>, label: &'static str) -> Line<'static> {
-    Line::from(vec![Span::raw("  "), mark, Span::raw(label)])
-}
-
-/// A list row before alignment: its mark, its name, and what follows the name.
-type ListRow = (Span<'static>, Span<'static>, Vec<Span<'static>>);
-
-/// One line per row after `indent`, with what follows each name lined up after the widest name.
-fn aligned(indent: &'static str, rows: Vec<ListRow>) -> Vec<Line<'static>> {
-    let widest = rows.iter().map(|(_, name, _)| name.width()).max().unwrap_or(0);
-    rows.into_iter()
-        .map(|(mark, name, rest)| {
-            let gap = " ".repeat(widest.saturating_sub(name.width()) + 2);
-            let mut spans = vec![Span::raw(indent), mark, Span::raw(" "), name];
-            if !rest.is_empty() {
-                spans.push(Span::raw(gap));
-                spans.extend(rest);
-            }
-            Line::from(spans)
-        })
-        .collect()
 }
 
 fn key(code: KeyCode, modifiers: KeyModifiers) -> Option<Key> {
@@ -608,56 +534,18 @@ fn key(code: KeyCode, modifiers: KeyModifiers) -> Option<Key> {
 
 fn draw(terminal: &mut DefaultTerminal, settings: &Settings) -> Result<()> {
     let (lines, selected) = settings.lines();
-    let note = Paragraph::new(settings.note()).wrap(Wrap { trim: true });
-    let mut help = Vec::new();
-    for (index, (key, what)) in HELP.into_iter().enumerate() {
-        if index > 0 {
-            help.push(Span::raw("  "));
-        }
-        help.extend([Span::styled(key, KEY), Span::styled(format!(" {what}"), DIM)]);
-    }
-    let help = Line::from(help);
-    terminal.draw(|frame| {
-        let screen = frame.area();
-        // As wide as the widest line plus borders (2) and side padding (4), within bounds and the screen.
-        let widest = lines.iter().map(Line::width).chain([help.width()]).max().unwrap_or(0);
-        let width = u16::try_from(widest + 6)
-            .unwrap_or(u16::MAX)
-            .clamp(MIN_WIDTH, MAX_WIDTH)
-            .min(screen.width);
-        // The note keeps two rows so the box doesn't jump as the cursor moves, and wraps to up to four so long
-        // errors and their fixes stay readable in narrow overlays.
-        let note_rows = note.line_count(width.saturating_sub(6)).clamp(2, 4);
-        // Borders and top padding (3), the list, the rule, the note and the help line.
-        let height = u16::try_from(lines.len() + note_rows + 5)
-            .unwrap_or(u16::MAX)
-            .min(screen.height);
-        let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
-        let mut block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(BORDER)
-            .padding(Padding::new(2, 2, 1, 0))
-            .title_top(Line::styled(" nudge settings ", HEADER));
-        if settings.edits != Edits::None {
-            block = block.title_top(Line::styled(" ● unsaved ", WARN).right_aligned());
-        }
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let [body, rule, note_area, help_area] = Layout::vertical([
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(u16::try_from(note_rows).unwrap_or(2)),
-            Constraint::Length(1),
-        ])
-        .areas(inner);
-        let list = List::new(lines.into_iter().map(ListItem::new)).highlight_style(CURSOR);
-        let mut state = ListState::default().with_selected(Some(selected));
-        frame.render_stateful_widget(list, body, &mut state);
-        frame.render_widget(Block::new().borders(Borders::TOP).border_style(BORDER), rule);
-        frame.render_widget(note, note_area);
-        frame.render_widget(help, help_area);
-    })?;
-    Ok(())
+    ui::draw(
+        terminal,
+        View {
+            title: "nudge settings",
+            unsaved: settings.edits != Edits::None,
+            lines,
+            selected,
+            note: ui::note(settings.status.as_deref(), settings.current().map_or("", describe)),
+            help: &HELP,
+            width: None,
+        },
+    )
 }
 
 /// Test-ping `desk` and describe the result for the status line.

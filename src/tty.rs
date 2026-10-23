@@ -1,4 +1,4 @@
-//! Terminal helpers for interactive commands (setup, doctor). Prompts and progress go to stderr.
+//! Terminal helpers for commands that print to the terminal (setup, doctor). Progress goes to stderr.
 use std::fmt;
 use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::sync::LazyLock;
@@ -58,7 +58,7 @@ impl fmt::Display for Mark {
 }
 
 /// Write `text` to stderr now, without a newline.
-pub(crate) fn progress(text: &str) {
+fn progress(text: &str) {
     let mut stderr = std::io::stderr();
     stderr.write_all(text.as_bytes()).and_then(|()| stderr.flush()).ok();
 }
@@ -89,86 +89,6 @@ impl RawMode {
 impl Drop for RawMode {
     fn drop(&mut self) {
         tcsetattr(rustix::stdio::stdin(), OptionalActions::Now, &self.0).ok();
-    }
-}
-
-/// Characters typed on stdin, decoded as UTF-8 across reads.
-fn read_chars(pending: &mut Vec<u8>) -> Result<Vec<char>> {
-    let mut buffer = [0; 256];
-    let read = std::io::stdin().lock().read(&mut buffer)?;
-    if read == 0 {
-        return Err(Error::Cancelled);
-    }
-    pending.extend(buffer.get(..read).unwrap_or_default());
-    let (valid, rest) = match std::str::from_utf8(pending) {
-        Ok(text) => (text.chars().collect(), Vec::new()),
-        Err(error) => {
-            let (valid, rest) = pending.split_at(error.valid_up_to());
-            let chars = String::from_utf8_lossy(valid).chars().collect();
-            // An incomplete sequence at the end waits for the next read; invalid bytes are dropped.
-            (
-                chars,
-                if error.error_len().is_none() {
-                    rest.to_vec()
-                } else {
-                    Vec::new()
-                },
-            )
-        }
-    };
-    *pending = rest;
-    Ok(valid)
-}
-
-/// Read one line from the terminal in raw mode. `hidden` echoes nothing (for secrets). Ctrl-C is
-/// [`Error::Cancelled`].
-pub(crate) fn prompt_line(question: &str, hidden: bool) -> Result<String> {
-    progress(&format!("{question} {} ", Style::Dim.paint("›")));
-    let _raw = RawMode::enable()?;
-    let mut value = String::new();
-    let mut pending = Vec::new();
-    loop {
-        for c in read_chars(&mut pending)? {
-            match c {
-                '\r' | '\n' => {
-                    progress("\n");
-                    return Ok(value.trim().to_owned());
-                }
-                '\u{3}' => {
-                    progress("\n");
-                    return Err(Error::Cancelled);
-                }
-                '\u{7f}' | '\u{8}' => {
-                    if !value.is_empty() && !hidden {
-                        progress("\u{8} \u{8}");
-                    }
-                    value.pop();
-                }
-                c if c >= ' ' => {
-                    value.push(c);
-                    if !hidden {
-                        progress(c.encode_utf8(&mut [0; 4]));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// Yes/no question; Enter picks the default.
-pub(crate) fn confirm(question: &str, default_yes: bool) -> Result<bool> {
-    let choices = Style::Dim.paint(if default_yes { "[Y/n]" } else { "[y/N]" });
-    loop {
-        match prompt_line(&format!("{question} {choices}"), false)?
-            .to_lowercase()
-            .as_str()
-        {
-            "" => return Ok(default_yes),
-            "y" | "yes" => return Ok(true),
-            "n" | "no" => return Ok(false),
-            _ => {}
-        }
     }
 }
 

@@ -33,7 +33,8 @@ The last command drives the real binary through about 110 user journeys in a san
 | --- | --- |
 | `src/main.rs` | Command-line entry point |
 | `src/plugin.rs` | herdr hook and actions (`nudge plugin …`) |
-| `src/setup.rs`, `src/doctor.rs`, `src/tty.rs` | Interactive setup, checks and terminal prompts |
+| `src/setup.rs`, `src/doctor.rs`, `src/tty.rs` | Setup (the interactive form and the scripted path), checks and terminal output |
+| `src/settings.rs`, `src/ui.rs` | The settings editor, and the look it shares with the setup form |
 | `src/mcp.rs` | The stdio MCP server |
 | `src/config.rs`, `src/notify.rs`, `src/context.rs`, `src/state.rs` | Config, notifications, herdr/git detection, state |
 | `src/watch.rs` | Auto-notify rules and redaction |

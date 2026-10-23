@@ -92,22 +92,20 @@ lists `secret_leaks` and `contract_problems` (see Parity), and the command print
 - Interactive terminal (PTY, 120x40, `TERM=xterm-256color`, controlling tty; output keeps ANSI colors):
 
   ```sh
-  $VN pty --expect '1/2 Copy the Webhook URL[^\n]*›' --send '\r' \
-          --expect '2/2 Copy the Authorization header[^\n]*›' --clip 'Bearer good-token-0123456789abcdef' --send '\r' \
-          --expect 'Install the[^\n]*›' --send 'n\r' --expect 'Done\.' --expect-exit 0 -- setup
+  $VN pty --expect 'Press any key to close' --send x -- doctor --pane
   ```
 
   Steps run in order. `--expect RE` waits (15 s) for a regex in output after the previous match; `--send TEXT`
-  waits 0.2 s (so the prompt has switched to raw mode) then types it (`\r` Enter, `\x03` Ctrl-C, `\x7f`
-  backspace, `\e` Esc, `\e[A`/`\e[B`/`\e[C`/`\e[D` arrows); `--clip TEXT` changes the fake clipboard mid-run. Prompts end
-  with `›`; stable prompt strings: `1/2 Copy the Webhook URL`, `2/2 Copy the Authorization header`, `↻ Copy the …`
-  (re-ask), `No clipboard text found. Paste or type the …`, `Turn on auto-notify?`, `Install the nudge command`, `Save
-  anyway?`, `Press any key to close` (`--pane`).
-- Full-screen UI (`nudge settings`, ratatui): its bytes are cursor-addressed redraws of changed cells, so match the
-  rendered screen instead: `--screen RE` waits for RE (multiline mode) on a 120x40 terminal emulation in which each
-  row starts with `> ` when it is highlighted (the cursor row) and `  ` otherwise, then for 0.25 s of quiet, and keeps
-  that screen in the record's `screens`. With any `--screen` step, `output` is the text left on the normal screen after
-  exit (`Saved nudge settings to …` / `No changes saved.`), not the raw bytes. Recipe: [features/settings.md](features/settings.md).
+  waits 0.2 s (so the program has switched the terminal to raw mode) then types it (`\r` Enter, `\x03` Ctrl-C, `\x13`
+  Ctrl-S, `\x15` Ctrl-U, `\x7f` backspace, `\e` Esc, `\e[A`/`\e[B`/`\e[C`/`\e[D` arrows, `\e[200~…\e[201~` a bracketed
+  paste); `--clip TEXT` changes the fake clipboard mid-run. `Press any key to close` ends `--pane` runs.
+- Full-screen UIs (`nudge settings`, the interactive `nudge setup` form; ratatui): their bytes are cursor-addressed
+  redraws of changed cells, so match the rendered screen instead: `--screen RE` waits for RE (multiline mode) on a
+  120x40 terminal emulation in which each row starts with `> ` when it is highlighted (the cursor row) and `  `
+  otherwise, then for 0.25 s of quiet, and keeps that screen in the record's `screens`. With any `--screen` step,
+  `output` is the text left on the normal screen after exit (`Saved nudge settings to …`, setup's `✓ Saved …` / `Done.`
+  lines, `Cancelled; nothing saved.`), not the raw bytes. Recipes: [features/settings.md](features/settings.md),
+  [features/setup.md](features/setup.md).
 
   ```sh
   $VN pty --screen 'Auto-notify' --send ' ' --screen '^> .*\[x\] Auto-notify' --send s --expect-exit 0 -- settings
@@ -154,7 +152,7 @@ NUDGE_BIN=/path/to/new/nudge $VN parity .verify/parity/new.json
 diff -u .verify/parity/old.json .verify/parity/new.json
 ```
 
-Runs the fixed scenario list (198 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
+Runs the fixed scenario list (199 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
 with its own fakes and one shared fake webhook, then writes one JSON transcript with sorted keys. Per step it
 records the same fields as `run`, with JSON payloads (webhook bodies, `list --json` stdout as `stdout_json`, MCP
 responses keyed by JSON-RPC id with JSON tool text as `text_json`, state.json) compared as data. Multi-line text is
