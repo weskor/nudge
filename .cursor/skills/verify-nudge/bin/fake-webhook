@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fake desk webhook for verify-nudge. Listens on 127.0.0.1 only.
+"""Fake webhook for verify-nudge. Listens on 127.0.0.1 only.
 
 usage: fake-webhook --dir DIR --id SESSION_ID [--port 0] [--secret LABEL=SECRET]...
 
   POST /hook     200 "ok" when Authorization equals the good token, else 401 {"message":"Invalid API key"}
   POST /signed   like /hook, but also needs a valid x-nudge-signature (HMAC-SHA256 with one of the --secret
                  values over "<x-nudge-timestamp>.<raw body>"); otherwise 401 {"message":"Invalid signature"}
-  POST /fail     500 "desk exploded"
+  POST /fail     500 "webhook exploded"
   anything else (any method) 404 "no such hook"
   GET /__verify  200 SESSION_ID  (health/ownership probe for `verify-nudge doctor`; not recorded)
 
@@ -51,7 +51,7 @@ def signature_verdict(timestamp, signature, raw):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "fake-desk"
+    server_version = "fake-webhook"
     sys_version = ""
 
     def log_message(self, format, *args):  # keep stderr quiet
@@ -102,7 +102,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(401, '{"message":"Invalid signature"}', "application/json")
             return self.reply(200, "ok")
         if self.path == "/fail":
-            return self.reply(500, "desk exploded")
+            return self.reply(500, "webhook exploded")
         return self.reply(404, "no such hook")
 
     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = handle_any

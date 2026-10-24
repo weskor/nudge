@@ -13,4 +13,4 @@ body:
     id: idea
     attributes:
       label: Your idea
-      description: How you'd like it to work. Mention your desk setup if it matters.
+      description: How you'd like it to work. Mention your webhook setup if it matters.

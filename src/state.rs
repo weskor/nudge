@@ -31,7 +31,7 @@ pub(crate) struct State {
     /// terminal output.
     #[serde(default)]
     pub(crate) auto: bool,
-    /// You said you left your desk: notify even for the focused pane, and even with auto-notify off. Set with the
+    /// You said you're away: notify even for the focused pane, and even with auto-notify off. Set with the
     /// `away` herdr action or in `nudge settings`; absent from the file while off.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) away: bool,

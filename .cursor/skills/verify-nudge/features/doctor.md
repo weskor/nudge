@@ -1,17 +1,17 @@
 # Doctor
 
 `nudge doctor` prints a checklist (`✓` ok, `!` warning, `✗` failure, with `→` fixes) for the config, the agents
-allowed to notify (`[scope]`), the default desk's webhook (`--ping` sends a test ping), herdr and the nudge plugin,
+allowed to notify (`[scope]`), the default webhook (`--ping` sends a test ping), herdr and the nudge plugin,
 auto-notify and away mode, recent plugin log lines, the `nudge` command and clipboard tools, and exits 1 when any check failed.
 
 ## Sub-features
 
-- `doctor-config` reports no config (fail), invalid TOML/schema (fail, with each problem), desk count and default
-  (warn + fix when several desks have no default); `[auto]`/`[scope]` errors such as `auto.bogus: unknown setting`.
+- `doctor-config` reports no config (fail), invalid TOML/schema (fail, with each problem), webhook count and default
+  (warn + fix when several webhooks have no default); `[auto]`/`[scope]` errors such as `auto.bogus: unknown setting`.
 - `doctor-scope` `✓ Scope: all agents`, or `✓ Scope: workspaces a, b; agents x` with a fix pointing at the
   `weskor.nudge.all-agents` action.
 - `doctor-ping` with `--ping` reports `Webhook accepted a test ping (HTTP 200)` or a failure with a fix that blames
-  the header (401/403), the URL (404/405/410), or the desk (other/unreachable).
+  the header (401/403), the URL (404/405/410), or the webhook (other/unreachable).
 - `doctor-herdr` reports herdr not found (warn), server unreachable (warn), plugin not installed (fail), plugin
   disabled (fail), prebuilt binary vs from-source, auto-notify on/off; the on detail uses the configured
   `auto.min_turn_seconds` (`blocked, or done after 2 minutes or more while you're not watching` by default).
@@ -35,9 +35,9 @@ Preconditions:
 
 - Session launched; `$VN seed-config` for the config checks; `$VN herdr running` for the plugin checks.
 
-- **No config.** On a fresh session run `$VN run --expect 1 -- doctor`. stdout has `✗ No desk configured  <RUN>/home/.config/nudge/config.toml` and `→ run nudge setup`, `! herdr not found`, `✓ Clipboard: wl-paste, xclip`, `✗ 1 problem found.`.
-- **Valid config, herdr running.** `$VN seed-config; $VN herdr running`, run `$VN run --expect 0 -- doctor`. stdout has `✓ Config: 7 desks, default "desk"`, `✓ Scope: all agents`, `✓ herdr plugin weskor.nudge 0.4.0 enabled  <RUN>/plugin` (the fixture's plugin version), `✓ Plugin runs a local build  no dist/nudge (linked checkout)`, `! Auto-notify off` with `→ herdr plugin action invoke weskor.nudge.enable`, five `Recent:` lines (the newest five of the seven fixture entries, oldest first) each ending in a relative age such as `371d ago`, `✓ All good.`; `herdr_calls` include `--version`, `plugin list …`, `plugin log list …`.
-- **Ping.** Run `$VN run --expect 0 -- doctor --ping`; `webhook[0].body.status` is `test`. Then `$VN seed-config --default badauth` and run `$VN run --expect 1 -- doctor --ping`: `✗ Webhook test failed  desk "badauth" webhook returned HTTP 401: …` with `→ copy the Authorization header again: nudge setup --desk badauth`. `--default nohook` blames the URL; `broken`/`offline` say `check that the desk is running, then nudge test`. `--default signed` pings `/signed` with `signature: "valid:signed-desk"`.
+- **No config.** On a fresh session run `$VN run --expect 1 -- doctor`. stdout has `✗ No webhook configured  <RUN>/home/.config/nudge/config.toml` and `→ run nudge setup`, `! herdr not found`, `✓ Clipboard: wl-paste, xclip`, `✗ 1 problem found.`.
+- **Valid config, herdr running.** `$VN seed-config; $VN herdr running`, run `$VN run --expect 0 -- doctor`. stdout has `✓ Config: 7 webhooks, default "main"`, `✓ Scope: all agents`, `✓ herdr plugin weskor.nudge 0.4.0 enabled  <RUN>/plugin` (the fixture's plugin version), `✓ Plugin runs a local build  no dist/nudge (linked checkout)`, `! Auto-notify off` with `→ herdr plugin action invoke weskor.nudge.enable`, five `Recent:` lines (the newest five of the seven fixture entries, oldest first) each ending in a relative age such as `371d ago`, `✓ All good.`; `herdr_calls` include `--version`, `plugin list …`, `plugin log list …`.
+- **Ping.** Run `$VN run --expect 0 -- doctor --ping`; `webhook[0].body.status` is `test`. Then `$VN seed-config --default badauth` and run `$VN run --expect 1 -- doctor --ping`: `✗ Webhook test failed  webhook "badauth" returned HTTP 401: …` with `→ copy the Authorization header again: nudge setup --webhook badauth`. `--default nohook` blames the URL; `broken`/`offline` say `check that the webhook is running, then nudge test`. `--default signed` pings `/signed` with `signature: "valid:signed-webhook"`.
 - **Auto-notify on.** `$VN seed-state '{"auto": true}'`, rerun doctor: `✓ Auto-notify on`. With `$VN seed-config --append '[auto]\nmin_turn_seconds = 300'` the detail reads `done after 5 minutes or more`.
 - **Away.** `$VN herdr running; $VN seed-state '{"auto": true}'`, then `$VN run --cwd home -- plugin action away-on` and rerun doctor: the two away lines follow `✓ Auto-notify on  …`. After `plugin action away-off` they are gone. With `{"away": true}` alone they follow `! Auto-notify off` / `→ herdr plugin action invoke weskor.nudge.enable`. Without herdr (`$VN herdr none`) there is no plugin section, so no away line. Parity: `doctor-away*`.
 - **Scope.** `$VN seed-config --append '[scope]\nworkspaces = ["api-work", "wE"]\nagents = ["claude-1"]'`, rerun doctor: `✓ Scope: workspaces api-work, wE; agents claude-1`. `--append '[auto]\nbogus = 1'` makes doctor exit 1 listing `auto.bogus: unknown setting`.

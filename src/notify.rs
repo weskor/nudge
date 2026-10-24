@@ -1,4 +1,4 @@
-//! Build a notification and POST it to a desk webhook.
+//! Build a notification and POST it to a webhook.
 use std::time::Duration;
 
 use ring::hmac;
@@ -6,15 +6,15 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::Serialize;
 
 use crate::VERSION;
-use crate::config::{Config, Desk, find_desk};
+use crate::config::{Config, Webhook, find_webhook};
 use crate::context::{Env, Run, Sender, detect_sender, git_info, in_scope};
-use crate::error::{DeskError, Error, Result};
+use crate::error::{Error, Result, WebhookError};
 use crate::state::{now_ms, update_state};
 
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(15);
 const ERROR_BODY_MAX_CHARS: usize = 300;
 
-/// What the agent tells the desk with `nudge notify --status`.
+/// What the agent tells the webhook with `nudge notify --status`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum NotifyStatus {
@@ -60,14 +60,14 @@ impl From<NotifyStatus> for Status {
     }
 }
 
-/// The JSON body sent to a desk webhook; the desk sees it inside `<webhook_event>`.
+/// The JSON body sent to a webhook; the webhook's automation sees it inside `<webhook_event>`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Notification {
-    /// Unique per notification (UUID v4), so the desk can drop duplicates.
+    /// Unique per notification (UUID v4), so the webhook can drop duplicates.
     pub(crate) id: String,
     /// When nudge built the notification, UTC RFC 3339.
     pub(crate) sent_at: String,
-    /// herdr agent target the desk can reply to; `None` if it could not be detected.
+    /// herdr agent target the webhook can reply to; `None` if it could not be detected.
     pub(crate) from_agent: Option<String>,
     pub(crate) cwd: String,
     pub(crate) repo: Option<String>,
@@ -169,7 +169,7 @@ fn utc_timestamp(unix_seconds: i64) -> String {
 fn message_text(message: &str) -> Result<&str> {
     let message = message.trim();
     if message.is_empty() {
-        return Err(DeskError {
+        return Err(WebhookError {
             message: "message is empty".into(),
             http_status: None,
         }
@@ -207,11 +207,11 @@ fn signature(secret: &str, timestamp: i64, body: &str) -> String {
     format!("sha256={}", hex(tag.as_ref()))
 }
 
-/// POST `payload` to the desk webhook with its Authorization header (and signature, if the desk has a signing
+/// POST `payload` to the webhook with its Authorization header (and signature, if the webhook has a signing
 /// secret); returns the 2xx status.
-pub(crate) fn post_to_desk(desk: &Desk, payload: &Notification) -> Result<u16, DeskError> {
-    let unreachable = |detail: &dyn std::fmt::Display| DeskError {
-        message: format!("could not reach desk \"{}\" webhook: {detail}", desk.name),
+pub(crate) fn post_to_webhook(webhook: &Webhook, payload: &Notification) -> Result<u16, WebhookError> {
+    let unreachable = |detail: &dyn std::fmt::Display| WebhookError {
+        message: format!("could not reach webhook \"{}\": {detail}", webhook.name),
         http_status: None,
     };
     let body = serde_json::to_string(payload).map_err(|error| unreachable(&error))?;
@@ -221,11 +221,11 @@ pub(crate) fn post_to_desk(desk: &Desk, payload: &Notification) -> Result<u16, D
         .build()
         .into();
     let mut request = agent
-        .post(&desk.url)
-        .header("authorization", &desk.authorization)
+        .post(&webhook.url)
+        .header("authorization", &webhook.authorization)
         .header("content-type", "application/json")
         .header("user-agent", format!("nudge/{VERSION}"));
-    if let Some(secret) = &desk.signing_secret {
+    if let Some(secret) = &webhook.signing_secret {
         let timestamp = now_ms().div_euclid(1000);
         request = request
             .header("x-nudge-timestamp", timestamp.to_string())
@@ -245,16 +245,16 @@ pub(crate) fn post_to_desk(desk: &Desk, payload: &Notification) -> Result<u16, D
     } else {
         format!(": {text}")
     };
-    Err(DeskError {
-        message: format!("desk \"{}\" webhook returned HTTP {status}{detail}", desk.name),
+    Err(WebhookError {
+        message: format!("webhook \"{}\" returned HTTP {status}{detail}", webhook.name),
         http_status: Some(status),
     })
 }
 
-/// A notification the desk accepted.
+/// A notification the webhook accepted.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Sent {
-    pub(crate) desk: String,
+    pub(crate) webhook: String,
     /// HTTP status the webhook answered with.
     pub(crate) http_status: u16,
     pub(crate) notification: Notification,
@@ -268,18 +268,18 @@ fn sender(agent: Option<String>, origin: Origin<'_>) -> Sender {
     )
 }
 
-/// Tell a desk (the default desk unless `desk` is given) that this agent is done, blocked or has a question.
-/// Refuses agents outside the config's `[scope]`. Inside a herdr pane, records that the agent notified, so the
-/// herdr plugin doesn't send a duplicate.
-pub(crate) fn notify_desk(
+/// Tell a webhook (the default webhook unless `webhook` is given) that this agent is done, blocked or has a
+/// question. Refuses agents outside the config's `[scope]`. Inside a herdr pane, records that the agent notified,
+/// so the herdr plugin doesn't send a duplicate.
+pub(crate) fn notify_webhook(
     config: &Config,
-    desk: Option<&str>,
+    webhook: Option<&str>,
     status: NotifyStatus,
     message: &str,
     agent: Option<String>,
     origin: Origin<'_>,
 ) -> Result<Sent> {
-    let desk = find_desk(config, desk)?;
+    let webhook = find_webhook(config, webhook)?;
     let message = message_text(message)?;
     let sender = sender(agent, origin);
     if !in_scope(&config.scope, &sender, origin.env, origin.run) {
@@ -298,7 +298,7 @@ pub(crate) fn notify_desk(
         )));
     }
     let notification = build_notification(status.into(), message, sender.agent, origin)?;
-    let http_status = post_to_desk(desk, &notification)?;
+    let http_status = post_to_webhook(webhook, &notification)?;
     if let Some(pane_id) = origin.env.get("HERDR_PANE_ID") {
         let now = now_ms();
         // Best effort: a missing record only risks one duplicate automatic notification.
@@ -308,26 +308,26 @@ pub(crate) fn notify_desk(
         .ok();
     }
     Ok(Sent {
-        desk: desk.name.clone(),
+        webhook: webhook.name.clone(),
         http_status,
         notification,
     })
 }
 
 /// Send a harmless `status: "test"` notification to check the webhook URL and Authorization header. Ignores
-/// `[scope]`: it tests the desk, not an agent.
-pub(crate) fn ping_desk(
+/// `[scope]`: it tests the webhook, not an agent.
+pub(crate) fn ping_webhook(
     config: &Config,
-    desk: Option<&str>,
+    webhook: Option<&str>,
     agent: Option<String>,
     origin: Origin<'_>,
 ) -> Result<Sent> {
-    let desk = find_desk(config, desk)?;
+    let webhook = find_webhook(config, webhook)?;
     let from_agent = sender(agent, origin).agent;
     let notification = build_notification(Status::Test, "nudge test ping. No action needed.", from_agent, origin)?;
-    let http_status = post_to_desk(desk, &notification)?;
+    let http_status = post_to_webhook(webhook, &notification)?;
     Ok(Sent {
-        desk: desk.name.clone(),
+        webhook: webhook.name.clone(),
         http_status,
         notification,
     })
@@ -347,8 +347,8 @@ pub(crate) mod tests {
 
     use parking_lot::Mutex;
 
-    use super::{NotifyStatus, Origin, Status, notify_desk, ping_desk, reply_hint};
-    use crate::config::{Config, Desk};
+    use super::{NotifyStatus, Origin, Status, notify_webhook, ping_webhook, reply_hint};
+    use crate::config::{Config, Webhook};
     use crate::context::Env;
     use crate::context::tests::FakeRun;
     use crate::error::Error;
@@ -430,16 +430,16 @@ pub(crate) mod tests {
 
     fn config(base: &str) -> Config {
         Config {
-            default_desk: Some("bridge".into()),
-            desk: vec![
-                Desk {
+            default_webhook: Some("bridge".into()),
+            webhook: vec![
+                Webhook {
                     name: "bridge".into(),
                     description: None,
                     url: format!("{base}/bridge"),
                     authorization: "Bearer bridge-secret".into(),
                     signing_secret: None,
                 },
-                Desk {
+                Webhook {
                     name: "research".into(),
                     description: None,
                     url: format!("{base}/research"),
@@ -473,15 +473,15 @@ pub(crate) mod tests {
         }
     }
 
-    fn desk_error(result: crate::error::Result<impl std::fmt::Debug>) -> String {
+    fn webhook_error(result: crate::error::Result<impl std::fmt::Debug>) -> String {
         match result {
-            Err(Error::Desk(error)) => error.message,
-            other => panic!("expected a desk error, got {other:?}"),
+            Err(Error::Webhook(error)) => error.message,
+            other => panic!("expected a webhook error, got {other:?}"),
         }
     }
 
     #[test]
-    fn posts_the_notification_to_the_default_desk_with_its_authorization_header() {
+    fn posts_the_notification_to_the_default_webhook_with_its_authorization_header() {
         let hook = FakeWebhook::start(|_| (202, "queued".into()));
         let state = tempfile::tempdir().unwrap();
         let (env, run) = (env(&state, true), herdr_and_git());
@@ -491,7 +491,7 @@ pub(crate) mod tests {
             run: &run,
         };
         let config = config(&hook.base);
-        let sent = notify_desk(
+        let sent = notify_webhook(
             &config,
             None,
             NotifyStatus::Blocked,
@@ -510,13 +510,13 @@ pub(crate) mod tests {
             "message": "Need the staging DB password.",
             "reply_hint": "reply with: herdr agent prompt api-refactor \"...\"",
         });
-        assert_eq!((sent.desk.as_str(), sent.http_status), ("bridge", 202));
+        assert_eq!((sent.webhook.as_str(), sent.http_status), ("bridge", 202));
         let requests = hook.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, "/bridge");
         assert_eq!(requests[0].header("authorization"), Some("Bearer bridge-secret"));
         assert_eq!(requests[0].header("content-type"), Some("application/json"));
-        assert_eq!(requests[0].header("x-nudge-signature"), None, "unsigned desk");
+        assert_eq!(requests[0].header("x-nudge-signature"), None, "unsigned webhook");
         let mut body: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
         let id = body["id"].as_str().unwrap().to_owned();
         let sent_at = body["sent_at"].as_str().unwrap().to_owned();
@@ -567,7 +567,7 @@ pub(crate) mod tests {
         let config = config(&hook.base);
         let ids: std::collections::BTreeSet<String> = (0..20)
             .map(|_| {
-                notify_desk(&config, None, NotifyStatus::Done, "x", None, origin)
+                notify_webhook(&config, None, NotifyStatus::Done, "x", None, origin)
                     .unwrap()
                     .notification
                     .id
@@ -589,7 +589,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_desk_with_a_signing_secret_gets_a_verifiable_signature() {
+    fn a_webhook_with_a_signing_secret_gets_a_verifiable_signature() {
         let hook = FakeWebhook::start(|_| (200, String::new()));
         let state = tempfile::tempdir().unwrap();
         let (env, run) = (env(&state, true), herdr_and_git());
@@ -598,7 +598,7 @@ pub(crate) mod tests {
             cwd: "/home/user/src/api",
             run: &run,
         };
-        let _sent = notify_desk(
+        let _sent = notify_webhook(
             &config(&hook.base),
             Some("research"),
             NotifyStatus::Done,
@@ -612,7 +612,7 @@ pub(crate) mod tests {
         let signature = request.header("x-nudge-signature").unwrap();
         let age = crate::state::now_ms() / 1000 - timestamp.parse::<i64>().unwrap();
         assert!((0..60).contains(&age), "timestamp is now");
-        // What a desk would do: recompute the HMAC over "<timestamp>.<body>" with the shared secret.
+        // What a webhook would do: recompute the HMAC over "<timestamp>.<body>" with the shared secret.
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"research-signing-secret-0123");
         let hex = signature.strip_prefix("sha256=").unwrap();
         let tag: Vec<u8> = hex
@@ -640,20 +640,20 @@ pub(crate) mod tests {
         };
         let mut config = config(&hook.base);
         config.scope.agents = vec!["reviewer".into()];
-        let refused = notify_desk(&config, None, NotifyStatus::Done, "x", None, origin);
+        let refused = notify_webhook(&config, None, NotifyStatus::Done, "x", None, origin);
         assert!(
             matches!(&refused, Err(Error::Config(message)) if message.contains("outside nudge's scope")),
             "{refused:?}"
         );
         assert_eq!(hook.requests().len(), 0);
         config.scope.agents = vec!["api-refactor".into()];
-        let _sent = notify_desk(&config, None, NotifyStatus::Done, "x", None, origin).unwrap();
-        let _ping = ping_desk(&config, None, Some("someone-else".into()), origin).unwrap();
+        let _sent = notify_webhook(&config, None, NotifyStatus::Done, "x", None, origin).unwrap();
+        let _ping = ping_webhook(&config, None, Some("someone-else".into()), origin).unwrap();
         assert_eq!(hook.requests().len(), 2, "in-scope notify and any ping go through");
     }
 
     #[test]
-    fn desk_and_agent_override_the_default_desk_and_detected_agent() {
+    fn webhook_and_agent_override_the_default_webhook_and_detected_agent() {
         let hook = FakeWebhook::start(|_| (200, String::new()));
         let state = tempfile::tempdir().unwrap();
         let (env, run) = (env(&state, true), herdr_and_git());
@@ -663,7 +663,7 @@ pub(crate) mod tests {
             run: &run,
         };
         let config = config(&hook.base);
-        let sent = notify_desk(
+        let sent = notify_webhook(
             &config,
             Some("research"),
             NotifyStatus::Question,
@@ -694,7 +694,7 @@ pub(crate) mod tests {
             cwd: "/home/user/src/api",
             run: &run,
         };
-        let sent = notify_desk(&config(&hook.base), None, NotifyStatus::Done, "finished", None, origin).unwrap();
+        let sent = notify_webhook(&config(&hook.base), None, NotifyStatus::Done, "finished", None, origin).unwrap();
         assert_eq!(sent.notification.from_agent, None);
         assert!(sent.notification.reply_hint.contains("could not be detected"));
     }
@@ -709,7 +709,7 @@ pub(crate) mod tests {
             cwd: "/home/user/src/api",
             run: &run,
         };
-        let message = desk_error(notify_desk(
+        let message = webhook_error(notify_webhook(
             &config(&hook.base),
             None,
             NotifyStatus::Done,
@@ -717,11 +717,11 @@ pub(crate) mod tests {
             None,
             origin,
         ));
-        assert_eq!(message, "desk \"bridge\" webhook returned HTTP 403: bad auth");
+        assert_eq!(message, "webhook \"bridge\" returned HTTP 403: bad auth");
     }
 
     #[test]
-    fn network_failure_is_a_desk_error() {
+    fn network_failure_is_a_webhook_error() {
         let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         let state = tempfile::tempdir().unwrap();
         let (env, run) = (env(&state, true), herdr_and_git());
@@ -730,7 +730,7 @@ pub(crate) mod tests {
             cwd: "/home/user/src/api",
             run: &run,
         };
-        let message = desk_error(notify_desk(
+        let message = webhook_error(notify_webhook(
             &config(&format!("http://{closed}")),
             None,
             NotifyStatus::Done,
@@ -738,14 +738,11 @@ pub(crate) mod tests {
             None,
             origin,
         ));
-        assert!(
-            message.starts_with("could not reach desk \"bridge\" webhook: "),
-            "{message}"
-        );
+        assert!(message.starts_with("could not reach webhook \"bridge\": "), "{message}");
     }
 
     #[test]
-    fn empty_message_and_unknown_desk_fail_before_any_request() {
+    fn empty_message_and_unknown_webhook_fail_before_any_request() {
         let hook = FakeWebhook::start(|_| (200, String::new()));
         let state = tempfile::tempdir().unwrap();
         let (env, run) = (env(&state, true), herdr_and_git());
@@ -756,11 +753,11 @@ pub(crate) mod tests {
         };
         let config = config(&hook.base);
         assert_eq!(
-            desk_error(notify_desk(&config, None, NotifyStatus::Done, " \n ", None, origin)),
+            webhook_error(notify_webhook(&config, None, NotifyStatus::Done, " \n ", None, origin)),
             "message is empty"
         );
-        let unknown = notify_desk(&config, Some("nope"), NotifyStatus::Done, "x", None, origin);
-        assert!(matches!(unknown, Err(Error::Config(message)) if message.contains("unknown desk")));
+        let unknown = notify_webhook(&config, Some("nope"), NotifyStatus::Done, "x", None, origin);
+        assert!(matches!(unknown, Err(Error::Config(message)) if message.contains("unknown webhook")));
         assert!(hook.requests().is_empty());
     }
 
@@ -775,7 +772,7 @@ pub(crate) mod tests {
             run: &run,
         };
         let before = crate::state::now_ms();
-        let _sent = notify_desk(&config(&ok.base), None, NotifyStatus::Done, "x", None, origin).unwrap();
+        let _sent = notify_webhook(&config(&ok.base), None, NotifyStatus::Done, "x", None, origin).unwrap();
         let recorded = update_state(&env, |state| state.panes["w1:p1"].self_notified_at).unwrap();
         assert!(recorded.unwrap() >= before);
 
@@ -787,7 +784,7 @@ pub(crate) mod tests {
             cwd: "/home/user/src/api",
             run: &run,
         };
-        let _failed = notify_desk(&config(&failing.base), None, NotifyStatus::Done, "x", None, origin).unwrap_err();
+        let _failed = notify_webhook(&config(&failing.base), None, NotifyStatus::Done, "x", None, origin).unwrap_err();
         assert!(update_state(&failed_env, |state| state.panes.is_empty()).unwrap());
     }
 
@@ -801,8 +798,8 @@ pub(crate) mod tests {
             cwd: "/home/user/src/api",
             run: &run,
         };
-        let sent = ping_desk(&config(&hook.base), None, None, origin).unwrap();
-        assert_eq!(sent.desk, "bridge");
+        let sent = ping_webhook(&config(&hook.base), None, None, origin).unwrap();
+        assert_eq!(sent.webhook, "bridge");
         assert!(update_state(&env, |state| state.panes.is_empty()).unwrap());
         let body: serde_json::Value = serde_json::from_str(&hook.requests()[0].body).unwrap();
         assert_eq!(

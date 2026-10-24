@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 532" width="860" height="532" role="img" aria-labelledby="title desc">
   <title id="title">nudge setup in a terminal</title>
-  <desc id="desc">The nudge setup form in three numbered steps: the webhook URL was pasted from the clipboard and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401), so the cursor is back on it; the desk is named desk and will be added; auto-notify and the nudge command install are ticked; a Test and save button.</desc>
+  <desc id="desc">The nudge setup form in three numbered steps: the webhook URL was pasted from the clipboard and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401), so the cursor is back on it; the webhook is named main and will be added; auto-notify and the nudge command install are ticked; a Test and save button.</desc>
   <style>
     .mono { white-space: pre; font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; }
     .t { fill: #e6edf3; } .d { fill: #8b949e; } .g { fill: #3fb950; } .r { fill: #f85149; } .c { fill: #39c5cf; } .k { fill: #0d1117; } .w { font-weight: 700; }
@@ -22,13 +22,13 @@
   <line x1="52" y1="428" x2="808" y2="428" stroke="#484f58"/>
 
   <text class="mono" xml:space="preserve">
-    <tspan x="52" y="96" class="t">Your desk is the webhook that receives nudge's events: an AI routine,</tspan>
-    <tspan x="52" y="117" class="t">a workflow automation or your own service.</tspan>
-    <tspan x="52" y="159" class="c w">1  Webhook</tspan><tspan class="d">  copy both from your desk's webhook settings</tspan>
-    <tspan x="52" y="180" class="t">   Webhook URL    https://hooks.example.com/desk/7f3c2a</tspan><tspan class="g">  ✓</tspan>
+    <tspan x="52" y="96" class="t">Your webhook is where nudge sends agent events: an AI routine, a</tspan>
+    <tspan x="52" y="117" class="t">workflow automation or your own service.</tspan>
+    <tspan x="52" y="159" class="c w">1  Where to send</tspan><tspan class="d">  copy both from the webhook's settings</tspan>
+    <tspan x="52" y="180" class="t">   Webhook URL    https://hooks.example.com/h/7f3c2a</tspan><tspan class="g">  ✓</tspan>
     <tspan x="52" y="201" class="k w">   Authorization  Bearer ••••••••a1b2  (52 characters)</tspan><tspan class="r w">  ✗</tspan>
-    <tspan x="52" y="243" class="c w">2  This desk</tspan>
-    <tspan x="52" y="264" class="t">   Name           desk  </tspan><tspan class="d">will be added</tspan>
+    <tspan x="52" y="243" class="c w">2  This webhook</tspan>
+    <tspan x="52" y="264" class="t">   Name           main  </tspan><tspan class="d">will be added</tspan>
     <tspan x="52" y="285" class="t">   Description    </tspan><tspan class="d">optional</tspan>
     <tspan x="52" y="327" class="c w">3  After saving</tspan>
     <tspan x="52" y="348" class="t">   </tspan><tspan class="g w">[x]</tspan><tspan class="t"> Turn on auto-notify        </tspan><tspan class="d">herdr plugin enabled</tspan>

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-nudge is a Rust CLI and herdr plugin that POSTs JSON to a "desk" webhook when coding agents finish or are blocked. Read [CONTRIBUTING.md](CONTRIBUTING.md) for layout and commands.
+nudge is a Rust CLI and herdr plugin that POSTs JSON to a webhook when coding agents finish or are blocked. Read [CONTRIBUTING.md](CONTRIBUTING.md) for layout and commands.
 
 ## Before you call a change done
 
@@ -25,9 +25,9 @@ Each rule names what enforces it. Prefer adding enforcement (a lint, a type, a t
 | Formatting is rustfmt's. | `cargo fmt --check` in CI |
 | Parse external data once, at the boundary, into typed structs: config TOML (`config.rs`), herdr JSON (`context.rs`, `install.rs`), plugin env JSON (`plugin.rs`), MCP arguments (`mcp.rs`). Code past the boundary trusts the types. | serde types; review |
 | Read the environment through `context::Env`, passed in from `main`. Logic never calls `std::env::var`. | review; tests build `Env` values |
-| Never print or log a secret. Validation messages describe the problem, never the value; setup shows the header masked. | tests `setup_field_checks_never_echo_the_rejected_value`, `errors_never_contain_the_authorization_value`; parity's "no desk token printed" check |
+| Never print or log a secret. Validation messages describe the problem, never the value; setup shows the header masked. | tests `setup_field_checks_never_echo_the_rejected_value`, `errors_never_contain_the_authorization_value`; parity's "no webhook token printed" check |
 | Never contact a real webhook, the real herdr server or the real clipboard from tests or verification. | `FakeWebhook` / `FakeRun` in tests; the verify-nudge sandbox (fakes first on PATH) |
-| Tests assert what a user or the desk can observe (requests sent, files written, decisions, messages), not internals. | review |
+| Tests assert what a user or the webhook can observe (requests sent, files written, decisions, messages), not internals. | review |
 | Behavior changes show up in the parity diff and are intended. | `verify-nudge parity` in CI, plus the before/after diff above |
 | herdr overlay panes open over the active pane; never pass `--target-pane` when opening them. | parity scenarios for the `setup` and `status` actions record the herdr argv |
 | `Cargo.lock` is committed and CI builds with `--locked`. | CI |

@@ -200,7 +200,7 @@ impl Sender {
 /// 3. outside herdr panes, the single herdr agent whose cwd is `cwd`: its name, else its pane id.
 ///
 /// The agent is `None` when none applies: a herdr pane without an agent (a plain shell), herdr unreachable,
-/// or several agents sharing the cwd. Never guess: the desk types its reply into this target.
+/// or several agents sharing the cwd. Never guess: the webhook's automation types its reply into this target.
 pub(crate) fn detect_sender(env: &Env, cwd: &str, run: &dyn Run) -> Sender {
     if let Some(agent) = env.get("NUDGE_AGENT") {
         return Sender::named(agent.to_owned(), env);
@@ -507,7 +507,7 @@ pub(crate) mod tests {
 
     #[test]
     fn scope_allows_listed_agents_and_workspaces_by_label_or_id() {
-        let label = r#"{"result":{"workspace":{"workspace_id":"wD","label":"web-app"}}}"#;
+        let label = r#"{"result":{"workspace":{"workspace_id":"wD","label":"team-web"}}}"#;
         let run = FakeRun::new([("herdr workspace get wD", label)]);
         let sender = Sender {
             agent: Some("api-refactor".into()),
@@ -522,7 +522,7 @@ pub(crate) mod tests {
             in_scope(&scope, &sender, &Env::default(), &run)
         };
         assert!(allows(&[], &[]), "an empty scope allows everyone");
-        assert!(allows(&["web-app"], &[]));
+        assert!(allows(&["team-web"], &[]));
         assert!(allows(&["wD"], &[]));
         assert!(allows(&[], &["api-refactor"]));
         assert!(allows(&[], &["wD:p1"]));
@@ -530,7 +530,7 @@ pub(crate) mod tests {
         assert!(!allows(&["other"], &["reviewer"]));
         assert!(!in_scope(
             &Scope {
-                workspaces: vec!["web-app".into()],
+                workspaces: vec!["team-web".into()],
                 agents: Vec::new()
             },
             &Sender::default(),

@@ -11,10 +11,10 @@ Please report vulnerabilities privately through [GitHub's private vulnerability 
 In scope:
 
 - Leaking the Authorization header or other secrets: into logs, error messages, terminal output, or files with loose permissions.
-- Terminal output reaching the desk when the rules say it shouldn't (auto-notify off, focused pane, cooldown), or redaction missing a common credential format.
+- Terminal output reaching the webhook when the rules say it shouldn't (auto-notify off, focused pane, cooldown), or redaction missing a common credential format.
 - The install step accepting a binary that doesn't match its release checksum.
 
 Out of scope:
 
-- What your desk does with an event. The desk is your own automation; see [docs/desk-instructions.md](docs/desk-instructions.md) for safe instructions.
+- What the automation behind your webhook does with an event. It is your own automation; see [docs/webhook-instructions.md](docs/webhook-instructions.md) for safe instructions.
 - Secrets in formats that redaction doesn't claim to cover. Redaction is documented as best-effort.

@@ -1,4 +1,4 @@
-//! Read the clipboard for `nudge setup`, also from herdr plugin panes that lack the desktop session's env.
+//! Read the clipboard for `nudge setup`, also from herdr plugin panes that lack the graphical session's env.
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ const WL_PASTE: [&str; 4] = ["wl-paste", "--no-newline", "--type", "text"];
 const XCLIP: [&str; 4] = ["xclip", "-selection", "clipboard", "-o"];
 
 /// Clipboard commands to try, in order: wl-paste, then xclip, each as-is first. Processes started by the herdr
-/// server (plugin panes) may lack the desktop session's `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` or `DISPLAY`, so
+/// server (plugin panes) may lack the graphical session's `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` or `DISPLAY`, so
 /// also try every Wayland socket in the runtime dir and `DISPLAY=:0`.
 pub(crate) fn clipboard_commands(env: &Env, runtime_dir: &str, wayland_sockets: &[String]) -> Vec<Vec<String>> {
     let owned = |args: &[&str]| args.iter().map(|&arg| arg.to_owned()).collect::<Vec<String>>();
@@ -80,7 +80,7 @@ mod tests {
     const WL: &str = "wl-paste --no-newline --type text";
     const XC: &str = "xclip -selection clipboard -o";
 
-    fn desktop() -> Env {
+    fn graphical_session() -> Env {
         Env::from([
             ("WAYLAND_DISPLAY", "wayland-1"),
             ("XDG_RUNTIME_DIR", "/run/user/1000"),
@@ -91,10 +91,10 @@ mod tests {
     #[test]
     fn prefers_wl_paste_in_the_current_session() {
         let runtime = tempfile::tempdir().unwrap();
-        let run = FakeRun::new([(WL, "https://desk/hook"), (XC, "other")]);
+        let run = FakeRun::new([(WL, "https://webhook.example/hook"), (XC, "other")]);
         assert_eq!(
-            read_clipboard(&run, &desktop(), runtime.path()).as_deref(),
-            Some("https://desk/hook")
+            read_clipboard(&run, &graphical_session(), runtime.path()).as_deref(),
+            Some("https://webhook.example/hook")
         );
         assert_eq!(run.calls(), [WL]);
     }
@@ -107,7 +107,7 @@ mod tests {
             FakeRun::new([(WL, ""), (XC, "Bearer abc")]),
         ] {
             assert_eq!(
-                read_clipboard(&run, &desktop(), runtime.path()).as_deref(),
+                read_clipboard(&run, &graphical_session(), runtime.path()).as_deref(),
                 Some("Bearer abc")
             );
         }
@@ -122,10 +122,10 @@ mod tests {
             "env XDG_RUNTIME_DIR={} WAYLAND_DISPLAY=wayland-1 {WL}",
             runtime.path().display()
         );
-        let run = FakeRun::new([(cmd.as_str(), "https://desk/hook")]);
+        let run = FakeRun::new([(cmd.as_str(), "https://webhook.example/hook")]);
         assert_eq!(
             read_clipboard(&run, &Env::default(), runtime.path()).as_deref(),
-            Some("https://desk/hook")
+            Some("https://webhook.example/hook")
         );
     }
 
@@ -133,7 +133,7 @@ mod tests {
     fn none_when_nothing_yields_text() {
         let runtime = tempfile::tempdir().unwrap();
         let run = FakeRun::default();
-        assert_eq!(read_clipboard(&run, &desktop(), runtime.path()), None);
+        assert_eq!(read_clipboard(&run, &graphical_session(), runtime.path()), None);
         assert_eq!(run.calls(), [WL, XC]);
     }
 
@@ -141,7 +141,11 @@ mod tests {
     fn session_fallbacks_only_when_the_env_lacks_them() {
         let joined = |commands: Vec<Vec<String>>| commands.into_iter().map(|c| c.join(" ")).collect::<Vec<_>>();
         assert_eq!(
-            joined(clipboard_commands(&desktop(), "/run/user/1000", &["wayland-1".into()])),
+            joined(clipboard_commands(
+                &graphical_session(),
+                "/run/user/1000",
+                &["wayland-1".into()]
+            )),
             [WL, XC]
         );
         assert_eq!(

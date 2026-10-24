@@ -6,10 +6,10 @@ use std::fmt;
 pub(crate) enum Error {
     /// Bad command line: exit 2 with a usage hint.
     Usage(String),
-    /// Missing or invalid config, or an unknown desk.
+    /// Missing or invalid config, or an unknown webhook.
     Config(String),
     /// The webhook could not be reached, rejected the notification, or there was nothing to send.
-    Desk(DeskError),
+    Webhook(WebhookError),
     /// `nudge setup` could not finish.
     Setup(String),
     /// The user pressed Ctrl-C at a prompt.
@@ -24,7 +24,7 @@ impl fmt::Display for Error {
             Self::Usage(message) | Self::Config(message) | Self::Setup(message) | Self::Other(message) => {
                 f.write_str(message)
             }
-            Self::Desk(error) => f.write_str(&error.message),
+            Self::Webhook(error) => f.write_str(&error.message),
             Self::Cancelled => f.write_str("cancelled"),
         }
     }
@@ -36,9 +36,9 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<DeskError> for Error {
-    fn from(error: DeskError) -> Self {
-        Self::Desk(error)
+impl From<WebhookError> for Error {
+    fn from(error: WebhookError) -> Self {
+        Self::Webhook(error)
     }
 }
 
@@ -50,13 +50,13 @@ pub(crate) enum Blame {
 }
 
 #[derive(Debug)]
-pub(crate) struct DeskError {
+pub(crate) struct WebhookError {
     pub(crate) message: String,
     /// HTTP status when the webhook answered with an error; `None` for network failures and input errors.
     pub(crate) http_status: Option<u16>,
 }
 
-impl DeskError {
+impl WebhookError {
     /// 401/403 blame the Authorization header, 404/405/410 the URL; anything else blames neither.
     pub(crate) const fn blames(&self) -> Option<Blame> {
         match self.http_status {
@@ -71,12 +71,12 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[cfg(test)]
 mod tests {
-    use super::{Blame, DeskError};
+    use super::{Blame, WebhookError};
 
     #[test]
     fn blames_points_at_the_authorization_header_or_the_url() {
         let blame = |status| {
-            DeskError {
+            WebhookError {
                 message: String::new(),
                 http_status: status,
             }

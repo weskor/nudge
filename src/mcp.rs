@@ -1,15 +1,15 @@
-//! `nudge mcp`: a stdio MCP server (newline-delimited JSON-RPC 2.0) with two tools, `notify_desk` and
-//! `list_desks`.
+//! `nudge mcp`: a stdio MCP server (newline-delimited JSON-RPC 2.0) with two tools, `notify_webhook` and
+//! `list_webhooks`.
 use std::io::{BufRead as _, Write as _};
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::VERSION;
-use crate::config::{default_config_path, default_desk_name, load_config};
+use crate::config::{default_config_path, default_webhook_name, load_config};
 use crate::context::{Env, System};
 use crate::error::Result;
-use crate::notify::{Notification, NotifyStatus, Origin, current_dir, notify_desk};
+use crate::notify::{Notification, NotifyStatus, Origin, current_dir, notify_webhook};
 
 const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 5] = [
@@ -26,16 +26,17 @@ fn tools() -> Value {
     let schema = "http://json-schema.org/draft-07/schema#";
     json!([
         {
-            "name": "list_desks",
-            "description": "List the desks notify_desk can reach, and which one is the default.",
+            "name": "list_webhooks",
+            "description": "List the webhooks notify_webhook can reach, and which one is the default.",
             "inputSchema": { "$schema": schema, "type": "object", "properties": {} },
             "execution": { "taskSupport": "forbidden" },
         },
         {
-            "name": "notify_desk",
-            "description": "Notify your desk (the webhook automation that coordinates your agents) that you finished, \
-                are blocked, or have a question. Sends your herdr agent name, cwd, repo and branch with the message; \
-                the desk replies later by prompting you through herdr, so do not wait or poll for an answer.",
+            "name": "notify_webhook",
+            "description": "Notify your webhook (the AI routine or automation that coordinates your agents) that you \
+                finished, are blocked, or have a question. Sends your herdr agent name, cwd, repo and branch with the \
+                message; the webhook's automation replies later by prompting you through herdr, so do not wait or \
+                poll for an answer.",
             "inputSchema": {
                 "$schema": schema,
                 "type": "object",
@@ -51,7 +52,10 @@ fn tools() -> Value {
                         "type": "string",
                         "enum": ["done", "blocked", "question"],
                     },
-                    "desk": { "description": "Desk name from list_desks; omit for the default desk.", "type": "string" },
+                    "webhook": {
+                        "description": "Webhook name from list_webhooks; omit for the default webhook.",
+                        "type": "string",
+                    },
                     "agent": {
                         "description": "Your herdr agent name, if auto-detection would get it wrong.",
                         "type": "string",
@@ -89,11 +93,11 @@ fn json_type(value: Option<&Value>) -> &'static str {
 struct NotifyArgs {
     message: String,
     status: NotifyStatus,
-    desk: Option<String>,
+    webhook: Option<String>,
     agent: Option<String>,
 }
 
-/// Validate `notify_desk` arguments; problems are listed as "<message> at <field>".
+/// Validate `notify_webhook` arguments; problems are listed as "<message> at <field>".
 fn notify_args(arguments: &Map<String, Value>) -> Result<NotifyArgs, Vec<String>> {
     let mut problems = Vec::new();
     let expected_string = |field: &str, value: Option<&Value>| {
@@ -131,13 +135,13 @@ fn notify_args(arguments: &Map<String, Value>) -> Result<NotifyArgs, Vec<String>
             None
         }
     };
-    let desk = optional("desk");
+    let webhook = optional("webhook");
     let agent = optional("agent");
     match (message, status) {
         (Some(message), Some(status)) if problems.is_empty() => Ok(NotifyArgs {
             message,
             status,
-            desk,
+            webhook,
             agent,
         }),
         _ => Err(problems),
@@ -145,7 +149,7 @@ fn notify_args(arguments: &Map<String, Value>) -> Result<NotifyArgs, Vec<String>
 }
 
 #[derive(Serialize)]
-struct DeskSummary<'a> {
+struct WebhookSummary<'a> {
     name: &'a str,
     default: bool,
     description: &'a str,
@@ -154,7 +158,7 @@ struct DeskSummary<'a> {
 #[derive(Serialize)]
 struct Notified {
     ok: bool,
-    desk: String,
+    webhook: String,
     http_status: u16,
     #[serde(flatten)]
     notification: Notification,
@@ -164,19 +168,19 @@ fn pretty(value: &impl Serialize) -> String {
     serde_json::to_string_pretty(value).unwrap_or_default()
 }
 
-fn list_desks(env: &Env) -> Result<String> {
+fn list_webhooks(env: &Env) -> Result<String> {
     let config = load_config(&default_config_path(env))?;
-    let default_name = default_desk_name(&config);
-    let desks: Vec<DeskSummary<'_>> = config
-        .desk
+    let default_name = default_webhook_name(&config);
+    let webhooks: Vec<WebhookSummary<'_>> = config
+        .webhook
         .iter()
-        .map(|desk| DeskSummary {
-            name: &desk.name,
-            default: Some(desk.name.as_str()) == default_name,
-            description: desk.description.as_deref().unwrap_or_default(),
+        .map(|webhook| WebhookSummary {
+            name: &webhook.name,
+            default: Some(webhook.name.as_str()) == default_name,
+            description: webhook.description.as_deref().unwrap_or_default(),
         })
         .collect();
-    Ok(pretty(&desks))
+    Ok(pretty(&webhooks))
 }
 
 fn notify(args: NotifyArgs, env: &Env) -> Result<String> {
@@ -187,9 +191,9 @@ fn notify(args: NotifyArgs, env: &Env) -> Result<String> {
         cwd: &cwd,
         run: &System,
     };
-    let sent = notify_desk(
+    let sent = notify_webhook(
         &config,
-        args.desk.as_deref(),
+        args.webhook.as_deref(),
         args.status,
         &args.message,
         args.agent,
@@ -197,7 +201,7 @@ fn notify(args: NotifyArgs, env: &Env) -> Result<String> {
     )?;
     Ok(pretty(&Notified {
         ok: true,
-        desk: sent.desk,
+        webhook: sent.webhook,
         http_status: sent.http_status,
         notification: sent.notification,
     }))
@@ -226,12 +230,12 @@ fn call_tool(params: Option<&Value>, env: &Env) -> Value {
         )
     };
     let outcome = match (name, arguments) {
-        ("list_desks", Ok(_)) => list_desks(env),
-        ("notify_desk", Ok(arguments)) => match notify_args(arguments) {
+        ("list_webhooks", Ok(_)) => list_webhooks(env),
+        ("notify_webhook", Ok(arguments)) => match notify_args(arguments) {
             Ok(args) => notify(args, env),
             Err(problems) => return invalid(&problems.join("\n")),
         },
-        ("list_desks" | "notify_desk", Err(problem)) => return invalid(&problem),
+        ("list_webhooks" | "notify_webhook", Err(problem)) => return invalid(&problem),
         (other, _) => return text_result(&format!("MCP error {INVALID_PARAMS}: Tool {other} not found"), true),
     };
     match outcome {
@@ -328,12 +332,12 @@ mod tests {
     fn invalid_notify_arguments_are_tool_errors_naming_each_field() {
         let result = call(
             &Env::default(),
-            "notify_desk",
-            &json!({ "message": "", "status": "nah", "desk": 1 }),
+            "notify_webhook",
+            &json!({ "message": "", "status": "nah", "webhook": 1 }),
         );
         assert_eq!(result["isError"], true);
         let text = result["content"][0]["text"].as_str().unwrap();
-        for field in ["at message", "at status", "at desk"] {
+        for field in ["at message", "at status", "at webhook"] {
             assert!(text.contains(field), "{text}");
         }
     }
@@ -343,7 +347,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("none.toml");
         let env = Env::from([("NUDGE_CONFIG", missing.to_str().unwrap())]);
-        let result = call(&env, "list_desks", &json!({}));
+        let result = call(&env, "list_webhooks", &json!({}));
         assert_eq!(result["isError"], true);
         assert!(result["content"][0]["text"].as_str().unwrap().contains("nudge setup"));
     }

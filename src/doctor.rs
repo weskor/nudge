@@ -2,11 +2,11 @@
 use std::path::Path;
 
 use crate::clipboard::CLIPBOARD_TOOLS;
-use crate::config::{Auto, default_config_path, default_desk_name, read_config, seconds_in_words};
+use crate::config::{Auto, default_config_path, default_webhook_name, read_config, seconds_in_words};
 use crate::context::{Env, Run as _, System};
 use crate::error::{Blame, Error, Result};
 use crate::install::{PLUGIN_ID, Plugin, command_link, nudge_root, plugin, plugin_logs};
-use crate::notify::{Origin, current_dir, ping_desk};
+use crate::notify::{Origin, current_dir, ping_webhook};
 use crate::state::{current_state, now_ms, state_dir};
 use crate::tty::{Mark, Style, wait_for_key};
 
@@ -70,7 +70,7 @@ fn check_config(ping: bool, env: &Env) -> Result<Vec<Check>> {
         Ok(Some(config)) => config,
         Ok(None) => {
             return Ok(vec![
-                Check::new(Level::Fail, "No desk configured")
+                Check::new(Level::Fail, "No webhook configured")
                     .detail(shown)
                     .fix("run nudge setup"),
             ]);
@@ -83,13 +83,13 @@ fn check_config(ping: bool, env: &Env) -> Result<Vec<Check>> {
         }
         Err(other) => return Err(other),
     };
-    let count = config.desk.len();
+    let count = config.webhook.len();
     let plural = if count == 1 { "" } else { "s" };
-    let Some(default_name) = default_desk_name(&config) else {
+    let Some(default_name) = default_webhook_name(&config) else {
         return Ok(vec![
-            Check::new(Level::Warn, format!("Config: {count} desk{plural}, default not set"))
+            Check::new(Level::Warn, format!("Config: {count} webhook{plural}, default not set"))
                 .detail(shown)
-                .fix("run nudge setup --desk NAME --default (the plugin sends to the default desk)"),
+                .fix("run nudge setup --webhook NAME --default (the plugin sends to the default webhook)"),
         ]);
     };
     let scope = if config.scope.is_everyone() {
@@ -110,7 +110,7 @@ fn check_config(ping: bool, env: &Env) -> Result<Vec<Check>> {
     let mut checks = vec![
         Check::new(
             Level::Ok,
-            format!("Config: {count} desk{plural}, default \"{default_name}\""),
+            format!("Config: {count} webhook{plural}, default \"{default_name}\""),
         )
         .detail(shown),
         scope,
@@ -120,7 +120,7 @@ fn check_config(ping: bool, env: &Env) -> Result<Vec<Check>> {
         return Ok(checks);
     }
     let cwd = current_dir()?;
-    match ping_desk(
+    match ping_webhook(
         &config,
         Some(default_name),
         None,
@@ -134,13 +134,13 @@ fn check_config(ping: bool, env: &Env) -> Result<Vec<Check>> {
             Level::Ok,
             format!("Webhook accepted a test ping (HTTP {})", sent.http_status),
         )),
-        Err(Error::Desk(error)) => {
+        Err(Error::Webhook(error)) => {
             let fix = match error.blames() {
                 Some(Blame::Authorization) => {
-                    format!("copy the Authorization header again: nudge setup --desk {default_name}")
+                    format!("copy the Authorization header again: nudge setup --webhook {default_name}")
                 }
-                Some(Blame::Url) => format!("copy the Webhook URL again: nudge setup --desk {default_name}"),
-                None => "check that the desk is running, then nudge test".to_owned(),
+                Some(Blame::Url) => format!("copy the Webhook URL again: nudge setup --webhook {default_name}"),
+                None => "check that the webhook is running, then nudge test".to_owned(),
             };
             checks.push(
                 Check::new(Level::Fail, "Webhook test failed")

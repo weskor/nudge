@@ -1,4 +1,4 @@
-//! `nudge setup`: connect a desk, test it before saving, then turn on the herdr plugin's auto-notify and put the
+//! `nudge setup`: connect a webhook, test it before saving, then turn on the herdr plugin's auto-notify and put the
 //! `nudge` command on PATH. In a terminal it is a full-screen form (clipboard-first); otherwise it reads flags and
 //! stdin.
 use std::borrow::Cow;
@@ -14,13 +14,13 @@ use ratatui::text::{Line, Span};
 
 use crate::clipboard::{read_clipboard, runtime_dir};
 use crate::config::{
-    Auto, Config, Desk, check_authorization, check_desk_name, check_webhook_url, default_config_path, read_config,
-    seconds_in_words, upsert_desk, validate_desk, write_config,
+    Auto, Config, Webhook, check_authorization, check_webhook_name, check_webhook_url, default_config_path,
+    read_config, seconds_in_words, upsert_webhook, validate_webhook, write_config,
 };
 use crate::context::{Env, System};
-use crate::error::{Blame, DeskError, Error, Result};
+use crate::error::{Blame, Error, Result, WebhookError};
 use crate::install::{Plugin, command_link, link_command, nudge_root, plugin};
-use crate::notify::{Origin, current_dir, ping_desk};
+use crate::notify::{Origin, current_dir, ping_webhook};
 use crate::state::{current_state, update_state};
 use crate::tty::{Mark, Style, mask_secret, wait_for_key};
 use crate::ui::{self, BAD, DIM, GOOD, HEADER, View, WARN, check};
@@ -48,11 +48,11 @@ const LABEL_WIDTH: usize = 18;
 
 #[derive(Debug, Default)]
 pub(crate) struct SetupOptions {
-    pub(crate) desk: Option<String>,
+    pub(crate) webhook: Option<String>,
     pub(crate) url: Option<String>,
     pub(crate) authorization: Option<String>,
     pub(crate) description: Option<String>,
-    /// HMAC signing secret shared with the desk; kept from the existing desk when not given.
+    /// HMAC signing secret shared with the webhook; kept from the existing webhook when not given.
     pub(crate) signing_secret: Option<String>,
     pub(crate) make_default: bool,
     /// Test-ping the webhook before saving (off with `--no-test`).
@@ -92,13 +92,13 @@ impl Field {
                 let lower = checked.to_ascii_lowercase();
                 if lower.starts_with("http://") || lower.starts_with("https://") {
                     return Err(Error::Config(
-                        "that's a URL, not the Authorization header. Copy the header value from your desk's webhook settings."
+                        "that's a URL, not the Authorization header. Copy the header value from your webhook's settings."
                             .into(),
                     ));
                 }
                 Ok(checked)
             }
-            Self::Name => check_desk_name(value),
+            Self::Name => check_webhook_name(value),
             Self::Description => Ok(value.trim().to_owned()),
         }
     }
@@ -167,26 +167,26 @@ enum Outcome {
     Continue,
     /// Fill the field under the cursor from the clipboard.
     ReadClipboard,
-    /// The values are ready: build the desk, test-ping it if `test`, and save.
+    /// The values are ready: build the webhook, test-ping it if `test`, and save.
     Submit {
         test: bool,
     },
     Quit,
 }
 
-/// Where the form starts: flags, the saved desk, and what herdr and PATH look like.
+/// Where the form starts: flags, the saved webhook, and what herdr and PATH look like.
 #[derive(Debug)]
 struct Start<'a> {
     name: &'a str,
-    current: Option<&'a Desk>,
+    current: Option<&'a Webhook>,
     /// `--url` / `--authorization` / `--description`, already checked.
     url: Option<String>,
     authorization: Option<String>,
     description: Option<String>,
-    /// The names of the saved desks, and which one is the default.
+    /// The names of the saved webhooks, and which one is the default.
     saved: Vec<String>,
-    default_desk: Option<String>,
-    /// `--default`: whether "Make it the default desk" starts ticked.
+    default_webhook: Option<String>,
+    /// `--default`: whether "Make it the default webhook" starts ticked.
     make_default: bool,
     plugin: Plugin,
     /// Whether auto-notify starts ticked.
@@ -198,7 +198,7 @@ struct Start<'a> {
     test: bool,
 }
 
-/// Whether saving test-pings the desk first.
+/// Whether saving test-pings the webhook first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ping {
     Test,
@@ -224,10 +224,10 @@ struct Form {
     authorization: Entry,
     name: Entry,
     description: Entry,
-    /// The saved desk the form started from, if any.
+    /// The saved webhook the form started from, if any.
     loaded: Option<String>,
     saved: Vec<String>,
-    default_desk: Option<String>,
+    default_webhook: Option<String>,
     make_default: bool,
     plugin: Plugin,
     auto_notify: bool,
@@ -244,13 +244,13 @@ impl Form {
     fn new(start: Start<'_>) -> Self {
         let current = start.current;
         Self {
-            url: Entry::new(start.url.or_else(|| current.map(|desk| desk.url.clone()))),
+            url: Entry::new(start.url.or_else(|| current.map(|webhook| webhook.url.clone()))),
             authorization: Entry::new(
                 start
                     .authorization
-                    .or_else(|| current.map(|desk| desk.authorization.clone())),
+                    .or_else(|| current.map(|webhook| webhook.authorization.clone())),
             ),
-            // Not checked yet: `--desk` is only validated when the form is saved or the field is left.
+            // Not checked yet: `--webhook` is only validated when the form is saved or the field is left.
             name: Entry {
                 value: start.name.to_owned(),
                 ..Entry::default()
@@ -258,11 +258,11 @@ impl Form {
             description: Entry::new(
                 start
                     .description
-                    .or_else(|| current.and_then(|desk| desk.description.clone())),
+                    .or_else(|| current.and_then(|webhook| webhook.description.clone())),
             ),
-            loaded: current.map(|desk| desk.name.clone()),
+            loaded: current.map(|webhook| webhook.name.clone()),
             saved: start.saved,
-            default_desk: start.default_desk,
+            default_webhook: start.default_webhook,
             make_default: start.make_default,
             plugin: start.plugin,
             auto_notify: start.auto_notify,
@@ -276,10 +276,10 @@ impl Form {
         }
     }
 
-    /// Whether there's a default to choose: other desks are saved and this one isn't the default already.
+    /// Whether there's a default to choose: other webhooks are saved and this one isn't the default already.
     fn offers_default(&self) -> bool {
         let name = self.name.value.as_str();
-        self.saved.iter().any(|saved| saved != name) && self.default_desk.as_deref() != Some(name)
+        self.saved.iter().any(|saved| saved != name) && self.default_webhook.as_deref() != Some(name)
     }
 
     fn rows(&self) -> Vec<Row> {
@@ -390,7 +390,7 @@ impl Form {
             if entry.value.is_empty() {
                 entry.problem = match field {
                     Field::Url | Field::Authorization => Some(format!("Paste or type the {}.", field.label())),
-                    Field::Name => Some("Give this desk a name.".into()),
+                    Field::Name => Some("Give this webhook a name.".into()),
                     Field::Description => None,
                 };
             }
@@ -481,10 +481,10 @@ impl Form {
         }
     }
 
-    /// The desk to test and save.
-    fn desk(&self, signing_secret: Option<&str>) -> Result<Desk> {
+    /// The webhook to test and save.
+    fn webhook(&self, signing_secret: Option<&str>) -> Result<Webhook> {
         let description = Some(self.description.value.as_str()).filter(|text| !text.is_empty());
-        validate_desk(
+        validate_webhook(
             &self.name.value,
             &self.url.value,
             &self.authorization.value,
@@ -494,7 +494,7 @@ impl Form {
     }
 
     /// Show why the test ping failed: on the field it blames, or offer to save anyway.
-    fn test_failed(&mut self, error: &DeskError) {
+    fn test_failed(&mut self, error: &WebhookError) {
         let reason = explain(error);
         self.status = None;
         let field = match error.blames() {
@@ -523,8 +523,7 @@ impl Form {
     fn hint(&self) -> Cow<'static, str> {
         match self.current() {
             Some(Row::Field(Field::Url)) => {
-                "Copy the Webhook URL from your desk's webhook settings and press Enter here to paste it, or type it."
-                    .into()
+                "Copy the Webhook URL from your webhook's settings and press Enter here to paste it, or type it.".into()
             }
             Some(Row::Field(Field::Authorization)) if self.authorization.checked => {
                 "Never shown. To replace it, type or paste a new one; Ctrl-U empties the field.".into()
@@ -534,31 +533,32 @@ impl Form {
                     .into()
             }
             Some(Row::Field(Field::Name)) => {
-                "A short name for this desk, used by nudge list, --desk and settings. With one desk, the default is fine."
+                "A short name for this webhook, used by nudge list, --webhook and settings. With one webhook, the \
+                 default is fine."
                     .into()
             }
             Some(Row::Field(Field::Description)) => {
-                "Optional. Shown by nudge list and to agents choosing a desk.".into()
+                "Optional. Shown by nudge list and to agents choosing a webhook.".into()
             }
-            Some(Row::Default) => "Notifications go to the default desk unless they name another one.".into(),
+            Some(Row::Default) => "Notifications go to the default webhook unless they name another one.".into(),
             Some(Row::AutoNotify) => format!(
-                "Sends an agent's last terminal lines (secrets redacted) to the desk when it's blocked, or finishes \
+                "Sends an agent's last terminal lines (secrets redacted) to the webhook when it's blocked, or finishes \
                  a turn longer than {} while you're not watching it.",
                 self.min_turn
             )
             .into(),
             Some(Row::Command) => "Links ~/.local/bin/nudge so agents can run nudge notify.".into(),
             Some(Row::Save) => match self.ping {
-                Ping::Test => "Sends the desk a test ping, then saves it (mode 600) and does what's ticked above.",
-                Ping::SaveAnyway => "Saves the desk although its test ping failed.",
-                Ping::Skip => "Saves the desk without a test ping (mode 600) and does what's ticked above.",
+                Ping::Test => "Sends the webhook a test ping, then saves it (mode 600) and does what's ticked above.",
+                Ping::SaveAnyway => "Saves the webhook although its test ping failed.",
+                Ping::Skip => "Saves the webhook without a test ping (mode 600) and does what's ticked above.",
             }
             .into(),
             None => "".into(),
         }
     }
 
-    /// What saving does to the desk of this name: a new one, an update, or replacing another saved desk.
+    /// What saving does to the webhook of this name: a new one, an update, or replacing another saved webhook.
     fn name_note(&self) -> Option<Span<'static>> {
         let name = self.name.value.as_str();
         if name.is_empty() || self.name.problem.is_some() {
@@ -566,7 +566,7 @@ impl Form {
         } else if self.loaded.as_deref() == Some(name) {
             Some(Span::styled("already saved: saving updates it", DIM))
         } else if self.saved.iter().any(|saved| saved == name) {
-            Some(Span::styled("replaces the saved desk with this name", WARN))
+            Some(Span::styled("replaces the saved webhook with this name", WARN))
         } else {
             Some(Span::styled("will be added", DIM))
         }
@@ -632,19 +632,19 @@ impl Form {
         let mut items: Vec<(Option<Row>, Line<'static>)> = vec![
             (
                 None,
-                Line::raw("Your desk is the webhook that receives nudge's events: an AI routine,"),
+                Line::raw("Your webhook is where nudge sends agent events: an AI routine, a"),
             ),
-            (None, Line::raw("a workflow automation or your own service.")),
+            (None, Line::raw("workflow automation or your own service.")),
             (None, Line::default()),
             (
                 None,
-                section("1", "Webhook", "  copy both from your desk's webhook settings"),
+                section("1", "Where to send", "  copy both from the webhook's settings"),
             ),
         ];
         let mut caret = None;
         for field in FIELDS {
             if field == Field::Name {
-                items.extend([(None, Line::default()), (None, section("2", "This desk", ""))]);
+                items.extend([(None, Line::default()), (None, section("2", "This webhook", ""))]);
             }
             let focused = cursor_row == Some(Row::Field(field));
             let (line, at) = self.field_line(field, focused, room);
@@ -654,7 +654,7 @@ impl Form {
             items.push((Some(Row::Field(field)), line));
         }
         if self.offers_default() {
-            let line = option(check(self.make_default), "Make it the default desk", None);
+            let line = option(check(self.make_default), "Make it the default webhook", None);
             items.push((Some(Row::Default), line));
         }
         items.extend([(None, Line::default()), (None, section("3", "After saving", ""))]);
@@ -732,11 +732,11 @@ fn fit(text: &str, room: usize, typing: bool) -> String {
 }
 
 /// Plain-language reason for a failed test ping.
-fn explain(error: &DeskError) -> String {
+fn explain(error: &WebhookError) -> String {
     let detail = error
         .message
-        .strip_prefix("desk \"")
-        .and_then(|rest| rest.split_once("\" webhook "))
+        .strip_prefix("webhook \"")
+        .and_then(|rest| rest.split_once("\" "))
         .map_or(error.message.as_str(), |(_, detail)| detail);
     match error.blames() {
         Some(Blame::Authorization) => format!("the webhook rejected the Authorization header ({detail})"),
@@ -745,16 +745,16 @@ fn explain(error: &DeskError) -> String {
     }
 }
 
-/// Test-ping `desk` alone. A webhook failure is returned, not raised.
-fn ping(desk: &Desk, env: &Env) -> Result<Result<u16, DeskError>> {
+/// Test-ping `webhook` alone. A webhook failure is returned, not raised.
+fn ping(webhook: &Webhook, env: &Env) -> Result<Result<u16, WebhookError>> {
     let config = Config {
-        desk: vec![desk.clone()],
+        webhook: vec![webhook.clone()],
         ..Config::default()
     };
     let cwd = current_dir()?;
-    match ping_desk(
+    match ping_webhook(
         &config,
-        Some(&desk.name),
+        Some(&webhook.name),
         None,
         Origin {
             env,
@@ -763,7 +763,7 @@ fn ping(desk: &Desk, env: &Env) -> Result<Result<u16, DeskError>> {
         },
     ) {
         Ok(sent) => Ok(Ok(sent.http_status)),
-        Err(Error::Desk(error)) => Ok(Err(error)),
+        Err(Error::Webhook(error)) => Ok(Err(error)),
         Err(other) => Err(other),
     }
 }
@@ -811,14 +811,14 @@ fn draw(terminal: &mut DefaultTerminal, form: &Form) -> Result<()> {
     )
 }
 
-/// Run the form until the desk is ready to save, with the test ping's HTTP status if one was sent, or the user
+/// Run the form until the webhook is ready to save, with the test ping's HTTP status if one was sent, or the user
 /// leaves (`None`).
 fn run_form(
     terminal: &mut DefaultTerminal,
     form: &mut Form,
     signing_secret: Option<&str>,
     env: &Env,
-) -> Result<Option<(Desk, Option<u16>)>> {
+) -> Result<Option<(Webhook, Option<u16>)>> {
     loop {
         draw(terminal, form)?;
         let Some(key) = form_key(event::read()?) else {
@@ -829,8 +829,8 @@ fn run_form(
             Outcome::Quit => return Ok(None),
             Outcome::ReadClipboard => form.fill_from_clipboard(read_clipboard(&System, env, &runtime_dir(env))),
             Outcome::Submit { test } => {
-                let desk = match form.desk(signing_secret) {
-                    Ok(desk) => desk,
+                let webhook = match form.webhook(signing_secret) {
+                    Ok(webhook) => webhook,
                     Err(Error::Config(message)) => {
                         form.status = Some(format!("✗ {}", problem(&message)));
                         continue;
@@ -838,12 +838,12 @@ fn run_form(
                     Err(other) => return Err(other),
                 };
                 if !test {
-                    return Ok(Some((desk, None)));
+                    return Ok(Some((webhook, None)));
                 }
                 form.status = Some("Testing…".into());
                 draw(terminal, form)?;
-                match ping(&desk, env)? {
-                    Ok(status) => return Ok(Some((desk, Some(status)))),
+                match ping(&webhook, env)? {
+                    Ok(status) => return Ok(Some((webhook, Some(status)))),
                     Err(error) => form.test_failed(&error),
                 }
             }
@@ -887,9 +887,9 @@ fn finish_extras(form: &Form, env: &Env) -> Result<()> {
     Ok(())
 }
 
-/// Save `desk` into the config at `path`; returns the new config.
-fn save(path: &Path, existing: Option<Config>, desk: Desk, make_default: bool) -> Result<Config> {
-    let config = upsert_desk(existing, desk, make_default);
+/// Save `webhook` into the config at `path`; returns the new config.
+fn save(path: &Path, existing: Option<Config>, webhook: Webhook, make_default: bool) -> Result<Config> {
+    let config = upsert_webhook(existing, webhook, make_default);
     write_config(path, &config)?;
     Ok(config)
 }
@@ -898,10 +898,10 @@ fn save(path: &Path, existing: Option<Config>, desk: Desk, make_default: bool) -
 fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
     let path = default_config_path(env);
     let existing = read_config(&path)?;
-    let name = options.desk.as_deref().unwrap_or("desk");
+    let name = options.webhook.as_deref().unwrap_or("main");
     let current = existing
         .as_ref()
-        .and_then(|config| config.desk.iter().find(|desk| desk.name == name))
+        .and_then(|config| config.webhook.iter().find(|webhook| webhook.name == name))
         .cloned();
     let flag = |value: &Option<String>| value.clone().filter(|value| !value.is_empty());
     let url = flag(&options.url).map(|url| check_webhook_url(&url)).transpose()?;
@@ -917,9 +917,9 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
         description: options.description.clone(),
         saved: existing
             .as_ref()
-            .map(|config| config.desk.iter().map(|desk| desk.name.clone()).collect())
+            .map(|config| config.webhook.iter().map(|webhook| webhook.name.clone()).collect())
             .unwrap_or_default(),
-        default_desk: existing.as_ref().and_then(|config| config.default_desk.clone()),
+        default_webhook: existing.as_ref().and_then(|config| config.default_webhook.clone()),
         make_default: options.make_default,
         plugin: plugin(env, &System),
         // A first setup suggests auto-notify; a rerun keeps what's on.
@@ -940,7 +940,7 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
     let signing_secret = options
         .signing_secret
         .clone()
-        .or_else(|| current.as_ref().and_then(|desk| desk.signing_secret.clone()));
+        .or_else(|| current.as_ref().and_then(|webhook| webhook.signing_secret.clone()));
 
     let mut terminal = ratatui::try_init()?;
     let ran = execute!(std::io::stdout(), EnableBracketedPaste)
@@ -949,25 +949,25 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
     let unpasted = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     unpasted?;
-    let Some((desk, tested)) = ran? else {
+    let Some((webhook, tested)) = ran? else {
         return Err(Error::Cancelled);
     };
 
     match tested {
-        Some(status) => eprintln!("{} Test ping: HTTP {status}, the desk received it", Mark::Ok),
+        Some(status) => eprintln!("{} Test ping: HTTP {status}, the webhook received it", Mark::Ok),
         None if options.test => eprintln!("{} Saved without a successful test ping", Mark::Warn),
         None => {}
     }
-    // Without a choice on screen (no other desks, or it's the default already), `--default` decides.
+    // Without a choice on screen (no other webhooks, or it's the default already), `--default` decides.
     let make_default = if form.offers_default() {
         form.make_default
     } else {
         options.make_default
     };
-    let name = desk.name.clone();
-    let config = save(&path, existing, desk, make_default)?;
-    let as_default = if config.default_desk.as_deref() == Some(name.as_str()) {
-        " as the default desk"
+    let name = webhook.name.clone();
+    let config = save(&path, existing, webhook, make_default)?;
+    let as_default = if config.default_webhook.as_deref() == Some(name.as_str()) {
+        " as the default webhook"
     } else {
         ""
     };
@@ -986,10 +986,10 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
 fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
     let path = default_config_path(env);
     let existing = read_config(&path)?;
-    let name = options.desk.as_deref().unwrap_or("desk");
+    let name = options.webhook.as_deref().unwrap_or("main");
     let current = existing
         .as_ref()
-        .and_then(|config| config.desk.iter().find(|desk| desk.name == name))
+        .and_then(|config| config.webhook.iter().find(|webhook| webhook.name == name))
         .cloned();
     let mut url = options.url.clone();
     let mut authorization = options.authorization.clone();
@@ -1004,8 +1004,8 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
         url = url.or_else(|| lines.next());
         authorization = authorization.or_else(|| lines.next());
     }
-    let url = url.or_else(|| current.as_ref().map(|desk| desk.url.clone()));
-    let authorization = authorization.or_else(|| current.as_ref().map(|desk| desk.authorization.clone()));
+    let url = url.or_else(|| current.as_ref().map(|webhook| webhook.url.clone()));
+    let authorization = authorization.or_else(|| current.as_ref().map(|webhook| webhook.authorization.clone()));
     let (Some(url), Some(authorization)) = (url, authorization) else {
         return Err(Error::Setup(
             "setup needs the webhook URL and Authorization value: run it in a terminal, pass --url/--authorization, \
@@ -1016,12 +1016,12 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
     let signing_secret = options
         .signing_secret
         .clone()
-        .or_else(|| current.as_ref().and_then(|desk| desk.signing_secret.clone()));
+        .or_else(|| current.as_ref().and_then(|webhook| webhook.signing_secret.clone()));
     let description = options
         .description
         .clone()
-        .or_else(|| current.and_then(|desk| desk.description));
-    let desk = validate_desk(
+        .or_else(|| current.and_then(|webhook| webhook.description));
+    let webhook = validate_webhook(
         name,
         &url,
         &authorization,
@@ -1029,8 +1029,8 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
         signing_secret.as_deref(),
     )?;
     if options.test {
-        match ping(&desk, env)? {
-            Ok(status) => println!("Test ping to \"{}\": HTTP {status}.", desk.name),
+        match ping(&webhook, env)? {
+            Ok(status) => println!("Test ping to \"{}\": HTTP {status}.", webhook.name),
             Err(error) => {
                 return Err(Error::Setup(format!(
                     "test ping failed, nothing saved: {}. Use --no-test to save without testing.",
@@ -1039,13 +1039,13 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
             }
         }
     }
-    let config = save(&path, existing, desk, options.make_default)?;
-    let as_default = if config.default_desk.as_deref() == Some(name) {
+    let config = save(&path, existing, webhook, options.make_default)?;
+    let as_default = if config.default_webhook.as_deref() == Some(name) {
         " (default)"
     } else {
         ""
     };
-    println!("Saved desk \"{name}\"{as_default} to {} (mode 600).", path.display());
+    println!("Saved webhook \"{name}\"{as_default} to {} (mode 600).", path.display());
     Ok(0)
 }
 
@@ -1072,9 +1072,9 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::{Field, Form, Key, Outcome, Row, SetupOptions, Start, scripted};
-    use crate::config::{Desk, read_config};
+    use crate::config::{Webhook, read_config};
     use crate::context::Env;
-    use crate::error::{DeskError, Error};
+    use crate::error::{Error, WebhookError};
     use crate::install::Plugin;
     use crate::notify::tests::FakeWebhook;
 
@@ -1128,10 +1128,14 @@ mod tests {
             [GOOD]
         );
         let path = dir.path().join("config.toml");
-        let desk = &read_config(&path).unwrap().unwrap().desk[0];
+        let webhook = &read_config(&path).unwrap().unwrap().webhook[0];
         assert_eq!(
-            (desk.name.as_str(), desk.url.as_str(), desk.authorization.as_str()),
-            ("desk", url.as_str(), GOOD)
+            (
+                webhook.name.as_str(),
+                webhook.url.as_str(),
+                webhook.authorization.as_str()
+            ),
+            ("main", url.as_str(), GOOD)
         );
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     }
@@ -1170,7 +1174,7 @@ mod tests {
             read_config(&dir.path().join("config.toml"))
                 .unwrap()
                 .unwrap()
-                .desk
+                .webhook
                 .len(),
             1
         );
@@ -1186,16 +1190,16 @@ mod tests {
         assert!(!message.contains("do-not-print"));
     }
 
-    /// A form with `saved` desks (the first is the default), starting from `current` and the given flags.
-    fn form(saved: &[&str], current: Option<&Desk>, url: Option<&str>, authorization: Option<&str>) -> Form {
+    /// A form with `saved` webhooks (the first is the default), starting from `current` and the given flags.
+    fn form(saved: &[&str], current: Option<&Webhook>, url: Option<&str>, authorization: Option<&str>) -> Form {
         Form::new(Start {
-            name: "desk",
+            name: "main",
             current,
             url: url.map(str::to_owned),
             authorization: authorization.map(str::to_owned),
             description: None,
             saved: saved.iter().map(|name| (*name).to_owned()).collect(),
-            default_desk: saved.first().map(|name| (*name).to_owned()),
+            default_webhook: saved.first().map(|name| (*name).to_owned()),
             make_default: false,
             plugin: Plugin::HerdrUnavailable,
             auto_notify: true,
@@ -1219,9 +1223,9 @@ mod tests {
         }
     }
 
-    fn failure(status: u16) -> DeskError {
-        DeskError {
-            message: format!("desk \"desk\" webhook returned HTTP {status}: nope"),
+    fn failure(status: u16) -> WebhookError {
+        WebhookError {
+            message: format!("webhook \"main\" returned HTTP {status}: nope"),
             http_status: Some(status),
         }
     }
@@ -1237,8 +1241,8 @@ mod tests {
         assert_eq!(ui.current(), Some(Row::Field(Field::Url)));
         ui.fill_from_clipboard(None);
         assert!(screen(&ui).contains("No clipboard text found"));
-        ui.fill_from_clipboard(Some(" https://desks.example/hook \n".into()));
-        assert!(screen(&ui).contains("https://desks.example/hook  ✓"));
+        ui.fill_from_clipboard(Some(" https://webhooks.example/hook \n".into()));
+        assert!(screen(&ui).contains("https://webhooks.example/hook  ✓"));
         assert_eq!(
             ui.current(),
             Some(Row::Field(Field::Authorization)),
@@ -1248,7 +1252,7 @@ mod tests {
 
     #[test]
     fn the_authorization_header_is_never_on_screen_and_typing_replaces_a_checked_one() {
-        let mut ui = form(&[], None, Some("https://desks.example/hook"), None);
+        let mut ui = form(&[], None, Some("https://webhooks.example/hook"), None);
         ui.handle(Key::Down);
         type_text(&mut ui, "Bearer good-token-0123456789abcdef");
         let typing = screen(&ui);
@@ -1259,7 +1263,10 @@ mod tests {
         assert!(!checked.contains("good-token"), "{checked}");
         ui.handle(Key::Up);
         type_text(&mut ui, "Bearer new-token-0123456789wxyz");
-        assert_eq!(ui.desk(None).unwrap().authorization, "Bearer new-token-0123456789wxyz");
+        assert_eq!(
+            ui.webhook(None).unwrap().authorization,
+            "Bearer new-token-0123456789wxyz"
+        );
     }
 
     #[test]
@@ -1272,7 +1279,7 @@ mod tests {
         let mut ui = form(
             &[],
             None,
-            Some("https://desks.example/hook"),
+            Some("https://webhooks.example/hook"),
             Some("Bearer token-0123456789abcdef"),
         );
         assert_eq!(ui.handle(Key::Save), Outcome::Submit { test: true });
@@ -1293,7 +1300,7 @@ mod tests {
         let mut ui = form(
             &[],
             None,
-            Some("https://desks.example/hook"),
+            Some("https://webhooks.example/hook"),
             Some("Bearer token-0123456789abcdef"),
         );
         assert_eq!(ui.handle(Key::Save), Outcome::Submit { test: true });
@@ -1303,45 +1310,45 @@ mod tests {
         assert_eq!(ui.handle(Key::Enter), Outcome::Submit { test: false });
         ui.test_failed(&failure(500));
         ui.handle(Key::Up);
-        type_text(&mut ui, "Main desk");
+        type_text(&mut ui, "Main webhook");
         assert_eq!(ui.handle(Key::Save), Outcome::Submit { test: true });
     }
 
     #[test]
     fn a_rerun_keeps_the_saved_values_until_they_are_replaced() {
-        let saved = Desk {
-            name: "desk".into(),
-            description: Some("Main desk".into()),
-            url: "https://desks.example/hook".into(),
+        let saved = Webhook {
+            name: "main".into(),
+            description: Some("Main webhook".into()),
+            url: "https://webhooks.example/hook".into(),
             authorization: "Bearer saved-0123456789abcdef".into(),
             signing_secret: None,
         };
-        let mut ui = form(&["desk"], Some(&saved), None, None);
+        let mut ui = form(&["main"], Some(&saved), None, None);
         assert!(screen(&ui).contains("already saved: saving updates it"));
         assert_eq!(ui.handle(Key::Save), Outcome::Submit { test: true });
-        assert_eq!(ui.desk(None).unwrap(), saved);
+        assert_eq!(ui.webhook(None).unwrap(), saved);
     }
 
     #[test]
-    fn renaming_the_desk_says_what_saving_will_do_and_offers_the_default() {
-        let saved = Desk {
-            name: "desk".into(),
+    fn renaming_the_webhook_says_what_saving_will_do_and_offers_the_default() {
+        let saved = Webhook {
+            name: "main".into(),
             description: None,
-            url: "https://desks.example/hook".into(),
+            url: "https://webhooks.example/hook".into(),
             authorization: "Bearer saved-0123456789abcdef".into(),
             signing_secret: None,
         };
-        let mut ui = form(&["desk", "research"], Some(&saved), None, None);
+        let mut ui = form(&["main", "research"], Some(&saved), None, None);
         assert!(!ui.rows().contains(&Row::Default), "it's the default already");
         ui.move_to(Row::Field(Field::Name));
         ui.handle(Key::Clear);
         type_text(&mut ui, "research");
-        assert!(screen(&ui).contains("replaces the saved desk with this name"));
+        assert!(screen(&ui).contains("replaces the saved webhook with this name"));
         ui.handle(Key::Clear);
         type_text(&mut ui, "laptop");
         let text = screen(&ui);
         assert!(
-            text.contains("laptop  will be added") && text.contains("[ ] Make it the default desk"),
+            text.contains("laptop  will be added") && text.contains("[ ] Make it the default webhook"),
             "{text}"
         );
         ui.handle(Key::Clear);
@@ -1351,7 +1358,7 @@ mod tests {
         ui.handle(Key::Clear);
         type_text(&mut ui, "laptop");
         assert_eq!(ui.handle(Key::Save), Outcome::Submit { test: true });
-        assert_eq!(ui.desk(None).unwrap().name, "laptop");
+        assert_eq!(ui.webhook(None).unwrap().name, "laptop");
     }
 
     #[test]
@@ -1359,7 +1366,7 @@ mod tests {
         let mut ui = form(&[], None, None, None);
         assert_eq!(ui.handle(Key::Quit), Outcome::Quit, "nothing entered");
         let mut ui = form(&[], None, None, None);
-        type_text(&mut ui, "https://desks.example/hook");
+        type_text(&mut ui, "https://webhooks.example/hook");
         assert_eq!(ui.handle(Key::Quit), Outcome::Continue);
         assert!(screen(&ui).contains("Press Esc again"));
         assert_eq!(ui.handle(Key::Quit), Outcome::Quit);

@@ -1,4 +1,4 @@
-//! The desk config (`~/.config/nudge/config.toml`): parsing with every problem reported, and safe writes.
+//! The webhook config (`~/.config/nudge/config.toml`): parsing with every problem reported, and safe writes.
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{ErrorKind, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -12,19 +12,22 @@ use crate::error::{Error, Result};
 const PLACEHOLDER_PREFIX: &str = "REPLACE_WITH";
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
 const AUTHORIZATION_PREFIX: &str = "authorization:";
+/// Top-level keys of the old config format, as (old, new). A config that uses only the old keys is rewritten in
+/// the new format when nudge reads it.
+const RENAMED_KEYS: [(&str, &str); 2] = [("desk", "webhook"), ("default_desk", "default_webhook")];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Desk {
+pub(crate) struct Webhook {
     pub(crate) name: String,
     pub(crate) description: Option<String>,
     pub(crate) url: String,
     /// Sent verbatim as the webhook's Authorization header value.
     pub(crate) authorization: String,
-    /// When set, requests are signed with HMAC-SHA256 (`x-nudge-signature`) so the desk can verify them.
+    /// When set, requests are signed with HMAC-SHA256 (`x-nudge-signature`) so the webhook can verify them.
     pub(crate) signing_secret: Option<String>,
 }
 
-/// `[auto]`: when the herdr plugin notifies the desk on its own.
+/// `[auto]`: when the herdr plugin notifies the webhook on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Auto {
     /// A `done` turn shorter than this is not worth a notification.
@@ -68,7 +71,7 @@ pub(crate) fn seconds_in_words(seconds: u32) -> String {
     }
 }
 
-/// `[scope]`: which agents may notify the desk. Empty means every agent.
+/// `[scope]`: which agents may notify the webhook. Empty means every agent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Scope {
     /// herdr workspace labels or ids.
@@ -97,8 +100,8 @@ impl Scope {
 /// A config as read from disk. `Default` is the empty config `nudge setup` starts from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Config {
-    pub(crate) default_desk: Option<String>,
-    pub(crate) desk: Vec<Desk>,
+    pub(crate) default_webhook: Option<String>,
+    pub(crate) webhook: Vec<Webhook>,
     pub(crate) auto: Auto,
     pub(crate) scope: Scope,
 }
@@ -168,7 +171,7 @@ impl Problems {
         value.to_owned()
     }
 
-    fn desk_name(&mut self, path: &str, raw: &str) -> String {
+    fn webhook_name(&mut self, path: &str, raw: &str) -> String {
         let name = self.non_empty(path, raw);
         let mut chars = name.chars();
         let valid = chars.next().is_some_and(|first| first.is_ascii_alphanumeric())
@@ -306,7 +309,7 @@ impl Problems {
         scope
     }
 
-    fn desk(&mut self, path: &str, value: &Value) -> Option<Desk> {
+    fn webhook(&mut self, path: &str, value: &Value) -> Option<Webhook> {
         let Value::Table(table) = value else {
             self.wrong_type(path, "object", Some(value));
             return None;
@@ -314,7 +317,7 @@ impl Problems {
         let field = |key: &str| format!("{path}.{key}");
         let name = self
             .string(&field("name"), table.get("name"))
-            .map(|raw| self.desk_name(&field("name"), raw));
+            .map(|raw| self.webhook_name(&field("name"), raw));
         let description = match table.get("description") {
             None => Some(None),
             Some(Value::String(text)) => Some(Some(text.clone())),
@@ -335,7 +338,7 @@ impl Problems {
                 .string(&field("signing_secret"), Some(value))
                 .map(|raw| Some(self.signing_secret(&field("signing_secret"), raw))),
         };
-        Some(Desk {
+        Some(Webhook {
             name: name?,
             description: description?,
             url: url?,
@@ -345,52 +348,65 @@ impl Problems {
     }
 
     fn config(&mut self, raw: &toml::Table) -> Option<Config> {
-        let default_desk = match raw.get("default_desk") {
+        for (old, new) in RENAMED_KEYS {
+            if raw.contains_key(old) {
+                self.add(
+                    old,
+                    &format!("old name of {new}; rename it (a file mixing old and new names is not updated for you)"),
+                );
+            }
+        }
+        let default_webhook = match raw.get("default_webhook") {
             None => Some(None),
             Some(value) => self
-                .string("default_desk", Some(value))
-                .map(|name| Some(self.desk_name("default_desk", name))),
+                .string("default_webhook", Some(value))
+                .map(|name| Some(self.webhook_name("default_webhook", name))),
         };
-        let desks = match raw.get("desk") {
+        let webhooks = match raw.get("webhook") {
             Some(Value::Array(items)) => {
                 let before = self.wrong_types;
-                let desks: Vec<Option<Desk>> = items
+                let webhooks: Vec<Option<Webhook>> = items
                     .iter()
                     .enumerate()
-                    .map(|(index, item)| self.desk(&format!("desk.{index}"), item))
+                    .map(|(index, item)| self.webhook(&format!("webhook.{index}"), item))
                     .collect();
                 if items.is_empty() {
-                    self.add("desk", "define at least one [[desk]] table");
+                    self.add("webhook", "define at least one [[webhook]] table");
                 }
                 if self.wrong_types == before {
-                    for (index, name) in desks.iter().flatten().map(|desk| &desk.name).enumerate() {
-                        if desks.iter().flatten().take(index).any(|earlier| &earlier.name == name) {
+                    for (index, name) in webhooks.iter().flatten().map(|webhook| &webhook.name).enumerate() {
+                        if webhooks
+                            .iter()
+                            .flatten()
+                            .take(index)
+                            .any(|earlier| &earlier.name == name)
+                        {
                             self.add(
-                                &format!("desk.{index}.name"),
-                                &format!("duplicate desk name \"{name}\""),
+                                &format!("webhook.{index}.name"),
+                                &format!("duplicate webhook name \"{name}\""),
                             );
                         }
                     }
                 }
-                desks.into_iter().collect::<Option<Vec<Desk>>>()
+                webhooks.into_iter().collect::<Option<Vec<Webhook>>>()
             }
             other => {
-                self.wrong_type("desk", "array", other);
+                self.wrong_type("webhook", "array", other);
                 None
             }
         };
         let auto = self.auto(raw.get("auto"));
         let scope = self.scope(raw.get("scope"));
         let config = Config {
-            default_desk: default_desk?,
-            desk: desks?,
+            default_webhook: default_webhook?,
+            webhook: webhooks?,
             auto,
             scope,
         };
-        if let Some(name) = &config.default_desk
-            && !config.desk.iter().any(|desk| &desk.name == name)
+        if let Some(name) = &config.default_webhook
+            && !config.webhook.iter().any(|webhook| &webhook.name == name)
         {
-            self.add("default_desk", &format!("no [[desk]] named \"{name}\""));
+            self.add("default_webhook", &format!("no [[webhook]] named \"{name}\""));
         }
         Some(config)
     }
@@ -410,30 +426,30 @@ pub(crate) fn check_authorization(value: &str) -> Result<String> {
     problems.into_result(authorization, "invalid Authorization value")
 }
 
-/// Validate a desk name entered during setup.
-pub(crate) fn check_desk_name(value: &str) -> Result<String> {
+/// Validate a webhook name entered during setup.
+pub(crate) fn check_webhook_name(value: &str) -> Result<String> {
     let mut problems = Problems::default();
-    let name = problems.desk_name("", value);
-    problems.into_result(name, "invalid desk name")
+    let name = problems.webhook_name("", value);
+    problems.into_result(name, "invalid webhook name")
 }
 
-/// Validate one desk entered via `nudge setup`.
-pub(crate) fn validate_desk(
+/// Validate one webhook entered via `nudge setup`.
+pub(crate) fn validate_webhook(
     name: &str,
     url: &str,
     authorization: &str,
     description: Option<&str>,
     signing_secret: Option<&str>,
-) -> Result<Desk> {
+) -> Result<Webhook> {
     let mut problems = Problems::default();
-    let desk = Desk {
-        name: problems.desk_name("name", name),
+    let webhook = Webhook {
+        name: problems.webhook_name("name", name),
         description: description.map(str::to_owned),
         url: problems.webhook_url("url", url),
         authorization: problems.authorization("authorization", authorization),
         signing_secret: signing_secret.map(|secret| problems.signing_secret("signing_secret", secret)),
     };
-    problems.into_result(desk, "invalid desk")
+    problems.into_result(webhook, "invalid webhook")
 }
 
 /// `$NUDGE_CONFIG`, else `$XDG_CONFIG_HOME/nudge/config.toml`, else `~/.config/nudge/config.toml`.
@@ -447,76 +463,119 @@ pub(crate) fn default_config_path(env: &Env) -> PathBuf {
     base.join("nudge").join("config.toml")
 }
 
-/// Parse and validate config TOML. `source` names the file in error messages.
-pub(crate) fn parse_config(text: &str, source: &str) -> Result<Config> {
-    let raw: toml::Table =
-        toml::from_str(text).map_err(|error| Error::Config(format!("{source}: invalid TOML: {}", error.message())))?;
+fn parse_toml(text: &str, source: &str) -> Result<toml::Table> {
+    toml::from_str(text).map_err(|error| Error::Config(format!("{source}: invalid TOML: {}", error.message())))
+}
+
+fn validate_config(raw: &toml::Table, source: &str) -> Result<Config> {
     let mut problems = Problems::default();
-    let config = problems.config(&raw);
+    let config = problems.config(raw);
     let label = format!("{source}: invalid config");
     problems.into_result(config, &label)?.ok_or(Error::Config(label))
 }
 
-/// Load the config, or `None` if the file does not exist.
+/// Parse and validate config TOML. `source` names the file in error messages.
+pub(crate) fn parse_config(text: &str, source: &str) -> Result<Config> {
+    validate_config(&parse_toml(text, source)?, source)
+}
+
+/// Load the config, or `None` if the file does not exist. A config in the old format is rewritten in the new one
+/// first, with a note on stderr.
 pub(crate) fn read_config(path: &Path) -> Result<Option<Config>> {
-    match fs::read_to_string(path) {
-        Ok(text) => parse_config(&text, &path.to_string_lossy()).map(Some),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(Error::Other(format!("{}: {error}", path.display()))),
+    let found = read_and_migrate(path)?;
+    if let Some((_, Some(note))) = &found {
+        eprintln!("nudge: {note}");
     }
+    Ok(found.map(|(config, _)| config))
+}
+
+/// The config at `path`, if any. A file that uses only the old keys of [`RENAMED_KEYS`] is rewritten with the new
+/// ones (keeping every other setting), and the note says so.
+fn read_and_migrate(path: &Path) -> Result<Option<(Config, Option<String>)>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::Other(format!("{}: {error}", path.display()))),
+    };
+    let source = path.to_string_lossy();
+    let mut raw = parse_toml(&text, &source)?;
+    let old_format = RENAMED_KEYS.iter().any(|(old, _)| raw.contains_key(*old))
+        && !RENAMED_KEYS.iter().any(|(_, new)| raw.contains_key(*new));
+    if old_format {
+        for (old, new) in RENAMED_KEYS {
+            if let Some(value) = raw.remove(old) {
+                raw.insert(new.to_owned(), value);
+            }
+        }
+    }
+    let config = validate_config(&raw, &source)?;
+    if !old_format {
+        return Ok(Some((config, None)));
+    }
+    write_config(path, &config)?;
+    let note = format!(
+        "updated {} to the new format ([[webhook]], default_webhook)",
+        path.display()
+    );
+    Ok(Some((config, Some(note))))
 }
 
 pub(crate) fn load_config(path: &Path) -> Result<Config> {
     read_config(path)?.ok_or_else(|| {
         Error::Config(format!(
-            "no config at {}. Run \"nudge setup\" to add a desk.",
+            "no config at {}. Run \"nudge setup\" to add a webhook.",
             path.display()
         ))
     })
 }
 
-/// `default_desk`, else the only desk's name; `None` when several desks and no default.
-pub(crate) fn default_desk_name(config: &Config) -> Option<&str> {
-    let only = match config.desk.as_slice() {
+/// `default_webhook`, else the only webhook's name; `None` when several webhooks and no default.
+pub(crate) fn default_webhook_name(config: &Config) -> Option<&str> {
+    let only = match config.webhook.as_slice() {
         [only] => Some(only.name.as_str()),
         [] | [_, _, ..] => None,
     };
-    config.default_desk.as_deref().or(only)
+    config.default_webhook.as_deref().or(only)
 }
 
-/// Pick the desk to notify: `name` if given, else the default desk.
-pub(crate) fn find_desk<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Desk> {
+/// Pick the webhook to notify: `name` if given, else the default webhook.
+pub(crate) fn find_webhook<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Webhook> {
     let known = || {
         config
-            .desk
+            .webhook
             .iter()
-            .map(|desk| desk.name.as_str())
+            .map(|webhook| webhook.name.as_str())
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let Some(wanted) = name.or_else(|| default_desk_name(config)) else {
+    let Some(wanted) = name.or_else(|| default_webhook_name(config)) else {
         return Err(Error::Config(format!(
-            "several desks configured ({}) and no default_desk; pass --desk",
+            "several webhooks configured ({}) and no default_webhook; pass --webhook",
             known()
         )));
     };
     config
-        .desk
+        .webhook
         .iter()
-        .find(|desk| desk.name == wanted)
-        .ok_or_else(|| Error::Config(format!("unknown desk \"{wanted}\". Configured desks: {}", known())))
+        .find(|webhook| webhook.name == wanted)
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "unknown webhook \"{wanted}\". Configured webhooks: {}",
+                known()
+            ))
+        })
 }
 
-/// Add or replace `desk` by name, keeping the other settings. The first desk, or any desk with `make_default`,
-/// becomes `default_desk`.
-pub(crate) fn upsert_desk(config: Option<Config>, desk: Desk, make_default: bool) -> Config {
+/// Add or replace `webhook` by name, keeping the other settings. The first webhook, or any webhook with
+/// `make_default`, becomes `default_webhook`.
+pub(crate) fn upsert_webhook(config: Option<Config>, webhook: Webhook, make_default: bool) -> Config {
     let mut config = config.unwrap_or_default();
-    if make_default || config.default_desk.is_none() {
-        config.default_desk = Some(desk.name.clone());
+    if make_default || config.default_webhook.is_none() {
+        config.default_webhook = Some(webhook.name.clone());
     }
-    match config.desk.iter_mut().find(|existing| existing.name == desk.name) {
-        Some(existing) => *existing = desk,
-        None => config.desk.push(desk),
+    match config.webhook.iter_mut().find(|existing| existing.name == webhook.name) {
+        Some(existing) => *existing = webhook,
+        None => config.webhook.push(webhook),
     }
     config
 }
@@ -537,19 +596,22 @@ pub(crate) fn serialize_config(config: &Config) -> String {
         "# Contains webhook secrets: keep it chmod 600 and out of git.".to_owned(),
         String::new(),
     ];
-    if let Some(name) = &config.default_desk {
-        lines.extend([format!("default_desk = {}", toml_string(name)), String::new()]);
+    if let Some(name) = &config.default_webhook {
+        lines.extend([format!("default_webhook = {}", toml_string(name)), String::new()]);
     }
-    for desk in &config.desk {
-        lines.extend(["[[desk]]".to_owned(), format!("name = {}", toml_string(&desk.name))]);
-        if let Some(description) = &desk.description {
+    for webhook in &config.webhook {
+        lines.extend([
+            "[[webhook]]".to_owned(),
+            format!("name = {}", toml_string(&webhook.name)),
+        ]);
+        if let Some(description) = &webhook.description {
             lines.push(format!("description = {}", toml_string(description)));
         }
         lines.extend([
-            format!("url = {}", toml_string(&desk.url)),
-            format!("authorization = {}", toml_string(&desk.authorization)),
+            format!("url = {}", toml_string(&webhook.url)),
+            format!("authorization = {}", toml_string(&webhook.authorization)),
         ]);
-        if let Some(secret) = &desk.signing_secret {
+        if let Some(secret) = &webhook.signing_secret {
             lines.push(format!("signing_secret = {}", toml_string(secret)));
         }
         lines.push(String::new());
@@ -612,41 +674,66 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::{
-        Auto, Config, Desk, Scope, check_authorization, check_webhook_url, default_config_path, find_desk, load_config,
-        parse_config, read_config, serialize_config, upsert_desk, validate_desk, write_config,
+        Auto, Config, Scope, Webhook, check_authorization, check_webhook_url, default_config_path, find_webhook,
+        load_config, parse_config, read_and_migrate, read_config, serialize_config, upsert_webhook, validate_webhook,
+        write_config,
     };
     use crate::context::Env;
     use crate::error::Error;
 
     const VALID: &str = r#"
-default_desk = "bridge"
+default_webhook = "bridge"
 
-[[desk]]
+[[webhook]]
 name = "bridge"
-description = "Coordinator desk"
-url = "https://desks.example/hook/bridge"
-authorization = "Bearer desk-token"
+description = "Coordinator"
+url = "https://webhooks.example/hook/bridge"
+authorization = "Bearer webhook-token"
 
-[[desk]]
+[[webhook]]
 name = "research"
-url = "https://desks.example/hook/research"
+url = "https://webhooks.example/hook/research"
 authorization = "Token xyz"
 "#;
 
-    fn desk(name: &str, authorization: &str) -> Desk {
-        Desk {
+    /// A config in the old format: `default_desk` and `[[desk]]` tables.
+    const OLD_FORMAT: &str = r#"
+# hand-written
+default_desk = "research"
+
+[[desk]]
+name = "bridge"
+description = "Coordinator"
+url = "https://webhooks.example/hook/bridge"
+authorization = "Bearer webhook-token"
+signing_secret = "0123456789abcdef-secret"
+
+[[desk]]
+name = "research"
+url = "https://webhooks.example/hook/research"
+authorization = "Token xyz"
+
+[auto]
+cooldown_seconds = 60
+
+[scope]
+agents = ["api"]
+"#;
+
+    fn webhook(name: &str, authorization: &str) -> Webhook {
+        Webhook {
             name: name.to_owned(),
             description: None,
-            url: format!("https://desks.example/hook/{name}"),
+            url: format!("https://webhooks.example/hook/{name}"),
             authorization: authorization.to_owned(),
             signing_secret: None,
         }
     }
 
-    fn config_of(default_desk: Option<&str>, desk: Vec<Desk>) -> Config {
+    fn config_of(default_webhook: Option<&str>, webhook: Vec<Webhook>) -> Config {
         Config {
-            default_desk: default_desk.map(str::to_owned),
-            desk,
+            default_webhook: default_webhook.map(str::to_owned),
+            webhook,
             ..Config::default()
         }
     }
@@ -659,14 +746,14 @@ authorization = "Token xyz"
     }
 
     #[test]
-    fn parses_desks_and_default_desk() {
+    fn parses_webhooks_and_default_webhook() {
         let config = parse_config(VALID, "cfg").unwrap();
-        assert_eq!(config.default_desk.as_deref(), Some("bridge"));
+        assert_eq!(config.default_webhook.as_deref(), Some("bridge"));
         assert_eq!(
-            config.desk.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            config.webhook.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
             ["bridge", "research"]
         );
-        assert_eq!(config.desk[1].description, None);
+        assert_eq!(config.webhook[1].description, None);
     }
 
     #[test]
@@ -677,37 +764,37 @@ authorization = "Token xyz"
 
     #[test]
     fn http_is_accepted_only_for_loopback_hosts() {
-        let loopback = VALID.replace("https://desks.example/hook/bridge", "http://127.0.0.1:8788/x");
+        let loopback = VALID.replace("https://webhooks.example/hook/bridge", "http://127.0.0.1:8788/x");
         assert!(parse_config(&loopback, "cfg").is_ok());
-        let remote = VALID.replace("https://desks.example/hook/bridge", "http://desks.example/x");
-        assert!(config_error(parse_config(&remote, "cfg")).contains("desk.0.url: must be an https URL"));
+        let remote = VALID.replace("https://webhooks.example/hook/bridge", "http://webhooks.example/x");
+        assert!(config_error(parse_config(&remote, "cfg")).contains("webhook.0.url: must be an https URL"));
     }
 
     #[test]
     fn rejects_invalid_configs_naming_the_field() {
         for (label, text, expected) in [
-            ("no desks", r#"default_desk = "bridge""#.to_owned(), "desk:"),
+            ("no webhooks", r#"default_webhook = "bridge""#.to_owned(), "webhook:"),
             (
-                "duplicate desk names",
+                "duplicate webhook names",
                 VALID.replace(r#"name = "research""#, r#"name = "bridge""#),
-                r#"desk.1.name: duplicate desk name "bridge""#,
+                r#"webhook.1.name: duplicate webhook name "bridge""#,
             ),
             (
-                "unknown default_desk",
-                VALID.replace(r#"default_desk = "bridge""#, r#"default_desk = "nope""#),
-                r#"default_desk: no [[desk]] named "nope""#,
+                "unknown default_webhook",
+                VALID.replace(r#"default_webhook = "bridge""#, r#"default_webhook = "nope""#),
+                r#"default_webhook: no [[webhook]] named "nope""#,
             ),
             (
                 "multi-line authorization",
                 VALID.replace(r#""Token xyz""#, r#""Token x\ny""#),
-                "desk.1.authorization",
+                "webhook.1.authorization",
             ),
             (
-                "bad desk name",
+                "bad webhook name",
                 VALID.replace(r#"name = "research""#, r#"name = "re search""#),
-                "desk.1.name",
+                "webhook.1.name",
             ),
-            ("invalid TOML", "[[desk]".to_owned(), "invalid TOML"),
+            ("invalid TOML", "[[webhook]".to_owned(), "invalid TOML"),
         ] {
             assert!(config_error(parse_config(&text, "cfg")).contains(expected), "{label}");
         }
@@ -715,14 +802,61 @@ authorization = "Token xyz"
 
     #[test]
     fn reports_every_problem_and_skips_cross_checks_over_wrong_types() {
-        let message = config_error(parse_config("[[desk]]\nname = \"\"\nurl = 5\n", "cfg"));
+        let message = config_error(parse_config("[[webhook]]\nname = \"\"\nurl = 5\n", "cfg"));
         assert_eq!(
             message,
-            "cfg: invalid config\n  desk.0.name: must be a non-empty string\n  \
-             desk.0.name: may only contain letters, digits, \"-\" and \"_\"\n  \
-             desk.0.url: Invalid input: expected string, received number\n  \
-             desk.0.authorization: Invalid input: expected string, received undefined"
+            "cfg: invalid config\n  webhook.0.name: must be a non-empty string\n  \
+             webhook.0.name: may only contain letters, digits, \"-\" and \"_\"\n  \
+             webhook.0.url: Invalid input: expected string, received number\n  \
+             webhook.0.authorization: Invalid input: expected string, received undefined"
         );
+    }
+
+    #[test]
+    fn an_old_format_config_is_rewritten_once_keeping_every_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, OLD_FORMAT).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let (config, note) = read_and_migrate(&path).unwrap().unwrap();
+        assert_eq!(
+            note.unwrap(),
+            format!(
+                "updated {} to the new format ([[webhook]], default_webhook)",
+                path.display()
+            )
+        );
+        let mut bridge = webhook("bridge", "Bearer webhook-token");
+        bridge.description = Some("Coordinator".into());
+        bridge.signing_secret = Some("0123456789abcdef-secret".into());
+        let mut expected = config_of(Some("research"), vec![bridge, webhook("research", "Token xyz")]);
+        expected.auto.cooldown_seconds = 60;
+        expected.scope.agents = vec!["api".into()];
+        assert_eq!(config, expected);
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text, serialize_config(&expected));
+        assert!(!text.contains("desk"), "{text}");
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
+        assert_eq!(read_and_migrate(&path).unwrap(), Some((expected, None)));
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn old_keys_are_an_error_outside_a_migration_naming_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mixed = format!("default_desk = \"bridge\"\n{VALID}");
+        fs::write(&path, &mixed).unwrap();
+        let message = config_error(read_config(&path));
+        assert!(
+            message.contains("default_desk: old name of default_webhook; rename it"),
+            "{message}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), mixed);
+        assert!(config_error(parse_config(OLD_FORMAT, "cfg")).contains("  desk: old name of webhook"));
     }
 
     #[test]
@@ -748,39 +882,42 @@ authorization = "Token xyz"
     }
 
     #[test]
-    fn find_desk_by_name_default_or_only_desk() {
+    fn find_webhook_by_name_default_or_only_webhook() {
         let config = parse_config(VALID, "cfg").unwrap();
-        assert_eq!(find_desk(&config, Some("research")).unwrap().name, "research");
-        assert_eq!(find_desk(&config, None).unwrap().name, "bridge");
-        let single = config_of(None, vec![desk("research", "Bearer b")]);
-        assert_eq!(find_desk(&single, None).unwrap().name, "research");
+        assert_eq!(find_webhook(&config, Some("research")).unwrap().name, "research");
+        assert_eq!(find_webhook(&config, None).unwrap().name, "bridge");
+        let single = config_of(None, vec![webhook("research", "Bearer b")]);
+        assert_eq!(find_webhook(&single, None).unwrap().name, "research");
     }
 
     #[test]
-    fn find_desk_errors_name_the_configured_desks() {
-        let two = config_of(None, vec![desk("bridge", "Bearer a"), desk("research", "Bearer b")]);
-        assert!(config_error(find_desk(&two, None)).contains("no default_desk; pass --desk"));
+    fn find_webhook_errors_name_the_configured_webhooks() {
+        let two = config_of(
+            None,
+            vec![webhook("bridge", "Bearer a"), webhook("research", "Bearer b")],
+        );
+        assert!(config_error(find_webhook(&two, None)).contains("no default_webhook; pass --webhook"));
         let config = parse_config(VALID, "cfg").unwrap();
-        assert!(config_error(find_desk(&config, Some("nope"))).contains("Configured desks: bridge, research"));
+        assert!(config_error(find_webhook(&config, Some("nope"))).contains("Configured webhooks: bridge, research"));
     }
 
     #[test]
-    fn validate_desk_strips_a_pasted_header_name_and_whitespace() {
-        let desk = validate_desk(
+    fn validate_webhook_strips_a_pasted_header_name_and_whitespace() {
+        let webhook = validate_webhook(
             "bridge",
-            " https://desks.example/x ",
+            " https://webhooks.example/x ",
             "Authorization: Bearer abc \n",
             None,
             None,
         )
         .unwrap();
-        assert_eq!(desk.authorization, "Bearer abc");
-        assert_eq!(desk.url, "https://desks.example/x");
+        assert_eq!(webhook.authorization, "Bearer abc");
+        assert_eq!(webhook.url, "https://webhooks.example/x");
     }
 
     #[test]
-    fn validate_desk_reports_every_problem() {
-        let message = config_error(validate_desk("bridge", "not a url", "", None, None));
+    fn validate_webhook_reports_every_problem() {
+        let message = config_error(validate_webhook("bridge", "not a url", "", None, None));
         let url = message.find("url: must be an https URL").unwrap();
         let authorization = message.find("authorization: must be a non-empty string").unwrap();
         assert!(url < authorization);
@@ -789,8 +926,8 @@ authorization = "Token xyz"
     #[test]
     fn setup_field_checks_never_echo_the_rejected_value() {
         assert_eq!(
-            check_webhook_url(" https://desks.example/hook\n").unwrap(),
-            "https://desks.example/hook"
+            check_webhook_url(" https://webhooks.example/hook\n").unwrap(),
+            "https://webhooks.example/hook"
         );
         assert_eq!(check_authorization("authorization: Bearer abc").unwrap(), "Bearer abc");
         for message in [
@@ -803,30 +940,30 @@ authorization = "Token xyz"
     }
 
     #[test]
-    fn upsert_first_desk_becomes_default_and_later_ones_only_when_asked() {
-        let bridge = desk("bridge", "Bearer a");
-        let research = desk("research", "Bearer b");
-        let one = upsert_desk(None, bridge.clone(), false);
+    fn upsert_first_webhook_becomes_default_and_later_ones_only_when_asked() {
+        let bridge = webhook("bridge", "Bearer a");
+        let research = webhook("research", "Bearer b");
+        let one = upsert_webhook(None, bridge.clone(), false);
         assert_eq!(one, config_of(Some("bridge"), vec![bridge.clone()]));
-        let two = upsert_desk(Some(one.clone()), research.clone(), false);
+        let two = upsert_webhook(Some(one.clone()), research.clone(), false);
         assert_eq!(two, config_of(Some("bridge"), vec![bridge, research.clone()]));
         assert_eq!(
-            upsert_desk(Some(one), research, true).default_desk.as_deref(),
+            upsert_webhook(Some(one), research, true).default_webhook.as_deref(),
             Some("research")
         );
     }
 
     #[test]
     fn upsert_existing_name_replaces_it_in_place_and_keeps_other_settings() {
-        let mut two = config_of(Some("research"), vec![desk("bridge", "a"), desk("research", "b")]);
+        let mut two = config_of(Some("research"), vec![webhook("bridge", "a"), webhook("research", "b")]);
         two.auto.toast = false;
         two.scope.agents = vec!["api".into()];
-        let rotated = desk("bridge", "Bearer rotated");
-        let updated = upsert_desk(Some(two.clone()), rotated.clone(), false);
-        assert_eq!(updated.desk, [rotated, desk("research", "b")]);
+        let rotated = webhook("bridge", "Bearer rotated");
+        let updated = upsert_webhook(Some(two.clone()), rotated.clone(), false);
+        assert_eq!(updated.webhook, [rotated, webhook("research", "b")]);
         assert_eq!(
-            (updated.default_desk, updated.auto, updated.scope),
-            (two.default_desk, two.auto, two.scope)
+            (updated.default_webhook, updated.auto, updated.scope),
+            (two.default_webhook, two.auto, two.scope)
         );
     }
 
@@ -835,10 +972,10 @@ authorization = "Token xyz"
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("nudge");
         let path = dir.join("config.toml");
-        let mut bridge = desk("bridge", "Bearer a");
+        let mut bridge = webhook("bridge", "Bearer a");
         bridge.description = Some("Says \"hi\"\\ and\tmore".into());
         bridge.signing_secret = Some("0123456789abcdef-secret".into());
-        let mut config = config_of(Some("bridge"), vec![bridge, desk("research", "Bearer b")]);
+        let mut config = config_of(Some("bridge"), vec![bridge, webhook("research", "Bearer b")]);
         config.auto = Auto {
             min_turn_seconds: 30,
             cooldown_seconds: 0,
@@ -846,7 +983,7 @@ authorization = "Token xyz"
             toast: false,
         };
         config.scope = Scope {
-            workspaces: vec!["desk \"bridge\"".into()],
+            workspaces: vec!["team \"bridge\"".into()],
             agents: vec!["api-refactor".into(), "w1:p2".into()],
         };
         write_config(&path, &config).unwrap();
@@ -861,21 +998,27 @@ authorization = "Token xyz"
         let path = dir.path().join("config.toml");
         fs::write(&path, VALID).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        write_config(
-            &path,
-            &upsert_desk(Some(load_config(&path).unwrap()), desk("research", "Bearer b"), false),
-        )
-        .unwrap();
+        let config = upsert_webhook(
+            Some(load_config(&path).unwrap()),
+            webhook("research", "Bearer b"),
+            false,
+        );
+        write_config(&path, &config).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        let names: Vec<String> = load_config(&path).unwrap().desk.into_iter().map(|d| d.name).collect();
+        let names: Vec<String> = load_config(&path)
+            .unwrap()
+            .webhook
+            .into_iter()
+            .map(|w| w.name)
+            .collect();
         assert_eq!(names, ["bridge", "research"]);
     }
 
     #[test]
     fn serialized_output_omits_absent_and_default_settings() {
-        let mut config = config_of(None, vec![desk("bridge", "Bearer a")]);
+        let mut config = config_of(None, vec![webhook("bridge", "Bearer a")]);
         let text = serialize_config(&config);
-        for absent in ["default_desk", "description", "signing_secret", "[auto]", "[scope]"] {
+        for absent in ["default_webhook", "description", "signing_secret", "[auto]", "[scope]"] {
             assert!(!text.contains(absent), "{absent}");
         }
         config.auto.cooldown_seconds = 60;
@@ -926,10 +1069,11 @@ authorization = "Token xyz"
             "authorization = \"Token xyz\"\nsigning_secret = \"tiny-secret\"",
         );
         let message = config_error(parse_config(&short, "cfg"));
-        assert!(message.contains("desk.1.signing_secret: must be at least 16 printable ASCII characters"));
+        assert!(message.contains("webhook.1.signing_secret: must be at least 16 printable ASCII characters"));
         assert!(!message.contains("tiny-secret"));
-        let desk = validate_desk("d", "https://x.example/h", "Bearer a", None, Some(" 0123456789abcdef ")).unwrap();
-        assert_eq!(desk.signing_secret.as_deref(), Some("0123456789abcdef"));
+        let webhook =
+            validate_webhook("d", "https://x.example/h", "Bearer a", None, Some(" 0123456789abcdef ")).unwrap();
+        assert_eq!(webhook.signing_secret.as_deref(), Some("0123456789abcdef"));
     }
 
     #[test]

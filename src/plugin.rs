@@ -1,6 +1,6 @@
 //! herdr plugin entrypoints (see herdr-plugin.toml), reached through `nudge plugin …`:
 //!   event          `pane.agent_status_changed` hook
-//!   action <id>    enable | disable | toggle | away | away-on | away-off | ask-desk | setup | status | settings |
+//!   action <id>    enable | disable | toggle | away | away-on | away-off | send-pane | setup | status | settings |
 //!                  only-workspace | only-agent | all-agents
 //!   startup        server start: keep `~/.local/bin/nudge` pointing at this install
 //!
@@ -11,11 +11,11 @@ use std::thread;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::config::{Auto, Config, Scope, default_config_path, find_desk, load_config, read_config, write_config};
+use crate::config::{Auto, Config, Scope, default_config_path, find_webhook, load_config, read_config, write_config};
 use crate::context::{Env, Run as _, Sender, System, herdr_agent, in_scope, pane_workspace, workspace_label};
 use crate::error::{Error, Result};
 use crate::install::{PLUGIN_ID, nudge_root, refresh_command_link};
-use crate::notify::{NotifyStatus, Origin, build_notification, post_to_desk};
+use crate::notify::{NotifyStatus, Origin, build_notification, post_to_webhook};
 use crate::state::{now_ms, update_state};
 use crate::watch::{Decision, HerdrStatus, Settled, Trigger, auto_message, clean_tail, decide};
 
@@ -49,11 +49,11 @@ struct Plugin<'a> {
     home: PathBuf,
 }
 
-/// What the desk accepted from [`Plugin::send_pane`].
+/// What the webhook accepted from [`Plugin::send_pane`].
 #[derive(Debug)]
 struct PaneSent {
     http_status: u16,
-    /// The agent the desk will reply to: its name, else the pane id.
+    /// The agent the webhook's automation will reply to: its name, else the pane id.
     target: String,
 }
 
@@ -69,9 +69,9 @@ impl Plugin<'_> {
         );
     }
 
-    /// Send the pane's recent output to the default desk on behalf of its agent.
+    /// Send the pane's recent output to the default webhook on behalf of its agent.
     fn send_pane(&self, config: &Config, pane_id: &str, status: NotifyStatus, trigger: Trigger) -> Result<PaneSent> {
-        let desk = find_desk(config, None)?;
+        let webhook = find_webhook(config, None)?;
         let (agent, raw) = thread::scope(|scope| {
             let read = [
                 self.env.herdr(),
@@ -105,7 +105,7 @@ impl Plugin<'_> {
             run: &System,
         };
         let notification = build_notification(status.into(), &message, Some(target.clone()), origin)?;
-        let http_status = post_to_desk(desk, &notification)?;
+        let http_status = post_to_webhook(webhook, &notification)?;
         Ok(PaneSent { http_status, target })
     }
 
@@ -169,12 +169,12 @@ impl Plugin<'_> {
         };
         let sent = self.send_pane(&config, &pane_id, notify_status, Trigger::Settled(settled))?;
         log(&format!(
-            "{pane_id} {}: notified desk (HTTP {})",
+            "{pane_id} {}: notified webhook (HTTP {})",
             status.as_str(),
             sent.http_status
         ));
         if config.auto.toast {
-            self.toast(&format!("Told the desk: {} {done}", sent.target));
+            self.toast(&format!("Told the webhook: {} {done}", sent.target));
         }
         Ok(())
     }
@@ -239,12 +239,12 @@ impl Plugin<'_> {
                     state.away
                 })?;
                 self.toast(if away {
-                    "Away: the desk hears from every agent, even the pane on screen"
+                    "Away: the webhook hears from every agent, even the pane on screen"
                 } else {
                     "Back: nudge stays quiet for the pane you're looking at"
                 });
             }
-            "ask-desk" => {
+            "send-pane" => {
                 let Some(pane_id) = pane_id else {
                     self.toast("No pane to send");
                     return Ok(());
@@ -258,7 +258,7 @@ impl Plugin<'_> {
                 // You chose to send this pane, so [scope] doesn't apply.
                 let config = load_config(&default_config_path(self.env))?;
                 let sent = self.send_pane(&config, &pane_id, status, Trigger::Manual)?;
-                self.toast(&format!("Sent this pane to the desk (HTTP {})", sent.http_status));
+                self.toast(&format!("Sent this pane to the webhook (HTTP {})", sent.http_status));
             }
             "setup" | "status" | "settings" => self.open_pane(action)?,
             "only-workspace" => {
@@ -268,7 +268,7 @@ impl Plugin<'_> {
                     return Ok(());
                 };
                 let name = workspace_label(&workspace_id, self.env, &self.home, &System).unwrap_or(workspace_id);
-                let confirmation = format!("Only workspace \"{name}\" can notify the desk");
+                let confirmation = format!("Only workspace \"{name}\" can notify the webhook");
                 self.set_scope(
                     Scope {
                         workspaces: vec![name],
@@ -285,7 +285,7 @@ impl Plugin<'_> {
                     self.toast("No agent in this pane");
                     return Ok(());
                 };
-                let confirmation = format!("Only agent \"{name}\" can notify the desk");
+                let confirmation = format!("Only agent \"{name}\" can notify the webhook");
                 self.set_scope(
                     Scope {
                         workspaces: Vec::new(),
@@ -294,7 +294,7 @@ impl Plugin<'_> {
                     &confirmation,
                 )?;
             }
-            "all-agents" => self.set_scope(Scope::default(), "All agents can notify the desk")?,
+            "all-agents" => self.set_scope(Scope::default(), "All agents can notify the webhook")?,
             other => return Err(Error::Other(format!("unknown action \"{other}\""))),
         }
         Ok(())
@@ -323,9 +323,9 @@ pub(crate) fn run_plugin(args: &[String], env: &Env) -> u8 {
         Ok(()) => 0,
         Err(error) => {
             log(&format!("failed: {error}"));
-            if let Error::Config(message) | Error::Desk(crate::error::DeskError { message, .. }) = &error {
+            if let Error::Config(message) | Error::Webhook(crate::error::WebhookError { message, .. }) = &error {
                 plugin.toast(&format!(
-                    "Desk notify failed: {}",
+                    "Webhook notify failed: {}",
                     message.lines().next().unwrap_or_default()
                 ));
             }

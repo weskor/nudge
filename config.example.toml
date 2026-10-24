@@ -4,23 +4,23 @@
 #
 # This file holds secrets: keep it out of git and `chmod 600` it.
 
-# Desk used when --desk is not given, and the one the herdr plugin notifies.
-# Optional when only one desk is configured.
-default_desk = "desk"
+# Webhook used when --webhook is not given, and the one the herdr plugin notifies.
+# Optional when only one webhook is configured.
+default_webhook = "main"
 
-# One [[desk]] table per webhook that receives nudge events.
-[[desk]]
-name = "desk"
-# Optional; shown by `nudge list` and the list_desks MCP tool.
-description = "Coordinator desk: hears from coding agents when they finish or need input."
+# One [[webhook]] table per endpoint that receives nudge events.
+[[webhook]]
+name = "main"
+# Optional; shown by `nudge list` and the list_webhooks MCP tool.
+description = "Coordinator: hears from coding agents when they finish or need input."
 url = "https://REPLACE_WITH_WEBHOOK_URL"
 # Sent verbatim as the Authorization header value.
 authorization = "Bearer REPLACE_WITH_WEBHOOK_TOKEN"
 # Optional, at least 16 characters. When set, every request carries x-nudge-timestamp and
-# x-nudge-signature (sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">) so the desk can verify it.
+# x-nudge-signature (sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">) so the webhook can verify it.
 # signing_secret = "REPLACE_WITH_SHARED_SECRET"
 
-[[desk]]
+[[webhook]]
 name = "research"
 url = "https://REPLACE_WITH_RESEARCH_WEBHOOK_URL"
 authorization = "Bearer REPLACE_WITH_RESEARCH_WEBHOOK_TOKEN"

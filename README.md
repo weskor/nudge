@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/hero.svg" width="920" alt="Three herdr agents. billing-fix is blocked, so nudge sends an event to your desk's webhook; the desk escalates it to you. api-refactor finished, so the desk replies straight into its pane with herdr agent prompt.">
+  <img src="assets/hero.svg" width="920" alt="Three herdr agents. billing-fix is blocked, so nudge sends an event to your webhook; the AI routine behind it escalates it to you. api-refactor finished, so it replies straight into its pane with herdr agent prompt.">
 </p>
 
 <h1 align="center">nudge</h1>
 
 <p align="center">
-  <b>Your coding agents tell your desk when they're done or stuck.<br>The desk answers right in their pane.</b>
+  <b>Your coding agents tell your webhook when they're done or stuck.<br>The AI routine behind it answers right in their pane.</b>
 </p>
 
 <p align="center">
@@ -16,19 +16,19 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
-nudge is a [herdr](https://herdr.dev) plugin. When an agent finishes a long turn or gets blocked, it sends a small JSON event to your **desk**: anything that accepts a webhook, such as an AI assistant routine, a workflow automation or your own service. The desk decides what to do. It can answer the agent by running `herdr agent prompt <agent> "..."`, which types the reply into the agent's pane, or escalate to you when a decision is yours.
+nudge is a [herdr](https://herdr.dev) plugin. When an agent finishes a long turn or gets blocked, it sends a small JSON event to your **webhook**: anything that accepts an HTTP POST, such as an AI assistant routine, a workflow automation or your own service. The automation behind it decides what to do. It can answer the agent by running `herdr agent prompt <agent> "..."`, which types the reply into the agent's pane, or escalate to you when a decision is yours.
 
 ## Why
 
 - **Stop babysitting panes.** With several agents running, the slow part is noticing that one is done or waiting for approval. nudge notices for you.
-- **Let a desk handle the routine.** The desk answers the questions it can (conventions, next steps, "which branch?") and escalates the rest, like credentials or production changes.
+- **Let an AI routine handle the routine questions.** The automation behind your webhook answers the questions it can (conventions, next steps, "which branch?") and escalates the rest, like credentials or production changes.
 - **Answers land where the work is.** Replies arrive in the agent's pane as a new prompt. No copy-paste, no polling.
 - **Careful by default.** Automatic notifications are off until you turn them on, skip the pane you're looking at, are rate-limited, and redact anything that looks like a secret.
 
 ## Requirements
 
 - herdr 0.9 or later on Linux or macOS (x64 or arm64).
-- A desk that accepts an HTTP POST with an `Authorization` header. To reply to agents, the desk needs to run `herdr agent prompt` on the machine where herdr runs.
+- A webhook that accepts an HTTP POST with an `Authorization` header. To reply to agents, the automation behind it needs to run `herdr agent prompt` on the machine where herdr runs.
 
 ## Install
 
@@ -40,25 +40,25 @@ The install step downloads the prebuilt `nudge` binary for your platform (about 
 
 ## Quick start
 
-**1. Connect your desk.** Open setup inside herdr:
+**1. Connect your webhook.** Open setup inside herdr:
 
 ```sh
 herdr plugin action invoke weskor.nudge.setup
 ```
 
-Setup is a form in three steps. **1 Webhook**: copy the webhook URL from your desk's webhook settings and press Enter on its field to paste it, then do the same for the Authorization header (typing or pasting works too); nudge never shows the header, only a masked preview. **2 This desk**: a name (`desk` is fine if you only have one) and an optional description. **3 After saving**: tick whether to turn on auto-notify and to install the `nudge` command into `~/.local/bin`. Then press **Test and save** (or Ctrl-S): nudge test-pings the webhook and saves only if it answers. If the desk rejects the header or the URL, the cursor goes back to that field.
+Setup is a form in three steps. **1 Where to send**: copy the webhook URL from the webhook's settings and press Enter on its field to paste it, then do the same for the Authorization header (typing or pasting works too); nudge never shows the header, only a masked preview. **2 This webhook**: a name (`main` is fine if you only have one) and an optional description. **3 After saving**: tick whether to turn on auto-notify and to install the `nudge` command into `~/.local/bin`. Then press **Test and save** (or Ctrl-S): nudge test-pings the webhook and saves only if it answers. If the webhook rejects the header or the URL, the cursor goes back to that field.
 
 <p align="center">
-  <img src="assets/setup.svg" width="860" alt="The nudge setup form in three numbered steps: the webhook URL is filled in and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401) so the cursor is back on it; the desk is named desk; auto-notify and the command install are ticked; a Test and save button.">
+  <img src="assets/setup.svg" width="860" alt="The nudge setup form in three numbered steps: the webhook URL is filled in and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401) so the cursor is back on it; the webhook is named main; auto-notify and the command install are ticked; a Test and save button.">
 </p>
 
-**2. Tell your desk what to do with events.** Paste [docs/desk-instructions.md](docs/desk-instructions.md) into its instructions. The template covers when to reply, when to escalate to you, and how to avoid reply loops.
+**2. Tell your webhook's automation what to do with events.** Paste [docs/webhook-instructions.md](docs/webhook-instructions.md) into its instructions. The template covers when to reply, when to escalate to you, and how to avoid reply loops.
 
 **3. Check it.**
 
 ```sh
 nudge doctor          # config, plugin, auto-notify, command, clipboard
-nudge test            # send a test ping to your desk
+nudge test            # send a test ping to your webhook
 ```
 
 That's it. Agents in herdr are now covered; they don't need any instructions.
@@ -67,24 +67,24 @@ That's it. Agents in herdr are now covered; they don't need any instructions.
 
 ### Automatic notifications
 
-The plugin listens to herdr's agent status changes. It notifies your default desk when all of these hold:
+The plugin listens to herdr's agent status changes. It notifies your default webhook when all of these hold:
 
 | Rule | Why |
 | --- | --- |
-| The agent is `blocked`, or `done` after a turn of at least 2 minutes | A quick reply isn't worth a desk run |
-| You aren't looking at the pane, or you said you're [away](#away-from-your-desk) | You already know |
+| The agent is `blocked`, or `done` after a turn of at least 2 minutes | A quick reply isn't worth a webhook run |
+| You aren't looking at the pane, or you said you're [away](#away-mode) | You already know |
 | The agent didn't send its own `nudge notify` during the turn | Its own message says more than terminal output |
 | No automatic notification for that pane in the last 5 minutes | Rate limit, and a brake on reply loops |
-| The agent is in [scope](#choose-which-agents-can-notify) | You decide which agents may reach the desk |
+| The agent is in [scope](#choose-which-agents-can-notify) | You decide which agents may reach the webhook |
 | Auto-notify is on | Off until you turn it on |
 
-The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. When it's sent, herdr shows a toast ("Told the desk: api-refactor is blocked"). Every decision, including skipped events and why, is in `herdr plugin log list --plugin weskor.nudge`, and `nudge doctor` shows the most recent ones.
+The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. When it's sent, herdr shows a toast ("Told the webhook: api-refactor is blocked"). Every decision, including skipped events and why, is in `herdr plugin log list --plugin weskor.nudge`, and `nudge doctor` shows the most recent ones.
 
 The 2 minutes, 5 minutes, 40 lines and the toast are [settings](#settings).
 
-### Away from your desk
+### Away mode
 
-nudge counts the pane that's focused in herdr as one you're watching, even if you walked away and left the window open. Before you leave, run `weskor.nudge.away-on` (or `weskor.nudge.away` to toggle, or tick it in [settings](#settings)): until you run `weskor.nudge.away-off`, every agent's `blocked` and long `done` reach the desk, including the pane on screen, and even with auto-notify off. The other rules (turn length, cooldown, scope) still apply. `nudge doctor` shows when away mode is on.
+nudge counts the pane that's focused in herdr as one you're watching, even if you walked away and left the window open. Before you leave, run `weskor.nudge.away-on` (or `weskor.nudge.away` to toggle, or tick it in [settings](#settings)): until you run `weskor.nudge.away-off`, every agent's `blocked` and long `done` reach the webhook, including the pane on screen, and even with auto-notify off. The other rules (turn length, cooldown, scope) still apply. `nudge doctor` shows when away mode is on.
 
 A keybinding makes it one keystroke:
 
@@ -93,12 +93,12 @@ A keybinding makes it one keystroke:
 key = "prefix+a"
 type = "plugin_action"
 command = "weskor.nudge.away"
-description = "nudge: away from desk on/off"
+description = "nudge: away on/off"
 ```
 
 ### Choose which agents can notify
 
-By default every agent can reach the desk. To narrow that down, tick workspaces or agents in [settings](#settings), or focus a pane and run one of these herdr actions:
+By default every agent can reach the webhook. To narrow that down, tick workspaces or agents in [settings](#settings), or focus a pane and run one of these herdr actions:
 
 | Action | Who can notify afterwards |
 | --- | --- |
@@ -106,7 +106,7 @@ By default every agent can reach the desk. To narrow that down, tick workspaces 
 | `weskor.nudge.only-agent` | Only the agent in the focused pane |
 | `weskor.nudge.all-agents` | Every agent again |
 
-Both write the `[scope]` table in the config. Scope applies to automatic notifications and to `nudge notify` and the MCP tool; an agent outside it gets an error and nothing is sent. Sending a pane yourself with `ask-desk`, and `nudge test`, ignore it.
+Both write the `[scope]` table in the config. Scope applies to automatic notifications and to `nudge notify` and the MCP tool; an agent outside it gets an error and nothing is sent. Sending a pane yourself with `send-pane`, and `nudge test`, ignore it.
 
 ### Settings
 
@@ -117,7 +117,7 @@ Both write the `[scope]` table in the config. Scope applies to automatic notific
 │                                                              │
 │  Mode                                                        │
 │    [x] Auto-notify                                           │
-│    [ ] Away from my desk                                     │
+│    [ ] I'm away                                              │
 │                                                              │
 │  Automatic notifications                                     │
 │    [x] Toast when one is sent                                │
@@ -135,8 +135,8 @@ Both write the `[scope]` table in the config. Scope applies to automatic notific
 │          [ ] builder   api · backend                         │
 │          [x] reviewer  api · backend                         │
 │                                                              │
-│  Default desk                                                │
-│    (•) bridge  desks.example                                 │
+│  Default webhook                                             │
+│    (•) bridge  hooks.example                                 │
 │    ( ) local   127.0.0.1  signed                             │
 │  ──────────────────────────────────────────────────────────  │
 │  Skip done turns shorter than this. Blocked agents always    │
@@ -145,11 +145,11 @@ Both write the `[scope]` table in the config. Scope applies to automatic notific
 ╰──────────────────────────────────────────────────────────────╯
 ```
 
-The line under the list explains the row under the cursor. The workspace and agent lists only appear when you pick "Only these", and each agent shows its workspace and directory. `t` sends a test ping to the desk under the cursor. Nothing changes until you press `s`; `q` twice throws edits away. Desks show only their host, never the URL path or secrets.
+The line under the list explains the row under the cursor. The workspace and agent lists only appear when you pick "Only these", and each agent shows its workspace and directory. `t` sends a test ping to the webhook under the cursor. Nothing changes until you press `s`; `q` twice throws edits away. Webhooks show only their host, never the URL path or secrets.
 
 ### Notifications written by the agent
 
-Agents (or you) can send their own message, which gives the desk more to go on:
+Agents (or you) can send their own message, which gives the webhook's automation more to go on:
 
 ```sh
 nudge notify "Finished the auth refactor; PR #42 is ready for review."
@@ -163,27 +163,27 @@ To have agents do this on their own, add a few lines to their instructions:
 <summary>AGENTS.md snippet</summary>
 
 ```markdown
-## Desk (nudge)
+## Webhook (nudge)
 
-When you finish a task, or need a decision, tell the desk:
+When you finish a task, or need a decision, tell the webhook:
 
     nudge notify --status done "<what you did; branch/PR; anything to check>"
     nudge notify --status blocked "<exactly what you need and why>"
     nudge notify --status question "<the decision you need, with the options>"
 
-- Make the message self-contained: the desk sees only it plus your repo, branch and cwd.
-- Don't poll or wait for an answer. A reply arrives later as a new prompt starting with "Desk:".
-- Don't notify just to acknowledge a desk reply.
+- Make the message self-contained: the webhook sees only it plus your repo, branch and cwd.
+- Don't poll or wait for an answer. A reply arrives later as a new prompt starting with "Coordinator:".
+- Don't notify just to acknowledge a reply.
 - Never put secrets in a notification.
 ```
 
 </details>
 
-nudge is also an MCP server, for agents that prefer tools over shell commands: `claude mcp add nudge -- nudge mcp` adds `notify_desk` and `list_desks`.
+nudge is also an MCP server, for agents that prefer tools over shell commands: `claude mcp add nudge -- nudge mcp` adds `notify_webhook` and `list_webhooks`.
 
 ### The event
 
-POSTed to your desk with its `Authorization` header and `Content-Type: application/json`:
+POSTed to your webhook with its `Authorization` header and `Content-Type: application/json`:
 
 ```json
 {
@@ -201,7 +201,7 @@ POSTed to your desk with its `Authorization` header and `Content-Type: applicati
 
 | Field | Value |
 | --- | --- |
-| `id` | A new UUID for every notification, so the desk can drop duplicates |
+| `id` | A new UUID for every notification, so the webhook can drop duplicates |
 | `sent_at` | When nudge sent it, in UTC |
 | `from_agent` | The herdr agent to reply to: its name, or its pane id if unnamed. `null` when sent from outside an agent pane |
 | `repo` | `owner/name` from the `origin` remote, else the directory name; `null` outside git |
@@ -210,9 +210,9 @@ POSTed to your desk with its `Authorization` header and `Content-Type: applicati
 | `message` | The agent's text; for automatic events, a note saying so plus the pane's last lines |
 
 <details>
-<summary>Signed requests, for desks you host yourself</summary>
+<summary>Signed requests, for webhooks you host yourself</summary>
 
-Give a desk a `signing_secret` (at least 16 characters; `nudge setup --signing-secret VALUE`, or edit the config) and every request also carries:
+Give a webhook a `signing_secret` (at least 16 characters; `nudge setup --signing-secret VALUE`, or edit the config) and every request also carries:
 
 | Header | Value |
 | --- | --- |
@@ -230,9 +230,9 @@ To verify, recompute the HMAC over the timestamp, a `.` and the raw request body
 | `weskor.nudge.setup` | Open setup in an overlay |
 | `weskor.nudge.status` | Open `nudge doctor` in an overlay |
 | `weskor.nudge.settings` | Open [settings](#settings) in an overlay |
-| `weskor.nudge.ask-desk` | Send the focused pane to the desk now, skipping the rules above |
+| `weskor.nudge.send-pane` | Send the focused pane to the webhook now, skipping the rules above |
 | `weskor.nudge.toggle` | Turn auto-notify on or off (also `.enable`, `.disable`) |
-| `weskor.nudge.away` | Tell nudge you're [away from your desk](#away-from-your-desk) or back (also `.away-on`, `.away-off`) |
+| `weskor.nudge.away` | Tell nudge you're [away](#away-mode) or back (also `.away-on`, `.away-off`) |
 | `weskor.nudge.only-workspace`, `.only-agent`, `.all-agents` | Choose [which agents can notify](#choose-which-agents-can-notify) |
 
 Bind them in `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
@@ -241,20 +241,20 @@ Bind them in `~/.config/herdr/config.toml`, then run `herdr server reload-config
 [[keys.command]]
 key = "prefix+n"
 type = "plugin_action"
-command = "weskor.nudge.ask-desk"
-description = "nudge: send this pane to the desk"
+command = "weskor.nudge.send-pane"
+description = "nudge: send this pane to the webhook"
 ```
 
 ## Privacy and safety
 
 - **What leaves your machine:** only the event above, and only to the webhook you configured. nudge has no server of its own and collects no telemetry.
-- **Terminal output** is sent only by automatic notifications and `ask-desk`, after redaction. Redaction covers Authorization/Bearer values, `*TOKEN*`, `*SECRET*`, `*PASSWORD*` and `*API_KEY*` assignments, OpenAI, GitHub, Slack, AWS and Google key formats, JWTs, private-key blocks and long random strings. It is a best-effort filter, not a guarantee, so leave auto-notify off for panes that print sensitive data.
+- **Terminal output** is sent only by automatic notifications and `send-pane`, after redaction. Redaction covers Authorization/Bearer values, `*TOKEN*`, `*SECRET*`, `*PASSWORD*` and `*API_KEY*` assignments, OpenAI, GitHub, Slack, AWS and Google key formats, JWTs, private-key blocks and long random strings. It is a best-effort filter, not a guarantee, so leave auto-notify off for panes that print sensitive data.
 - **The Authorization header** is stored in `~/.config/nudge/config.toml` with mode 600, is never printed, and never appears in error messages.
-- **Your desk can type into panes.** Give it the [instructions template](docs/desk-instructions.md), which has it treat event content as data, reply only to the agent that sent the event, and escalate credentials, deploys and other irreversible actions to you.
+- **Your webhook's automation can type into panes.** Give it the [instructions template](docs/webhook-instructions.md), which has it treat event content as data, reply only to the agent that sent the event, and escalate credentials, deploys and other irreversible actions to you.
 
 ## Configuration
 
-`nudge setup` writes the config for you; [config.example.toml](config.example.toml) documents the format. To add another desk, run `nudge setup --desk research`. `--default` makes it the desk the plugin uses.
+`nudge setup` writes the config for you; [config.example.toml](config.example.toml) documents the format. To add another webhook, run `nudge setup --webhook research`. `--default` makes it the webhook the plugin uses.
 
 [Settings](#settings) edits these for you. By hand, automatic notifications are tuned in an optional `[auto]` table; leave out anything you don't change:
 
@@ -272,7 +272,7 @@ agents = ["reviewer"]    # herdr agent names (or pane ids)
 
 | Path | Holds |
 | --- | --- |
-| `~/.config/nudge/config.toml` | Desks (webhook URL, Authorization header, optional description and signing secret), `[auto]` and `[scope]` |
+| `~/.config/nudge/config.toml` | Webhooks (URL, Authorization header, optional description and signing secret), `[auto]` and `[scope]` |
 | `~/.local/state/nudge/state.json` | The auto-notify toggle and per-pane timestamps |
 | `~/.local/bin/nudge` | Optional link to the plugin's `nudge` command; kept current across plugin updates |
 
@@ -287,10 +287,10 @@ agents = ["reviewer"]    # herdr agent names (or pane ids)
 <summary>Command reference</summary>
 
 ```text
-nudge setup  [--desk NAME] [--url URL] [--authorization VALUE] [--description TEXT]
+nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE] [--description TEXT]
              [--signing-secret VALUE] [--default] [--no-test]
-nudge notify [--desk NAME] [--status done|blocked|question] [--agent NAME] <message...|->
-nudge test   [--desk NAME] [--agent NAME]
+nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
+nudge test   [--webhook NAME] [--agent NAME]
 nudge doctor [--ping]
 nudge settings
 nudge list   [--json]
@@ -311,7 +311,7 @@ Start with `nudge doctor`, or `herdr plugin action invoke weskor.nudge.status` t
 | --- | --- |
 | Setup says the webhook rejected the Authorization header | Copy the header again. It's usually `Bearer <token>`; a pasted `Authorization:` prefix is fine |
 | No notification after an agent finished | `herdr plugin log list --plugin weskor.nudge` shows why it was skipped: a short turn, you were watching, cooldown, outside the scope, or auto-notify off |
-| No notification while I was away, with herdr still open | The agent's pane was focused, so nudge thought you were watching. Turn on [away mode](#away-from-your-desk) before you leave |
+| No notification while I was away, with herdr still open | The agent's pane was focused, so nudge thought you were watching. Turn on [away mode](#away-mode) before you leave |
 | `nudge notify` says the agent is outside nudge's scope | Run `weskor.nudge.all-agents`, or add the agent or its workspace to `[scope]` |
 | `from_agent` is `null` | The event wasn't sent from an agent's pane, so pass `--agent NAME` |
 | `nudge: command not found` | Run `herdr plugin action invoke weskor.nudge.setup` and accept the command install, or add `~/.local/bin` to your `PATH` |
@@ -320,7 +320,7 @@ Start with `nudge doctor`, or `herdr plugin action invoke weskor.nudge.status` t
 
 - Linux and macOS only; there's no Windows build yet.
 - Automatic events contain terminal output, not a summary; for richer messages, have agents use `nudge notify`.
-- Replies need a desk that can reach the machine where herdr runs.
+- Replies need a webhook automation that can reach the machine where herdr runs.
 
 ## Contributing
 

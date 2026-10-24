@@ -6,7 +6,7 @@ Binary under test: $NUDGE_BIN (default: <repo>/bin/nudge). python3 stdlib only.
 Session commands (one long-lived sandbox + fake webhook; evidence in <repo>/.verify/<id>/):
   verify-nudge launch                      start a session, print the ready line
   verify-nudge doctor                      read-only: is the session worth driving?
-  verify-nudge seed-config [--default NAME] [--append TOML]   standard desks config (default desk: "desk"); TOML
+  verify-nudge seed-config [--default NAME] [--append TOML]   standard webhooks config (default webhook: "main"); TOML
                                            (e.g. '[auto]\\ntail_lines = 5') is appended; \\n escapes expand
   verify-nudge seed-state JSON             write state.json (e.g. '{"auto": true}')
   verify-nudge herdr PRESET|FILE           fake herdr fixture: none | running | agent-pane | workspaces | FILE.json
@@ -54,11 +54,11 @@ EVIDENCE_ROOT = os.path.join(REPO, ".verify")
 
 GOOD = "Bearer good-token-0123456789abcdef"
 WRONG = "Bearer wrong-token-0123456789abcdef"
-# Signing secrets the fake desk knows (label = what its "signature" verdict names): the seeded `signed` desk's,
+# Signing secrets the fake webhook knows (label = what its "signature" verdict names): the seeded `signed` webhook's,
 # and the one parity's setup scenarios pass to `nudge setup --signing-secret`.
 SIGNING_SECRET = "sign-secret-0123456789abcdef"
 SETUP_SIGNING_SECRET = "setup-secret-fedcba9876543210"
-WEBHOOK_SECRETS = (("signed-desk", SIGNING_SECRET), ("setup", SETUP_SIGNING_SECRET))
+WEBHOOK_SECRETS = (("signed-webhook", SIGNING_SECRET), ("setup", SETUP_SIGNING_SECRET))
 SECRET_MARKERS = ("good-token-0123456789abcdef", "wrong-token-0123456789abcdef", SIGNING_SECRET, SETUP_SIGNING_SECRET)
 PLUGIN_ID = "weskor.nudge"
 UUID_V4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
@@ -356,10 +356,10 @@ def plugin(enabled=True, root="{RUN}/plugin", version="0.4.0"):
 PLUGIN_LOGS = rule(
     ["plugin", "log", "list", "--plugin", PLUGIN_ID],
     {"result": {"logs": [
-        {"started_unix_ms": 1760000300000, "status": "succeeded", "stderr": "[nudge] p_1 done: notified desk (HTTP 200)\n", "event": "pane.agent_status_changed"},
+        {"started_unix_ms": 1760000300000, "status": "succeeded", "stderr": "[nudge] p_1 done: notified webhook (HTTP 200)\n", "event": "pane.agent_status_changed"},
         {"started_unix_ms": 1760000000000, "status": "succeeded", "stderr": "", "event": "pane.agent_status_changed"},
         {"started_unix_ms": 1760000100000, "status": "succeeded", "stderr": "[nudge] p_2 done: skipped (turn shorter than 120s)"},
-        {"started_unix_ms": 1760000200000, "status": "failed", "stderr": "[nudge] failed: boom\n[nudge] failed: desk \"desk\" webhook returned HTTP 500: desk exploded", "action_id": "ask-desk"},
+        {"started_unix_ms": 1760000200000, "status": "failed", "stderr": "[nudge] failed: boom\n[nudge] failed: webhook \"main\" returned HTTP 500: webhook exploded", "action_id": "send-pane"},
         {"started_unix_ms": 1760000050000, "status": "succeeded", "stderr": "[nudge] oldest line, dropped by the last-5 window"},
         {"started_unix_ms": 1760000400000, "status": "succeeded", "stderr": "[nudge] p_3 blocked: skipped (cooldown)"},
         {"started_unix_ms": 1760000500000, "status": "succeeded", "stderr": "[nudge] repointed ~/.local/bin/nudge at this install"},
@@ -469,21 +469,21 @@ PRESETS = {
 }
 
 
-def desks_config(port, offline_port, default="desk", extra=""):
-    """The standard desks; `extra` (e.g. an [auto] or [scope] table) is appended verbatim."""
+def webhooks_config(port, offline_port, default="main", extra=""):
+    """The standard webhooks; `extra` (e.g. an [auto] or [scope] table) is appended verbatim."""
     hook = f"http://127.0.0.1:{port}"
-    desks = [
-        ("desk", "Main desk", f"{hook}/hook", GOOD, None),
-        ("research", "Research desk", f"{hook}/hook", GOOD, None),
+    webhooks = [
+        ("main", "Main webhook", f"{hook}/hook", GOOD, None),
+        ("research", "Research webhook", f"{hook}/hook", GOOD, None),
         ("badauth", None, f"{hook}/hook", WRONG, None),
         ("nohook", None, f"{hook}/nope", GOOD, None),
         ("broken", None, f"{hook}/fail", GOOD, None),
         ("offline", None, f"http://127.0.0.1:{offline_port}/hook", GOOD, None),
-        ("signed", "Signed desk", f"{hook}/signed", GOOD, SIGNING_SECRET),
+        ("signed", "Signed webhook", f"{hook}/signed", GOOD, SIGNING_SECRET),
     ]
-    lines = [f'default_desk = "{default}"', ""] if default else []
-    for name, description, url, auth, secret in desks:
-        lines += ["[[desk]]", f'name = "{name}"']
+    lines = [f'default_webhook = "{default}"', ""] if default else []
+    for name, description, url, auth, secret in webhooks:
+        lines += ["[[webhook]]", f'name = "{name}"']
         if description:
             lines.append(f'description = "{description}"')
         lines += [f'url = "{url}"', f'authorization = "{auth}"']
@@ -962,7 +962,7 @@ class Normalizer:
 
 
 def secret_leaks(rec):
-    """Desk secrets (Authorization tokens, signing secrets) found in anything nudge showed or sent outside the
+    """Webhook secrets (Authorization tokens, signing secrets) found in anything nudge showed or sent outside the
     Authorization header: output, MCP responses, webhook bodies, herdr toasts."""
     texts = [rec.get(k) for k in ("stdout", "stderr", "output", "raw_output")]
     texts += ["\n".join(s["lines"]) for s in rec.get("screens", [])]
@@ -973,7 +973,7 @@ def secret_leaks(rec):
 
 
 def timestamp_fresh(value, received, window=60):
-    """x-nudge-timestamp is unix seconds within `window` s of when the fake desk received the request."""
+    """x-nudge-timestamp is unix seconds within `window` s of when the fake webhook received the request."""
     return isinstance(value, str) and value.isdigit() and received is not None and abs(int(value) - received) <= window
 
 
@@ -984,7 +984,7 @@ def sent_at_unix(value):
 
 
 def contract_checks(rec):
-    """Problems with what the desk received (signature, timestamp, id, sent_at) and with MCP notify results,
+    """Problems with what the webhook received (signature, timestamp, id, sent_at) and with MCP notify results,
     checked on the raw record before normalization hides the values."""
     problems = []
     bodies = []
@@ -995,7 +995,7 @@ def contract_checks(rec):
             problems.append(f"{path} request signature {verdict}")
         signing = [h for h in ("x-nudge-timestamp", "x-nudge-signature") if h in headers]
         if path != "/signed" and signing:
-            problems.append(f"{path} (desk without signing_secret) got {', '.join(signing)}")
+            problems.append(f"{path} (webhook without signing_secret) got {', '.join(signing)}")
         if "x-nudge-timestamp" in headers and not timestamp_fresh(headers["x-nudge-timestamp"], received):
             problems.append(f"{path} x-nudge-timestamp {headers['x-nudge-timestamp']!r} is not unix seconds within 60 s of the request")
         if not isinstance(body, dict):
@@ -1020,11 +1020,11 @@ def contract_checks(rec):
             if not (isinstance(result.get("id"), str) and UUID_V4.fullmatch(result["id"])):
                 problems.append(f"MCP response {msg_id}: id {result.get('id', '<missing>')!r} is not a lowercase UUID v4")
             elif not sent:
-                problems.append(f"MCP response {msg_id}: id is not the id of a request the desk received")
+                problems.append(f"MCP response {msg_id}: id is not the id of a request the webhook received")
             if sent_at_unix(result.get("sent_at")) is None:
                 problems.append(f"MCP response {msg_id}: sent_at {result.get('sent_at', '<missing>')!r} is not YYYY-MM-DDTHH:MM:SSZ")
             elif sent and sent[0].get("sent_at") != result["sent_at"]:
-                problems.append(f"MCP response {msg_id}: sent_at differs from the request the desk received")
+                problems.append(f"MCP response {msg_id}: sent_at differs from the request the webhook received")
     return problems
 
 
@@ -1233,7 +1233,7 @@ def cmd_seed_config(argv):
     s = load_session()
     sb = session_sandbox(s)
     usage = "usage: verify-nudge seed-config [--default NAME] [--append TOML]"
-    opts = {"default": "desk", "append": ""}
+    opts = {"default": "main", "append": ""}
     it = iter(argv)
     for flag in it:
         if flag not in ("--default", "--append"):
@@ -1243,8 +1243,8 @@ def cmd_seed_config(argv):
             die(usage, 2)
         opts[flag[2:]] = value
     extra = "\n" + unescape(opts["append"]) if opts["append"] else ""
-    sb.write_config(desks_config(s["port"], s["offline_port"], opts["default"], extra))
-    print(f"wrote {sb.config}: default {opts['default']!r}; desks desk + research (accept), badauth (401), nohook (404), "
+    sb.write_config(webhooks_config(s["port"], s["offline_port"], opts["default"], extra))
+    print(f"wrote {sb.config}: default {opts['default']!r}; webhooks main + research (accept), badauth (401), nohook (404), "
           f"broken (500), offline (refused), signed (accepts with a valid signature)" + (" + appended TOML" if extra else ""))
 
 
@@ -1382,7 +1382,7 @@ def shown_texts(rec):
 
 def step_assertions(rec, op, config_before=None):
     """Contract assertions a scenario step opted into:
-    sends=N              the desk received exactly N requests
+    sends=N              the webhook received exactly N requests
     toasts=[...]         the herdr toasts (`notification show nudge --body X`) are exactly these bodies
     has=TEXT|[TEXT...]   each TEXT appears in stdout, stderr, PTY output/screens or an MCP response
     lacks=[TEXT...]      none of these appear there
@@ -1396,7 +1396,7 @@ def step_assertions(rec, op, config_before=None):
     problems = []
     cfg = (rec.get("files") or {}).get("config")
     if op.get("sends") is not None and len(rec.get("webhook", [])) != op["sends"]:
-        problems.append(f"desk received {len(rec.get('webhook', []))} requests, expected {op['sends']}")
+        problems.append(f"webhook received {len(rec.get('webhook', []))} requests, expected {op['sends']}")
     if op.get("toasts") is not None and toasts_of(rec) != sorted(op["toasts"]):
         problems.append(f"toasts {toasts_of(rec)}, expected {sorted(op['toasts'])}")
     for text in [op["has"]] if isinstance(op.get("has"), str) else op.get("has") or []:
@@ -1447,8 +1447,8 @@ URL = "http://127.0.0.1:{PORT}/hook"
 SIGNED_URL = "http://127.0.0.1:{PORT}/signed"
 
 
-def config(default="desk", extra=""):
-    """Standard desks (see desks_config); `extra` TOML (an [auto] / [scope] table) is appended after a blank line."""
+def config(default="main", extra=""):
+    """Standard webhooks (see webhooks_config); `extra` TOML (an [auto] / [scope] table) is appended after a blank line."""
     return {"do": "config", "default": default, "extra": extra}
 
 
@@ -1498,15 +1498,21 @@ def mcp(calls, env=None, **asserts):
     return {"do": "mcp", "messages": mcp_messages(calls), "env": env, **asserts}
 
 
-TWO_DESKS_NO_DEFAULT = (
-    '[[desk]]\nname = "alpha"\nurl = "http://127.0.0.1:{PORT}/hook"\nauthorization = "' + GOOD + '"\n\n'
-    '[[desk]]\nname = "beta"\ndescription = "Beta desk"\nurl = "http://127.0.0.1:{PORT}/hook"\nauthorization = "' + GOOD + '"\n'
+TWO_WEBHOOKS_NO_DEFAULT = (
+    '[[webhook]]\nname = "alpha"\nurl = "http://127.0.0.1:{PORT}/hook"\nauthorization = "' + GOOD + '"\n\n'
+    '[[webhook]]\nname = "beta"\ndescription = "Beta webhook"\nurl = "http://127.0.0.1:{PORT}/hook"\nauthorization = "' + GOOD + '"\n'
 )
-BAD_TOML = 'default_desk = "desk"\n[[desk]\nname = desk\n'
+BAD_TOML = 'default_webhook = "main"\n[[webhook]\nname = main\n'
 BAD_SCHEMA = (
-    'default_desk = "ghost"\n\n[[desk]]\nname = "my desk"\nurl = "http://example.com/hook"\nauthorization = "REPLACE_WITH_TOKEN"\n\n'
-    '[[desk]]\nname = "dup"\nurl = "https://example.com/a"\nauthorization = "Bearer x"\n\n'
-    '[[desk]]\nname = "dup"\nurl = "not a url"\nauthorization = ""\n'
+    'default_webhook = "ghost"\n\n[[webhook]]\nname = "my webhook"\nurl = "http://example.com/hook"\nauthorization = "REPLACE_WITH_TOKEN"\n\n'
+    '[[webhook]]\nname = "dup"\nurl = "https://example.com/a"\nauthorization = "Bearer x"\n\n'
+    '[[webhook]]\nname = "dup"\nurl = "not a url"\nauthorization = ""\n'
+)
+# The pre-rename format (`[[desk]]` / `default_desk`): nudge rewrites it to `[[webhook]]` / `default_webhook` on read.
+OLD_FORMAT_CONFIG = (
+    'default_desk = "main"\n\n[[desk]]\nname = "main"\ndescription = "Main webhook"\nurl = "http://127.0.0.1:{PORT}/hook"\n'
+    'authorization = "' + GOOD + '"\n\n'
+    '[[desk]]\nname = "research"\nurl = "http://127.0.0.1:{PORT}/hook"\nauthorization = "' + GOOD + '"\n'
 )
 PANE_HERDR = PRESETS["agent-pane"]
 AGENT_HERDR = fixture(HERDR_VERSION, NOTIFICATION_OK, NO_AGENTS)
@@ -1561,16 +1567,21 @@ def scenarios():
 
     # ---- list
     add("list", config(), cmd(["list"], expect=0), cmd(["list", "--json"], expect=0))
-    add("list-no-default", raw_config(TWO_DESKS_NO_DEFAULT), cmd(["list"], expect=0), cmd(["list", "--json"], expect=0))
+    add("list-no-default", raw_config(TWO_WEBHOOKS_NO_DEFAULT), cmd(["list"], expect=0), cmd(["list", "--json"], expect=0))
     add("list-no-config", cmd(["list"], expect=1))
     add("list-invalid-config", raw_config(BAD_SCHEMA), cmd(["list"], expect=1))
     add("list-bad-toml", raw_config(BAD_TOML), cmd(["list"], expect=1))
+    add("config-migrates-old-format", raw_config(OLD_FORMAT_CONFIG),
+        cmd(["list"], expect=0, config_mode="600", has=["nudge: updated ", " to the new format ([[webhook]], default_webhook)"],
+            config_keys={"default_webhook": "main", "desk": None, "default_desk": None}),
+        cmd(["list"], expect=0, config_unchanged=1, lacks=["nudge: updated "],
+            config_keys={"default_webhook": "main", "desk": None, "default_desk": None}))
 
     # ---- notify
     elsewhere = rule(["agent", "list"], {"result": {"agents": [{"name": "other", "pane_id": "p_5", "cwd": "/somewhere/else"}]}})
     add("notify-args", config(), herdr(fixture(elsewhere)), cmd(["notify", "Finished", "the", "auth", "refactor;", "PR #42"], expect=0))
     add("notify-stdin", config(), herdr(fixture(NO_AGENTS)), cmd(["notify", "-"], stdin="  Line one\nLine two \"quoted\"\n\n", expect=0))
-    add("notify-desk-status", config(), cmd(["notify", "--desk", "research", "--status", "blocked", "Need", "the", "staging", "DB", "password"], expect=0))
+    add("notify-webhook-status", config(), cmd(["notify", "--webhook", "research", "--status", "blocked", "Need", "the", "staging", "DB", "password"], expect=0))
     add("notify-agent-flag", config(), cmd(["notify", "--agent", "api-refactor", "--status", "question", "Use v2 or v3?"], expect=0),
         cmd(["notify", "--agent", "my agent's pane", "quoting"], expect=0), cmd(["notify", "--agent=eq-form", "--status=done", "equals form"], expect=0))
     add("notify-env-agent", config(), cmd(["notify", "from env"], env={"NUDGE_AGENT": "env-agent"}, expect=0),
@@ -1603,37 +1614,37 @@ def scenarios():
         cmd(["notify", "--agent", "a", "no origin"], cwd="plainrepo", expect=0))
     add("notify-empty-message", config(), cmd(["notify", "   "], expect=1), cmd(["notify", "-"], stdin="", expect=1),
         cmd(["notify", "-"], stdin=" \n\n", expect=1))
-    add("notify-unknown-desk", config(), cmd(["notify", "--desk", "nope", "hi"], expect=1))
-    add("notify-401", config(), cmd(["notify", "--desk", "badauth", "hi"], expect=1))
-    add("notify-404", config(), cmd(["notify", "--desk", "nohook", "hi"], expect=1))
-    add("notify-500", config(), cmd(["notify", "--desk", "broken", "hi"], expect=1))
-    add("notify-unreachable", config(), cmd(["notify", "--desk", "offline", "hi"], expect=1))
+    add("notify-unknown-webhook", config(), cmd(["notify", "--webhook", "nope", "hi"], expect=1))
+    add("notify-401", config(), cmd(["notify", "--webhook", "badauth", "hi"], expect=1))
+    add("notify-404", config(), cmd(["notify", "--webhook", "nohook", "hi"], expect=1))
+    add("notify-500", config(), cmd(["notify", "--webhook", "broken", "hi"], expect=1))
+    add("notify-unreachable", config(), cmd(["notify", "--webhook", "offline", "hi"], expect=1))
     add("notify-no-config", cmd(["notify", "hi"], expect=1))
-    add("notify-several-desks-no-default", raw_config(TWO_DESKS_NO_DEFAULT), cmd(["notify", "hi"], expect=1),
-        cmd(["notify", "--desk", "beta", "hi"], expect=0))
+    add("notify-several-webhooks-no-default", raw_config(TWO_WEBHOOKS_NO_DEFAULT), cmd(["notify", "hi"], expect=1),
+        cmd(["notify", "--webhook", "beta", "hi"], expect=0))
     add("notify-invalid-config", raw_config(BAD_SCHEMA), cmd(["notify", "hi"], expect=1))
     add("notify-bad-toml", raw_config(BAD_TOML), cmd(["notify", "hi"], expect=1))
 
     # ---- test ping
-    add("test-ping", config(), cmd(["test"], expect=0), cmd(["test", "--desk", "research", "--agent", "pinger"], expect=0))
-    add("test-ping-failures", config(), cmd(["test", "--desk", "badauth"], expect=1), cmd(["test", "--desk", "nohook"], expect=1),
-        cmd(["test", "--desk", "broken"], expect=1), cmd(["test", "--desk", "offline"], expect=1))
+    add("test-ping", config(), cmd(["test"], expect=0), cmd(["test", "--webhook", "research", "--agent", "pinger"], expect=0))
+    add("test-ping-failures", config(), cmd(["test", "--webhook", "badauth"], expect=1), cmd(["test", "--webhook", "nohook"], expect=1),
+        cmd(["test", "--webhook", "broken"], expect=1), cmd(["test", "--webhook", "offline"], expect=1))
     add("test-no-config", cmd(["test"], expect=1))
 
     # ---- setup, scripted (stdin is not a terminal)
-    add("setup-flags", cmd(["setup", "--url", URL, "--authorization", GOOD, "--description", "Main desk"], expect=0), cmd(["list"], expect=0))
+    add("setup-flags", cmd(["setup", "--url", URL, "--authorization", GOOD, "--description", "Main webhook"], expect=0), cmd(["list"], expect=0))
     add("setup-stdin", cmd(["setup"], stdin=f"\n  {URL}  \r\n\n{GOOD}\n", expect=0))
     add("setup-stdin-auth-only", cmd(["setup", "--url", URL], stdin=f"{GOOD}\n", expect=0))
     add("setup-rejected-auth", cmd(["setup", "--url", URL, "--authorization", WRONG], expect=1))
     add("setup-wrong-url", cmd(["setup", "--url", "http://127.0.0.1:{PORT}/nope", "--authorization", GOOD], expect=1))
-    add("setup-desk-500", cmd(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], expect=1))
+    add("setup-webhook-500", cmd(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], expect=1))
     add("setup-unreachable", cmd(["setup", "--url", "http://127.0.0.1:{OFFLINE_PORT}/hook", "--authorization", GOOD], expect=1))
     add("setup-no-test", cmd(["setup", "--url", URL, "--authorization", WRONG, "--no-test"], expect=0))
-    add("setup-default-two-desks",
+    add("setup-default-two-webhooks",
         cmd(["setup", "--url", URL, "--authorization", GOOD], expect=0),
-        cmd(["setup", "--desk", "research", "--url", URL, "--authorization", GOOD, "--description", "Research desk"], expect=0),
+        cmd(["setup", "--webhook", "research", "--url", URL, "--authorization", GOOD, "--description", "Research webhook"], expect=0),
         cmd(["list"], expect=0),
-        cmd(["setup", "--desk", "research", "--default"], stdin="", expect=0),
+        cmd(["setup", "--webhook", "research", "--default"], stdin="", expect=0),
         cmd(["list"], expect=0))
     add("setup-rerun-replaces",
         cmd(["setup", "--url", URL, "--authorization", WRONG, "--description", "first", "--no-test"], expect=0),
@@ -1641,32 +1652,32 @@ def scenarios():
         cmd(["setup", "--description", "third"], stdin="", expect=0),
         cmd(["list"], expect=0))
     add("setup-auth-prefix", cmd(["setup", "--url", URL, "--authorization", "  Authorization: " + GOOD + "  "], expect=0),
-        cmd(["setup", "--desk", "lower", "--url", URL], stdin="authorization:" + GOOD + "\n", expect=0))
+        cmd(["setup", "--webhook", "lower", "--url", URL], stdin="authorization:" + GOOD + "\n", expect=0))
     add("setup-invalid-values", cmd(["setup", "--url", "http://example.com/hook", "--authorization", GOOD], expect=1),
         cmd(["setup", "--url", "ftp://127.0.0.1/hook", "--authorization", GOOD], expect=1),
         cmd(["setup", "--url", URL, "--authorization", "Bearer bad\ttoken"], expect=1),
-        cmd(["setup", "--desk", "bad name!", "--url", URL, "--authorization", GOOD], expect=1),
+        cmd(["setup", "--webhook", "bad name!", "--url", URL, "--authorization", GOOD], expect=1),
         cmd(["setup", "--url", URL, "--authorization", "REPLACE_WITH_TOKEN"], expect=1))
     add("setup-missing-values", cmd(["setup"], stdin="", expect=1), cmd(["setup", "--url", URL], stdin="", expect=1))
     add("setup-existing-bad-toml", raw_config(BAD_TOML), cmd(["setup", "--url", URL, "--authorization", GOOD], expect=1))
 
     # ---- setup, interactive (PTY): a full-screen form. Cursor stops: Webhook URL, Authorization, Name, Description,
-    # then (when offered) Make it the default desk, Turn on auto-notify, Install the nudge command, then the button.
+    # then (when offered) Make it the default webhook, Turn on auto-notify, Install the nudge command, then the button.
     done = "Done. Check everything any time with nudge doctor."
     add("setup-tty-clipboard", herdr(PRESETS["running"]), clip(URL),
         pty(["setup"], [
-            on_screen("nudge setup", "Your desk is the webhook that receives nudge's events", "1  Webhook",
-                      "Webhook URL    press Enter to paste, or type", "Authorization  not set", "2  This desk",
-                      "Name           desk  will be added", "Description    optional", "3  After saving",
+            on_screen("nudge setup", "Your webhook is where nudge sends agent events: an AI routine, a", "1  Where to send",
+                      "Webhook URL    press Enter to paste, or type", "Authorization  not set", "2  This webhook",
+                      "Name           main  will be added", "Description    optional", "3  After saving",
                       "[x] Turn on auto-notify        herdr plugin enabled", "[x] Install the nudge command  into ~/.local/bin",
                       "[ Test and save ]", "Copy the Webhook URL", SETUP_HELP, cursor="Webhook URL"),
             keys("\\r"), on_screen("/hook  ✓", cursor="Authorization  press Enter to paste"),
             ["clip", GOOD], keys("\\r"), on_screen("Authorization  Bearer ••••••••cdef  (34 characters)  ✓", cursor="Name"),
             keys(CTRL_S)], expect=0, sends=1, state_auto=True,
-            has=["✓ Test ping: HTTP 200, the desk received it", '✓ Saved "desk" as the default desk', "✓ auto-notify on",
+            has=["✓ Test ping: HTTP 200, the webhook received it", '✓ Saved "main" as the default webhook', "✓ auto-notify on",
                  "✓ nudge command ", done]))
     add("setup-tty-paste-typed-and-401",
-        pty(["setup", "--desk", "manual"], [
+        pty(["setup", "--webhook", "manual"], [
             on_screen("!  herdr isn't running        run nudge setup in herdr for auto-notify", cursor="Webhook URL"),
             keys("\\r"), on_screen("No clipboard text found. Type or paste the Webhook URL here.", cursor="Webhook URL"),
             keys("\\e[200~" + URL + "\\e[201~\\r"), on_screen("/hook  ✓", cursor="Authorization"),  # bracketed paste
@@ -1674,7 +1685,7 @@ def scenarios():
             keys(CTRL_S), on_screen("✗ the webhook rejected the Authorization header", cursor="Authorization"),
             keys("  Authorization: " + GOOD), keys(DOWN * 3 + " "), on_screen(cursor="[ ] Install the nudge command"),
             keys(CTRL_S)], expect=0, sends=2,
-            has=["✓ Test ping: HTTP 200", '✓ Saved "manual" as the default desk', "herdr isn't running", done],
+            has=["✓ Test ping: HTTP 200", '✓ Saved "manual" as the default webhook', "herdr isn't running", done],
             lacks=["✓ nudge command"]))
     add("setup-tty-url-retry",
         pty(["setup"], [
@@ -1686,7 +1697,7 @@ def scenarios():
     add("setup-tty-500-save-anyway-no",
         pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], [
             on_screen("[ Test and save ]", cursor="Webhook URL"),
-            keys(CTRL_S), on_screen("desk exploded. Press Enter to save it anyway.", cursor="[ Save anyway ]"),
+            keys(CTRL_S), on_screen("webhook exploded. Press Enter to save it anyway.", cursor="[ Save anyway ]"),
             keys(ESC)], expect=1, sends=1, has="Cancelled; nothing saved."))
     add("setup-tty-500-save-anyway-yes",
         pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD, "--no-test"], [
@@ -1704,23 +1715,23 @@ def scenarios():
             expect=1, has="Cancelled; nothing saved."))
     add("setup-tty-update-keep", config(), herdr(fixture(HERDR_VERSION, plugin_list(), NO_AGENTS)),
         pty(["setup"], [
-            on_screen("/hook  ✓", "Bearer ••••••••cdef  (34 characters)  ✓", "Name           desk  already saved: saving updates it",
-                      "Description    Main desk", "herdr plugin not installed  herdr plugin install weskor/nudge", cursor="Webhook URL"),
-            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "desk" as the default desk', "! The herdr plugin isn't installed", done]))
+            on_screen("/hook  ✓", "Bearer ••••••••cdef  (34 characters)  ✓", "Name           main  already saved: saving updates it",
+                      "Description    Main webhook", "herdr plugin not installed  herdr plugin install weskor/nudge", cursor="Webhook URL"),
+            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "main" as the default webhook', "! The herdr plugin isn't installed", done]))
     add("setup-tty-make-default", config(),
-        pty(["setup", "--desk", "research"], [
-            on_screen("Name           research  already saved: saving updates it", "[ ] Make it the default desk",
+        pty(["setup", "--webhook", "research"], [
+            on_screen("Name           research  already saved: saving updates it", "[ ] Make it the default webhook",
                       cursor="Webhook URL"),
-            keys(DOWN * 4 + " "), on_screen(cursor="[x] Make it the default desk"),
-            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "research" as the default desk', done],
-            config_keys={"default_desk": "research"}))
+            keys(DOWN * 4 + " "), on_screen(cursor="[x] Make it the default webhook"),
+            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "research" as the default webhook', done],
+            config_keys={"default_webhook": "research"}))
     add("setup-tty-rename", config(),
         pty(["setup"], [
-            on_screen("Name           desk  already saved: saving updates it", cursor="Webhook URL"),
-            keys(DOWN * 2 + CTRL_U + "research"), on_screen(cursor="research  replaces the saved desk with this name"),
+            on_screen("Name           main  already saved: saving updates it", cursor="Webhook URL"),
+            keys(DOWN * 2 + CTRL_U + "research"), on_screen(cursor="research  replaces the saved webhook with this name"),
             keys(CTRL_U + "my laptop" + CTRL_S), on_screen('may only contain letters, digits, "-" and "_"', cursor="Name"),
-            keys(CTRL_U + "laptop"), on_screen("[ ] Make it the default desk", cursor="laptop  will be added"),
-            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "laptop" (', done], config_keys={"default_desk": "desk"}))
+            keys(CTRL_U + "laptop"), on_screen("[ ] Make it the default webhook", cursor="laptop  will be added"),
+            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "laptop" (', done], config_keys={"default_webhook": "main"}))
     add("setup-tty-plugin-decline-auto", herdr(fixture(HERDR_VERSION, plugin_list(plugin(enabled=False)))), link("/opt/old/bin/nudge"),
         pty(["setup", "--url", URL, "--authorization", GOOD], [
             on_screen("[x] Turn on auto-notify        herdr plugin disabled", "nudge command installed    ~/.local/bin/nudge",
@@ -1744,7 +1755,7 @@ def scenarios():
     add("doctor-ping-ok", config(), cmd(["doctor", "--ping"], expect=0))
     add("doctor-ping-failures", config("badauth"), cmd(["doctor", "--ping"], expect=1), config("nohook"), cmd(["doctor", "--ping"], expect=1),
         config("broken"), cmd(["doctor", "--ping"], expect=1), config("offline"), cmd(["doctor", "--ping"], expect=1))
-    add("doctor-no-default", raw_config(TWO_DESKS_NO_DEFAULT), cmd(["doctor", "--ping"], expect=0))
+    add("doctor-no-default", raw_config(TWO_WEBHOOKS_NO_DEFAULT), cmd(["doctor", "--ping"], expect=0))
     add("doctor-command-link", config(), link("{NUDGE_ROOT}/bin/nudge"), cmd(["doctor"], expect=0),
         cmd(["doctor"], env={"HERDR_PLUGIN_ID": PLUGIN_ID}, expect=0))
     add("doctor-tty-pane", config(), herdr(PRESETS["running"]),
@@ -1781,13 +1792,13 @@ def scenarios():
 
     # ---- plugin: actions
     add("action-auto-toggle", herdr(AGENT_HERDR), action("toggle"), action("toggle"), action("enable"), action("enable"), action("disable"))
-    add("action-ask-desk-blocked", config(), herdr(PANE_HERDR), git("repo", "feature/x", "git@github.com:acme/api.git"),
-        action("ask-desk", {"focused_pane_id": "p_1", "focused_pane_status": "blocked"}))
-    add("action-ask-desk-question", config(), herdr(PANE_HERDR), action("ask-desk", {"focused_pane_id": "p_1", "focused_pane_status": "working"}))
-    add("action-ask-desk-env-pane", config(), herdr(PANE_HERDR), action("ask-desk", env={"HERDR_PANE_ID": "p_1"}))
-    add("action-ask-desk-no-pane", config(), herdr(PANE_HERDR), action("ask-desk", {}), action("ask-desk"))
-    add("action-ask-desk-fails", config("badauth"), herdr(PANE_HERDR), action("ask-desk", {"focused_pane_id": "p_1"}, expect=1))
-    add("action-ask-desk-no-config", herdr(PANE_HERDR), action("ask-desk", {"focused_pane_id": "p_1"}, expect=1))
+    add("action-send-pane-blocked", config(), herdr(PANE_HERDR), git("repo", "feature/x", "git@github.com:acme/api.git"),
+        action("send-pane", {"focused_pane_id": "p_1", "focused_pane_status": "blocked"}))
+    add("action-send-pane-question", config(), herdr(PANE_HERDR), action("send-pane", {"focused_pane_id": "p_1", "focused_pane_status": "working"}))
+    add("action-send-pane-env-pane", config(), herdr(PANE_HERDR), action("send-pane", env={"HERDR_PANE_ID": "p_1"}))
+    add("action-send-pane-no-pane", config(), herdr(PANE_HERDR), action("send-pane", {}), action("send-pane"))
+    add("action-send-pane-fails", config("badauth"), herdr(PANE_HERDR), action("send-pane", {"focused_pane_id": "p_1"}, expect=1))
+    add("action-send-pane-no-config", herdr(PANE_HERDR), action("send-pane", {"focused_pane_id": "p_1"}, expect=1))
     add("action-open-panes", herdr(PRESETS["running"]), action("setup"), action("status"))
     add("action-open-pane-fails", action("setup", expect=1))
     add("action-unknown", herdr(AGENT_HERDR), action("explode", expect=1))
@@ -1802,29 +1813,29 @@ def scenarios():
 
     # ---- MCP over stdio
     add("mcp-session", config(), herdr(fixture(NO_AGENTS)), mcp([
-        ("list_desks", {}),
-        ("notify_desk", {"message": "Done via MCP", "status": "question", "agent": "mcp-agent"}),
-        ("notify_desk", {"message": "default status, detected agent"}),
-        ("notify_desk", {"message": "goes nowhere", "desk": "broken"}),
-        ("notify_desk", {"message": "who?", "desk": "nope"}),
+        ("list_webhooks", {}),
+        ("notify_webhook", {"message": "Done via MCP", "status": "question", "agent": "mcp-agent"}),
+        ("notify_webhook", {"message": "default status, detected agent"}),
+        ("notify_webhook", {"message": "goes nowhere", "webhook": "broken"}),
+        ("notify_webhook", {"message": "who?", "webhook": "nope"}),
     ]))
-    add("mcp-no-config", mcp([("list_desks", {}), ("notify_desk", {"message": "hi"})]))
+    add("mcp-no-config", mcp([("list_webhooks", {}), ("notify_webhook", {"message": "hi"})]))
 
-    # Every webhook body (all scenarios) must carry a UUID v4 `id` and a fresh `sent_at`, every MCP notify_desk
-    # result the same id/sent_at the desk received, and every request to /signed a valid signature: see
+    # Every webhook body (all scenarios) must carry a UUID v4 `id` and a fresh `sent_at`, every MCP notify_webhook
+    # result the same id/sent_at the webhook received, and every request to /signed a valid signature: see
     # contract_checks. The scenarios below add the signing, [auto], toast and [scope] journeys.
 
-    # ---- signed desks (signing_secret)
+    # ---- signed webhooks (signing_secret)
     add("signed-notify-and-test", config(),
-        cmd(["notify", "--desk", "signed", "--agent", "a", "--status", "blocked", "signed hello"], expect=0, sends=1),
-        cmd(["test", "--desk", "signed"], expect=0, sends=1),
-        cmd(["notify", "--agent", "a", "unsigned desk"], expect=0, sends=1))
+        cmd(["notify", "--webhook", "signed", "--agent", "a", "--status", "blocked", "signed hello"], expect=0, sends=1),
+        cmd(["test", "--webhook", "signed"], expect=0, sends=1),
+        cmd(["notify", "--agent", "a", "unsigned webhook"], expect=0, sends=1))
     add("signed-doctor-ping", config("signed"), cmd(["doctor", "--ping"], expect=0, sends=1))
     add("signed-event", config("signed"), herdr(PANE_HERDR), state({"auto": True}),
-        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"]))
-    add("signed-ask-desk", config("signed"), herdr(PANE_HERDR), action("ask-desk", {"focused_pane_id": "p_1"}, sends=1))
+        event("blocked", sends=1, toasts=["Told the webhook: claude-1 is blocked"]))
+    add("signed-send-pane", config("signed"), herdr(PANE_HERDR), action("send-pane", {"focused_pane_id": "p_1"}, sends=1))
     add("signed-mcp", config(), herdr(fixture(NO_AGENTS)),
-        mcp([("notify_desk", {"message": "signed via MCP", "desk": "signed", "agent": "mcp-agent"})], sends=1))
+        mcp([("notify_webhook", {"message": "signed via MCP", "webhook": "signed", "agent": "mcp-agent"})], sends=1))
     add("setup-signing-secret",
         cmd(["setup", "--url", SIGNED_URL, "--authorization", GOOD, "--signing-secret", SETUP_SIGNING_SECRET], expect=0, sends=1),
         cmd(["setup", "--description", "rerun keeps the secret"], stdin="", expect=0, sends=1),
@@ -1834,7 +1845,7 @@ def scenarios():
     add("setup-signing-secret-too-short",
         cmd(["setup", "--url", URL, "--authorization", GOOD, "--signing-secret", "too-short"], expect=1, sends=0))
     add("config-signing-secret-too-short",
-        raw_config('default_desk = "desk"\n\n[[desk]]\nname = "desk"\nurl = "' + URL + '"\nauthorization = "' + GOOD
+        raw_config('default_webhook = "main"\n\n[[webhook]]\nname = "main"\nurl = "' + URL + '"\nauthorization = "' + GOOD
                    + '"\nsigning_secret = "short"\n'),
         cmd(["list"], expect=1, has="signing_secret"), cmd(["notify", "hi"], expect=1, sends=0))
 
@@ -1842,7 +1853,7 @@ def scenarios():
     long_turn = state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 180000}}}})
     add("auto-min-turn-lower", config(extra=auto(min_turn_seconds=30)), herdr(PANE_HERDR),
         state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 60000}}}}),
-        event("done", sends=1, toasts=["Told the desk: claude-1 finished a turn"]))
+        event("done", sends=1, toasts=["Told the webhook: claude-1 finished a turn"]))
     add("auto-min-turn-higher", config(extra=auto(min_turn_seconds=600)), herdr(PANE_HERDR),
         state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 300000}}}}), event("done", sends=0, toasts=[]))
     add("auto-min-turn-zero", config(extra=auto(min_turn_seconds=0)), herdr(PANE_HERDR),
@@ -1854,8 +1865,8 @@ def scenarios():
         event("blocked", sends=0, toasts=[], has="p_1 blocked: skipped (cooldown)"))
     add("auto-tail-lines-5", config(extra=auto(tail_lines=5)), herdr(PANE_HERDR), state({"auto": True}), event("blocked", sends=1))
     add("auto-tail-lines-200", config(extra=auto(tail_lines=200)), herdr(PANE_HERDR), state({"auto": True}), event("blocked", sends=1))
-    add("auto-tail-lines-ask-desk", config(extra=auto(tail_lines=3)), herdr(PANE_HERDR),
-        action("ask-desk", {"focused_pane_id": "p_1"}, sends=1))
+    add("auto-tail-lines-send-pane", config(extra=auto(tail_lines=3)), herdr(PANE_HERDR),
+        action("send-pane", {"focused_pane_id": "p_1"}, sends=1))
     add("auto-tail-lines-out-of-range", config(extra=auto(tail_lines=0)), cmd(["list"], expect=1, has="auto.tail_lines"),
         config(extra=auto(tail_lines=201)), cmd(["list"], expect=1, has="auto.tail_lines"))
     add("auto-bad-values", config(extra='[auto]\nmin_turn_seconds = -1\ncooldown_seconds = 1.5\ntoast = "yes"\n'),
@@ -1864,11 +1875,11 @@ def scenarios():
         cmd(["list"], expect=1, has="auto.bogus: unknown setting"), cmd(["doctor"], expect=1, has="auto.bogus: unknown setting"),
         cmd(["notify", "hi"], expect=1, sends=0), event("blocked", expect=1, sends=0))
     add("auto-toast-on-done", config(extra=auto(toast=True)), herdr(PANE_HERDR), long_turn,
-        event("done", sends=1, toasts=["Told the desk: claude-1 finished a turn"]))
+        event("done", sends=1, toasts=["Told the webhook: claude-1 finished a turn"]))
     add("auto-toast-default-blocked", config(), herdr(PANE_HERDR), state({"auto": True}),
-        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"]))
+        event("blocked", sends=1, toasts=["Told the webhook: claude-1 is blocked"]))
     add("auto-toast-pane-id", config(), herdr(fixture(NOTIFICATION_OK, pane_read("p_7", "build ok\n"))), state({"auto": True}),
-        event("blocked", pane="p_7", sends=1, toasts=["Told the desk: p_7 is blocked"]))
+        event("blocked", pane="p_7", sends=1, toasts=["Told the webhook: p_7 is blocked"]))
     add("auto-toast-off", config(extra=auto(toast=False)), herdr(PANE_HERDR), long_turn,
         event("done", sends=1, toasts=[]), {"do": "edit_state", "pane": "p_1", "key": "last_auto_at", "ago": 600000},
         event("blocked", sends=1, toasts=[]))
@@ -1883,12 +1894,12 @@ def scenarios():
                          ("either-list", scope(workspaces=["web-work"], agents=["claude-1"])),
                          ("empty-lists", scope(workspaces=[], agents=[]))):
         add(f"scope-event-allowed-{label}", config(extra=table), herdr(ws_herdr), state({"auto": True}),
-            event("blocked", pane="wD:p1", sends=1, toasts=["Told the desk: claude-1 is blocked"]))
+            event("blocked", pane="wD:p1", sends=1, toasts=["Told the webhook: claude-1 is blocked"]))
     for label, table in (("other-workspace", scope(workspaces=["web-work", "wE"])),
                          ("other-agent", scope(agents=["reviewer", "wE:p2"]))):
         add(f"scope-event-outside-{label}", config(extra=table), herdr(ws_herdr), state({"auto": True}),
             event("blocked", pane="wD:p1", sends=0, toasts=[], has=f"wD:p1 blocked: skipped ({outside})"),
-            event("blocked", pane="wE:p2", sends=1, toasts=["Told the desk: reviewer is blocked"]))
+            event("blocked", pane="wE:p2", sends=1, toasts=["Told the webhook: reviewer is blocked"]))
     add("scope-event-outside-done", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
         state({"auto": True, "panes": {"wD:p1": {"working_since": {"ago": 180000}}}}),
         event("done", pane="wD:p1", sends=0, toasts=[], has=f"wD:p1 done: skipped ({outside})"))
@@ -1913,13 +1924,13 @@ def scenarios():
         cmd(["notify", "--agent", "claude-1", "flag only, no herdr agent"]))  # unspecified by the contract: recorded, not checked
     add("scope-test-ignores", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
         cmd(["test"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sends=1))
-    add("scope-ask-desk-ignores", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
-        action("ask-desk", {"focused_pane_id": "wD:p1", "focused_pane_status": "blocked"}, sends=1,
-               toasts=["Sent this pane to the desk (HTTP 200)"]))
+    add("scope-send-pane-ignores", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
+        action("send-pane", {"focused_pane_id": "wD:p1", "focused_pane_status": "blocked"}, sends=1,
+               toasts=["Sent this pane to the webhook (HTTP 200)"]))
     add("scope-mcp-allowed", config(extra=scope(workspaces=["api-work"])), herdr(ws_herdr),
-        mcp([("notify_desk", {"message": "MCP in scope"})], env={"HERDR_PANE_ID": "wD:p1"}, sends=1))
+        mcp([("notify_webhook", {"message": "MCP in scope"})], env={"HERDR_PANE_ID": "wD:p1"}, sends=1))
     add("scope-mcp-outside", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
-        mcp([("notify_desk", {"message": "MCP out of scope"}), ("list_desks", {})], env={"HERDR_PANE_ID": "wD:p1"}, sends=0, has=outside))
+        mcp([("notify_webhook", {"message": "MCP out of scope"}), ("list_webhooks", {})], env={"HERDR_PANE_ID": "wD:p1"}, sends=0, has=outside))
     add("scope-unknown-key", config(extra='[scope]\nworkspaces = ["api-work"]\nteams = ["x"]\n'),
         cmd(["list"], expect=1, has="scope.teams: unknown setting"), cmd(["notify", "hi"], expect=1, sends=0))
     add("scope-bad-types", config(extra='[scope]\nworkspaces = "api-work"\nagents = [1]\n'),
@@ -1928,29 +1939,29 @@ def scenarios():
     # ---- scope actions
     add("action-only-workspace", config(), herdr(ws_herdr), state({"auto": True}),
         action("only-workspace", {"focused_pane_id": "wD:p1"}, sends=0,
-               toasts=['Only workspace "api-work" can notify the desk'], scope_is=(["api-work"], [])),
+               toasts=['Only workspace "api-work" can notify the webhook'], scope_is=(["api-work"], [])),
         cmd(["list"], expect=0),
         event("blocked", pane="wE:p2", sends=0, has=f"wE:p2 blocked: skipped ({outside})"),
         event("blocked", pane="wD:p1", sends=1))
     add("action-only-workspace-env-pane", config(), herdr(ws_herdr),
-        action("only-workspace", env={"HERDR_PANE_ID": "wE:p2"}, toasts=['Only workspace "web-work" can notify the desk'],
+        action("only-workspace", env={"HERDR_PANE_ID": "wE:p2"}, toasts=['Only workspace "web-work" can notify the webhook'],
                scope_is=(["web-work"], [])))
     add("action-only-workspace-no-pane", config(), herdr(ws_herdr),  # unspecified toast: recorded, config unchanged
         action("only-workspace", {}, expect=None, sends=0, scope_is=([], [])))
     add("action-only-agent", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr), state({"auto": True}),
         action("only-agent", {"focused_pane_id": "wD:p1"}, sends=0,
-               toasts=['Only agent "claude-1" can notify the desk'], scope_is=([], ["claude-1"])),
+               toasts=['Only agent "claude-1" can notify the webhook'], scope_is=([], ["claude-1"])),
         cmd(["list"], expect=0),
         event("blocked", pane="wE:p2", sends=0, has=f"wE:p2 blocked: skipped ({outside})"),
         event("blocked", pane="wD:p1", sends=1))
     add("action-only-agent-env-pane", config(), herdr(ws_herdr),
-        action("only-agent", env={"HERDR_PANE_ID": "wE:p2"}, toasts=['Only agent "reviewer" can notify the desk'],
+        action("only-agent", env={"HERDR_PANE_ID": "wE:p2"}, toasts=['Only agent "reviewer" can notify the webhook'],
                scope_is=([], ["reviewer"])))
     add("action-only-agent-no-agent", config(extra=scope(workspaces=["web-work"])), herdr(ws_herdr),
         action("only-agent", {"focused_pane_id": "wD:p3"}, toasts=["No agent in this pane"], scope_is=(["web-work"], [])),
         action("only-agent", {}, toasts=["No agent in this pane"], scope_is=(["web-work"], [])))
     add("action-all-agents", config(extra=scope(workspaces=["web-work"], agents=["reviewer"])), herdr(ws_herdr), state({"auto": True}),
-        action("all-agents", sends=0, toasts=["All agents can notify the desk"], scope_is=([], [])),
+        action("all-agents", sends=0, toasts=["All agents can notify the webhook"], scope_is=([], [])),
         cmd(["list"], expect=0),
         event("blocked", pane="wD:p1", sends=1))
     add("action-scope-no-config", herdr(ws_herdr),
@@ -1965,7 +1976,7 @@ def scenarios():
 
     # ---- away mode: state.json `away` (absent while off). Away lifts only the "you are looking at this pane" and
     # "auto-notify is off" skips; min turn, cooldown, "already notified" and [scope] still apply.
-    away_on = "Away: the desk hears from every agent, even the pane on screen"
+    away_on = "Away: the webhook hears from every agent, even the pane on screen"
     away_off = "Back: nudge stays quiet for the pane you're looking at"
     looking = "skipped (you are looking at this pane)"
     focused_herdr = herdr(fixture(agent_get("p_1", "claude-1", focused=True), pane_read("p_1", PANE_TEXT), NOTIFICATION_OK))
@@ -1983,30 +1994,30 @@ def scenarios():
     add("away-event-focused-blocked", config(), focused_herdr, state({"auto": True}),
         event("blocked", sends=0, toasts=[], has=f"p_1 blocked: {looking}"),
         action("away-on", toasts=[away_on]),
-        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"], has="p_1 blocked: notified desk (HTTP 200)"))
+        event("blocked", sends=1, toasts=["Told the webhook: claude-1 is blocked"], has="p_1 blocked: notified webhook (HTTP 200)"))
     add("away-event-focused-done", config(), focused_herdr, state({"auto": True, "panes": {"p_1": {"working_since": {"ago": 180000}}}}),
         event("done", sends=0, toasts=[], has=f"p_1 done: {looking}"),
         action("away-on", toasts=[away_on]),
         {"do": "edit_state", "pane": "p_1", "key": "working_since", "ago": 180000},
-        event("done", sends=1, toasts=["Told the desk: claude-1 finished a turn"], has="p_1 done: notified desk (HTTP 200)"))
+        event("done", sends=1, toasts=["Told the webhook: claude-1 finished a turn"], has="p_1 done: notified webhook (HTTP 200)"))
     add("away-event-auto-off", config(), herdr(PANE_HERDR), state({"away": True}),
-        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"], state_keys={"away": True}),
+        event("blocked", sends=1, toasts=["Told the webhook: claude-1 is blocked"], state_keys={"away": True}),
         action("away-off", toasts=[away_off]),
         {"do": "edit_state", "pane": "p_1", "key": "last_auto_at", "ago": 600000},
         event("blocked", sends=0, toasts=[], has="p_1 blocked: skipped (auto-notify is off)"))
     add("away-event-focused-auto-off", config(), focused_herdr, state({"away": True}),
-        event("blocked", sends=1, toasts=["Told the desk: claude-1 is blocked"]))
+        event("blocked", sends=1, toasts=["Told the webhook: claude-1 is blocked"]))
     add("away-event-min-turn", config(), focused_herdr, state({"away": True, "panes": {"p_1": {"working_since": {"ago": 30000}}}}),
         event("done", sends=0, toasts=[], has="p_1 done: skipped (turn shorter than 120s)"))
     add("away-event-cooldown", config(), focused_herdr, state({"auto": True, "away": True, "panes": {"p_1": {"last_auto_at": {"ago": 60000}}}}),
         event("blocked", sends=0, toasts=[], has="p_1 blocked: skipped (cooldown)"))
     add("away-event-self-notified", config(), focused_herdr,
         state({"away": True, "panes": {"p_1": {"working_since": {"ago": 180000}, "self_notified_at": {"ago": 10000}}}}),
-        event("done", sends=0, toasts=[], has="p_1 done: skipped (agent already notified the desk this turn)"))
+        event("done", sends=0, toasts=[], has="p_1 done: skipped (agent already notified the webhook this turn)"))
     away_ws_herdr = herdr(fixture(real_agent_get("wD:p1", "claude-1", focused=True), pane_get("wD:p1", focused=True), *ws_herdr["rules"]))
     add("away-event-scope", config(extra=scope(workspaces=["web-work"])), away_ws_herdr, state({"away": True}),
         event("blocked", pane="wD:p1", sends=0, toasts=[], has=f"wD:p1 blocked: skipped ({outside})"),
-        event("blocked", pane="wE:p2", sends=1, toasts=["Told the desk: reviewer is blocked"]))
+        event("blocked", pane="wE:p2", sends=1, toasts=["Told the webhook: reviewer is blocked"]))
     away_doctor = ["✓ Away mode on  notifying even for the pane you're looking at",
                    "    → when you're back: herdr plugin action invoke weskor.nudge.away-off"]
     add("doctor-away", config(), herdr(PRESETS["running"]), state({"auto": True}),
@@ -2023,12 +2034,12 @@ def scenarios():
 
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per
-    # desk. settings_herdr() lists workspaces api-work, web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4
-    # (unnamed): with "Only these" rows 8-10, 11-13, desks 14-20, else desks 8-14 (desk, research, badauth, nohook,
+    # webhook. settings_herdr() lists workspaces api-work, web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4
+    # (unnamed): with "Only these" rows 8-10, 11-13, webhooks 14-20, else webhooks 8-14 (main, research, badauth, nohook,
     # broken, offline, signed). Value rows show ◂ ▸ only under the cursor; names are padded so details line up.
-    away_row = "Away from my desk"
+    away_row = "I'm away"
     set_herdr = herdr(settings_herdr())
-    hidden = ["/hook", "/signed", "/nope", "/fail", "Bearer"]  # desk rows never show URL paths or secrets
+    hidden = ["/hook", "/signed", "/nope", "/fail", "Bearer"]  # webhook rows never show URL paths or secrets
     saved, unchanged = "Saved nudge settings to ", "No changes saved."
     add("settings-no-terminal", config(), set_herdr,
         cmd(["settings"], expect=2, sends=0, config_unchanged=True,
@@ -2037,14 +2048,14 @@ def scenarios():
         cmd(["settings", "extra"], expect=2))
     add("settings-no-terminal-no-config", cmd(["settings"], expect=2, has="settings needs a terminal"))
     add("settings-no-config", set_herdr,
-        pty(["settings"], [["expect", r'nudge: no config at [^\n]*Run "nudge setup" to add a desk\.']], expect=1))
+        pty(["settings"], [["expect", r'nudge: no config at [^\n]*Run "nudge setup" to add a webhook\.']], expect=1))
     add("settings-render", config(), set_herdr, state({"auto": True}),
         pty(["settings"], [
             on_screen("nudge settings", "Mode", "[x] Auto-notify", "[ ] " + away_row, "Automatic notifications",
                       "[x] Toast when one is sent", "Shortest turn sent      2 minutes", "Cooldown per pane       5 minutes",
                       "Terminal lines sent     40", "Who can notify", "(•) Every agent", "( ) Only these…",
-                      "Default desk", "(•) desk      127.0.0.1", "( ) research  127.0.0.1", "( ) signed    127.0.0.1  signed",
-                      "Tell the desk when an agent is blocked", SETTINGS_HELP, cursor="[x] Auto-notify"),
+                      "Default webhook", "(•) main      127.0.0.1", "( ) research  127.0.0.1", "( ) signed    127.0.0.1  signed",
+                      "Tell the webhook when an agent is blocked", SETTINGS_HELP, cursor="[x] Auto-notify"),
             keys("jjjjjjj "), on_screen("● unsaved", "( ) Every agent", "Workspaces", "[ ] api-work  1 agent",
                                         "[ ] web-work  1 agent", "[ ] wF        1 agent", "Agents", "[ ] claude-1  api-work · api",
                                         "[ ] reviewer  web-work · web", "[ ] wF:p4     wF · misc", cursor="(•) Only these:"),
@@ -2056,12 +2067,12 @@ def scenarios():
         pty(["settings"], [
             on_screen("( ) Only these…", cursor="[ ] Auto-notify"),
             keys("k" + UP),  # already at the top
-            keys("jjjjjjjj"), on_screen(cursor="(•) desk      127.0.0.1"),  # headers and blanks are not stops
-            keys("j" * 10), on_screen(cursor="( ) signed    127.0.0.1  signed"),  # clamps at the last desk
+            keys("jjjjjjjj"), on_screen(cursor="(•) main      127.0.0.1"),  # headers and blanks are not stops
+            keys("j" * 10), on_screen(cursor="( ) signed    127.0.0.1  signed"),  # clamps at the last webhook
             keys(UP), on_screen(cursor="( ) offline   127.0.0.1"),
             keys("k" * 6 + " "), on_screen("Workspaces", "none open in herdr", "Agents", "none open in herdr",
                                           cursor="(•) Only these:"),
-            keys("j"), on_screen(cursor="(•) desk      127.0.0.1"),  # "none open" is not a stop either
+            keys("j"), on_screen(cursor="(•) main      127.0.0.1"),  # "none open" is not a stop either
             keys("qq")], expect=0, has=unchanged, config_unchanged=True))
     add("settings-save", config(), set_herdr, state({"auto": True}),
         pty(["settings"], [
@@ -2077,15 +2088,15 @@ def scenarios():
             keys("jj "), on_screen("( ) Every agent", "Workspaces", cursor="(•) Only these:"),  # shows the lists
             keys("j "), on_screen(cursor="[x] api-work"),
             keys("jjjj\\r"), on_screen(cursor="[x] reviewer"),
-            keys("jjj\\r"), on_screen("( ) desk      127.0.0.1", cursor="(•) research  127.0.0.1"),
+            keys("jjj\\r"), on_screen("( ) main      127.0.0.1", cursor="(•) research  127.0.0.1"),
             keys("s")], expect=0, has=saved, sends=0, toasts=[], state_auto=False, state_keys={"away": None}, config_mode="600",
-            config_keys={"default_desk": "research", "auto": {"min_turn_seconds": 180, "cooldown_seconds": 600, "tail_lines": 20},
+            config_keys={"default_webhook": "research", "auto": {"min_turn_seconds": 180, "cooldown_seconds": 600, "tail_lines": 20},
                          "scope": {"workspaces": ["api-work"], "agents": ["reviewer"]}}),
         cmd(["list"], expect=0),
         pty(["settings"], [
             on_screen("[ ] Auto-notify", "Shortest turn sent      3 minutes", "Cooldown per pane       10 minutes",
                       "Terminal lines sent     20", "( ) Every agent", "(•) Only these:",
-                      "[x] api-work", "[ ] web-work", "[ ] claude-1", "[x] reviewer", "( ) desk", "(•) research"),
+                      "[x] api-work", "[ ] web-work", "[ ] claude-1", "[x] reviewer", "( ) main", "(•) research"),
             keys("q")], expect=0, has=unchanged, config_unchanged=True))
     add("settings-presets-snap-and-wrap", config(extra=auto(min_turn_seconds=90, cooldown_seconds=45, tail_lines=200)), set_herdr,
         pty(["settings"], [
@@ -2095,7 +2106,7 @@ def scenarios():
             keys("jh"), on_screen(cursor="◂ 0 seconds ▸"),  # 45 s snaps down to 0
             keys("j "), on_screen(cursor="Terminal lines sent   ◂ 10 ▸"),  # Space cycles up and wraps 200 -> 10
             keys("s")], expect=0, has=saved, state_auto=False,
-            config_keys={"auto": {"toast": False, "cooldown_seconds": 0, "tail_lines": 10}, "scope": None, "default_desk": "desk"}))
+            config_keys={"auto": {"toast": False, "cooldown_seconds": 0, "tail_lines": 10}, "scope": None, "default_webhook": "main"}))
     add("settings-only-these-empty-then-discard", config(), set_herdr, state({"auto": True}),
         pty(["settings"], [
             on_screen(cursor="[x] Auto-notify"),
@@ -2112,10 +2123,10 @@ def scenarios():
             keys("t"), drawn('Testing "signed"…'), on_screen('✓ "signed" received a test ping (HTTP 200)'),
             keys("kkkk"), on_screen(cursor="( ) badauth"),
             # The status wraps inside the box (up to 4 rows), so the fix hint stays whole on the next row.
-            keys("t"), on_screen('✗ desk "badauth" webhook returned HTTP 401', "copy the Authorization header again with nudge setup"),
+            keys("t"), on_screen('✗ webhook "badauth" returned HTTP 401', "copy the Authorization header again with nudge setup"),
             keys("j"), on_screen(cursor="( ) nohook"),
-            keys("t"), on_screen('✗ desk "nohook" webhook returned HTTP 404: no such hook;', "Webhook URL again with nudge setup"),
-            keys("k" * 17 + "t"), on_screen("Move to a desk to test it.", cursor="[ ] Auto-notify"),
+            keys("t"), on_screen('✗ webhook "nohook" returned HTTP 404: no such hook;', "Webhook URL again with nudge setup"),
+            keys("k" * 17 + "t"), on_screen("Move to a webhook to test it.", cursor="[ ] Auto-notify"),
             keys("q")], expect=0, sends=3, has=unchanged, config_unchanged=True))
     add("settings-pane", config(), set_herdr,
         pty(["settings", "--pane"], [
@@ -2177,8 +2188,8 @@ def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
     for op in ops:
         do = op["do"]
         if do == "config":
-            sb.write_config(desks_config(port, offline_port, op.get("default", "desk"), "\n" + op["extra"] if op.get("extra") else ""))
-            setup_log.append(f"config: standard desks, default {op.get('default', 'desk')}" + (" + " + json.dumps(op["extra"]) if op.get("extra") else ""))
+            sb.write_config(webhooks_config(port, offline_port, op.get("default", "main"), "\n" + op["extra"] if op.get("extra") else ""))
+            setup_log.append(f"config: standard webhooks, default {op.get('default', 'main')}" + (" + " + json.dumps(op["extra"]) if op.get("extra") else ""))
         elif do == "raw_config":
             sb.write_config(subst(op["text"]))
             setup_log.append("config: raw text " + json.dumps(op["text"][:40]))

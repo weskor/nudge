@@ -1,4 +1,4 @@
-//! `nudge`: tell your desk (a webhook automation) when a herdr agent is done, blocked or has a question.
+//! `nudge`: tell your webhook (an AI routine or automation) when a herdr agent is done, blocked or has a question.
 mod clipboard;
 mod config;
 mod context;
@@ -18,42 +18,42 @@ mod watch;
 use std::io::Read as _;
 use std::process::ExitCode;
 
-use crate::config::{default_config_path, default_desk_name, load_config};
+use crate::config::{default_config_path, default_webhook_name, load_config};
 use crate::context::{Env, System};
 use crate::error::{Error, Result};
-use crate::notify::{NotifyStatus, Origin, Sent, current_dir, notify_desk, ping_desk};
+use crate::notify::{NotifyStatus, Origin, Sent, current_dir, notify_webhook, ping_webhook};
 use crate::setup::{SetupOptions, setup};
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE: &str = "Usage:
-  nudge setup  [--desk NAME] [--url URL] [--authorization VALUE] [--description TEXT]
+  nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE] [--description TEXT]
                [--signing-secret VALUE] [--default] [--no-test]
-  nudge notify [--desk NAME] [--status done|blocked|question] [--agent NAME] <message...|->
-  nudge test   [--desk NAME] [--agent NAME]
+  nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
+  nudge test   [--webhook NAME] [--agent NAME]
   nudge doctor [--ping]
   nudge settings
   nudge list   [--json]
   nudge mcp
 
-  setup    Connect a desk: copy its Webhook URL and Authorization header from the
-           webhook settings when asked (clipboard, or paste/type). The header is never
+  setup    Connect a webhook: copy its Webhook URL and Authorization header from
+           its settings when asked (clipboard, or paste/type). The header is never
            shown. nudge test-pings the webhook before saving and asks again if it's
            rejected, then offers the herdr plugin's auto-notify and the nudge command.
            Without a terminal: values from flags or stdin (URL, then Authorization).
            --signing-secret makes nudge sign every request (x-nudge-signature).
   notify   Send {id, sent_at, from_agent, cwd, repo, branch, status, message,
-           reply_hint} to the desk's webhook. Message \"-\" reads stdin. --status
+           reply_hint} to the webhook. Message \"-\" reads stdin. --status
            defaults to done. Agents outside the config's [scope] are refused.
   test     Send a status \"test\" ping.
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
-  settings Change auto-notify, who can notify and the default desk in a
+  settings Change auto-notify, who can notify and the default webhook in a
            full-screen editor (herdr action weskor.nudge.settings).
-  list     Show configured desks (* = default).
-  mcp      Run the stdio MCP server (tools notify_desk, list_desks).
+  list     Show configured webhooks (* = default).
+  mcp      Run the stdio MCP server (tools notify_webhook, list_webhooks).
 
-  --agent  herdr agent the desk should reply to. Default: $NUDGE_AGENT, else the
+  --agent  herdr agent the webhook should reply to. Default: $NUDGE_AGENT, else the
            agent in this herdr pane, else the only agent working in this directory.
 
 Exit codes: 0 ok, 1 error, 2 usage.
@@ -67,7 +67,7 @@ const EXIT_USAGE: u8 = 2;
 #[expect(clippy::struct_excessive_bools, reason = "independent command-line flags")]
 struct Args {
     positionals: Vec<String>,
-    desk: Option<String>,
+    webhook: Option<String>,
     status: Option<String>,
     agent: Option<String>,
     url: Option<String>,
@@ -103,7 +103,7 @@ fn parse_args(argv: Vec<String>) -> Result<Args> {
     let mut parser = lexopt::Parser::from_args(argv);
     while let Some(token) = parser.next()? {
         match token {
-            Long("desk") => parsed.desk = Some(utf8(parser.value()?)?),
+            Long("webhook") => parsed.webhook = Some(utf8(parser.value()?)?),
             Long("status") => parsed.status = Some(utf8(parser.value()?)?),
             Long("agent") => parsed.agent = Some(utf8(parser.value()?)?),
             Long("url") => parsed.url = Some(utf8(parser.value()?)?),
@@ -138,32 +138,32 @@ fn report_sent(verb: &str, sent: &Sent) {
     let status = status.as_ref().and_then(serde_json::Value::as_str).unwrap_or_default();
     let agent = notification.from_agent.as_deref().unwrap_or("<none>");
     println!(
-        "{verb} desk \"{}\" (status {status}, HTTP {}) as agent {agent}.",
-        sent.desk, sent.http_status
+        "{verb} webhook \"{}\" (status {status}, HTTP {}) as agent {agent}.",
+        sent.webhook, sent.http_status
     );
     if notification.from_agent.is_none() {
         eprintln!(
-            "nudge: note: not sent from a herdr agent pane, so the desk can't reply directly. Pass --agent NAME or set NUDGE_AGENT."
+            "nudge: note: not sent from a herdr agent pane, so the webhook can't reply directly. Pass --agent NAME or set NUDGE_AGENT."
         );
     }
 }
 
 fn list(json: bool, env: &Env) -> Result<()> {
     let config = load_config(&default_config_path(env))?;
-    let default_name = default_desk_name(&config);
-    let desks: Vec<(bool, &str, &str)> = config
-        .desk
+    let default_name = default_webhook_name(&config);
+    let webhooks: Vec<(bool, &str, &str)> = config
+        .webhook
         .iter()
-        .map(|desk| {
+        .map(|webhook| {
             (
-                Some(desk.name.as_str()) == default_name,
-                desk.name.as_str(),
-                desk.description.as_deref().unwrap_or_default(),
+                Some(webhook.name.as_str()) == default_name,
+                webhook.name.as_str(),
+                webhook.description.as_deref().unwrap_or_default(),
             )
         })
         .collect();
     if json {
-        let rows: Vec<serde_json::Value> = desks
+        let rows: Vec<serde_json::Value> = webhooks
             .iter()
             .map(|(default, name, description)| {
                 serde_json::json!({ "name": name, "default": default, "description": description })
@@ -171,12 +171,12 @@ fn list(json: bool, env: &Env) -> Result<()> {
             .collect();
         println!("{}", serde_json::Value::from(rows));
     } else {
-        let width = desks
+        let width = webhooks
             .iter()
             .map(|(_, name, _)| name.chars().count())
             .max()
             .unwrap_or_default();
-        for (default, name, description) in desks {
+        for (default, name, description) in webhooks {
             let marker = if default { "*" } else { " " };
             println!("{}", format!("{marker} {name:<width$}  {description}").trim_end());
         }
@@ -201,14 +201,14 @@ fn run(words: Vec<String>, env: &Env) -> Result<u8> {
         return Ok(0);
     }
     if args.help || command.is_none() || command == Some("help") {
-        println!("nudge {VERSION}: tell your desk when a herdr agent is done, blocked or has a question\n\n{USAGE}");
+        println!("nudge {VERSION}: tell your webhook when a herdr agent is done, blocked or has a question\n\n{USAGE}");
         return Ok(if command.is_none() && !args.help { EXIT_USAGE } else { 0 });
     }
     match command.unwrap_or_default() {
         "setup" => {
             no_args(rest, "setup")?;
             let options = SetupOptions {
-                desk: args.desk,
+                webhook: args.webhook,
                 url: args.url,
                 authorization: args.authorization,
                 description: args.description,
@@ -222,7 +222,7 @@ fn run(words: Vec<String>, env: &Env) -> Result<u8> {
         "notify" => {
             if rest.is_empty() {
                 return Err(Error::Usage(
-                    "usage: nudge notify [--desk NAME] [--status STATUS] <message...|->".into(),
+                    "usage: nudge notify [--webhook NAME] [--status STATUS] <message...|->".into(),
                 ));
             }
             let status_name = args.status.as_deref().unwrap_or("done");
@@ -246,7 +246,7 @@ fn run(words: Vec<String>, env: &Env) -> Result<u8> {
             };
             report_sent(
                 "Notified",
-                &notify_desk(&config, args.desk.as_deref(), status, &message, args.agent, origin)?,
+                &notify_webhook(&config, args.webhook.as_deref(), status, &message, args.agent, origin)?,
             );
             Ok(0)
         }
@@ -259,7 +259,10 @@ fn run(words: Vec<String>, env: &Env) -> Result<u8> {
                 cwd: &cwd,
                 run: &System,
             };
-            report_sent("Pinged", &ping_desk(&config, args.desk.as_deref(), args.agent, origin)?);
+            report_sent(
+                "Pinged",
+                &ping_webhook(&config, args.webhook.as_deref(), args.agent, origin)?,
+            );
             Ok(0)
         }
         "doctor" => {

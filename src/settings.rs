@@ -1,4 +1,4 @@
-//! `nudge settings`: a terminal UI for auto-notify, who can notify, and the default desk. herdr opens it as an
+//! `nudge settings`: a terminal UI for auto-notify, who can notify, and the default webhook. herdr opens it as an
 //! overlay (`weskor.nudge.settings`). It edits the same config and state as the actions and `nudge setup`.
 use std::ffi::OsStr;
 use std::io::IsTerminal as _;
@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use crate::config::{Auto, Config, Scope, default_config_path, load_config, seconds_in_words, write_config};
 use crate::context::{Env, ListedAgent, ListedWorkspace, Run as _, System, herdr_agents, herdr_workspaces};
 use crate::error::{Blame, Error, Result};
-use crate::notify::{Origin, current_dir, ping_desk};
+use crate::notify::{Origin, current_dir, ping_webhook};
 use crate::state::{State, current_state, update_state};
 use crate::ui::{self, DIM, GOOD, HEADER, VALUE, View, WARN, aligned, check, radio, toggle};
 
@@ -67,7 +67,7 @@ enum Row {
     OnlyThese,
     Workspace(usize),
     Agent(usize),
-    Desk(usize),
+    Webhook(usize),
 }
 
 /// A titled list of choices in the "Who can notify" section, and the row each entry is on.
@@ -93,9 +93,9 @@ struct Open {
     detail: String,
 }
 
-/// A desk as shown: never its URL path or secrets.
+/// A webhook as shown: never its URL path or secrets.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct DeskRow {
+struct WebhookRow {
     name: String,
     host: String,
     signed: bool,
@@ -120,7 +120,7 @@ pub(crate) enum Outcome {
     Continue,
     Save,
     Quit,
-    /// Send a test ping to this desk.
+    /// Send a test ping to this webhook.
     Test(String),
 }
 
@@ -142,8 +142,8 @@ pub(crate) struct Settings {
     only: bool,
     workspaces: Vec<Choice>,
     agents: Vec<Choice>,
-    desks: Vec<DeskRow>,
-    default_desk: Option<String>,
+    webhooks: Vec<WebhookRow>,
+    default_webhook: Option<String>,
     cursor: usize,
     status: Option<String>,
     edits: Edits,
@@ -181,18 +181,18 @@ fn choices(open: Vec<Open>, saved: &[String]) -> Vec<Choice> {
 const fn describe(row: Row) -> &'static str {
     match row {
         Row::AutoOn => {
-            "Tell the desk when an agent is blocked, or done after a long turn, in a pane you aren't looking at."
+            "Tell the webhook when an agent is blocked, or done after a long turn, in a pane you aren't looking at."
         }
         Row::Away => "Count the pane on screen as unwatched too, and notify even with auto-notify off.",
         Row::Toast => "Show a herdr toast each time an automatic notification goes out.",
         Row::MinTurn => "Skip done turns shorter than this. Blocked agents always count.",
         Row::Cooldown => "At most one automatic notification per pane in this window; a brake on reply loops.",
         Row::TailLines => "How many of the pane's last lines go with the event, with credentials redacted.",
-        Row::Everyone => "Any agent in herdr can reach the desk.",
-        Row::OnlyThese => "Only agents in the ticked workspaces, and the ticked agents, can reach the desk.",
+        Row::Everyone => "Any agent in herdr can reach the webhook.",
+        Row::OnlyThese => "Only agents in the ticked workspaces, and the ticked agents, can reach the webhook.",
         Row::Workspace(_) => "Agents in this workspace can notify.",
         Row::Agent(_) => "This agent can notify, whichever workspace it is in.",
-        Row::Desk(_) => "Notifications go here unless they name another desk. t sends a test ping.",
+        Row::Webhook(_) => "Notifications go here unless they name another webhook. t sends a test ping.",
     }
 }
 
@@ -248,19 +248,19 @@ impl Settings {
             only: !config.scope.is_everyone(),
             workspaces: workspace_choices,
             agents: choices(open_agents, &config.scope.agents),
-            desks: config
-                .desk
+            webhooks: config
+                .webhook
                 .iter()
-                .map(|desk| DeskRow {
-                    name: desk.name.clone(),
-                    host: url::Url::parse(&desk.url)
+                .map(|webhook| WebhookRow {
+                    name: webhook.name.clone(),
+                    host: url::Url::parse(&webhook.url)
                         .ok()
                         .and_then(|url| url.host_str().map(str::to_owned))
                         .unwrap_or_default(),
-                    signed: desk.signing_secret.is_some(),
+                    signed: webhook.signing_secret.is_some(),
                 })
                 .collect(),
-            default_desk: crate::config::default_desk_name(config).map(str::to_owned),
+            default_webhook: crate::config::default_webhook_name(config).map(str::to_owned),
             cursor: 0,
             status: None,
             edits: Edits::None,
@@ -283,7 +283,7 @@ impl Settings {
             rows.extend((0..self.workspaces.len()).map(Row::Workspace));
             rows.extend((0..self.agents.len()).map(Row::Agent));
         }
-        rows.extend((0..self.desks.len()).map(Row::Desk));
+        rows.extend((0..self.webhooks.len()).map(Row::Webhook));
         rows
     }
 
@@ -309,7 +309,7 @@ impl Settings {
             | Row::OnlyThese
             | Row::Workspace(_)
             | Row::Agent(_)
-            | Row::Desk(_) => return,
+            | Row::Webhook(_) => return,
         };
         let next = step(*value, steps, up);
         if next != *value {
@@ -340,9 +340,11 @@ impl Settings {
                 };
                 choice.checked = !choice.checked;
             }
-            Row::Desk(index) => {
-                let Some(desk) = self.desks.get(index) else { return };
-                self.default_desk = Some(desk.name.clone());
+            Row::Webhook(index) => {
+                let Some(webhook) = self.webhooks.get(index) else {
+                    return;
+                };
+                self.default_webhook = Some(webhook.name.clone());
             }
         }
         self.changed();
@@ -359,12 +361,12 @@ impl Settings {
             (Key::Down, _) => self.cursor = (self.cursor + 1).min(last),
             (Key::Left | Key::Right, Some(row)) => self.adjust(row, key == Key::Right),
             (Key::Toggle, Some(row)) => self.toggle(row),
-            (Key::Test, Some(Row::Desk(index))) => {
-                if let Some(desk) = self.desks.get(index) {
-                    return Outcome::Test(desk.name.clone());
+            (Key::Test, Some(Row::Webhook(index))) => {
+                if let Some(webhook) = self.webhooks.get(index) {
+                    return Outcome::Test(webhook.name.clone());
                 }
             }
-            (Key::Test, _) => self.status = Some("Move to a desk to test it.".into()),
+            (Key::Test, _) => self.status = Some("Move to a webhook to test it.".into()),
             (Key::Save, _) => {
                 if self.only && !self.workspaces.iter().chain(&self.agents).any(|choice| choice.checked) {
                     self.status = Some("Tick at least one workspace or agent, or choose Every agent.".into());
@@ -384,7 +386,7 @@ impl Settings {
         Outcome::Continue
     }
 
-    /// Write the edited settings into `config` (other settings and desks stay as they are).
+    /// Write the edited settings into `config` (other settings and webhooks stay as they are).
     pub(crate) fn apply(&self, config: &mut Config) {
         config.auto = self.auto;
         let ticked = |choices: &[Choice]| -> Vec<String> {
@@ -402,10 +404,10 @@ impl Settings {
         } else {
             Scope::default()
         };
-        if let Some(name) = &self.default_desk
-            && config.desk.iter().any(|desk| &desk.name == name)
+        if let Some(name) = &self.default_webhook
+            && config.webhook.iter().any(|webhook| &webhook.name == name)
         {
-            config.default_desk = Some(name.clone());
+            config.default_webhook = Some(name.clone());
         }
     }
 
@@ -426,7 +428,7 @@ impl Settings {
         let mut items: Vec<(Option<Row>, Line<'static>)> = vec![
             (None, Line::styled("Mode", HEADER)),
             (Some(Row::AutoOn), toggle(check(self.auto_on), " Auto-notify")),
-            (Some(Row::Away), toggle(away, " Away from my desk")),
+            (Some(Row::Away), toggle(away, " I'm away")),
             (None, Line::default()),
             (None, Line::styled("Automatic notifications", HEADER)),
             (
@@ -491,21 +493,21 @@ impl Settings {
                 items.extend(lines.map(|(index, line)| (Some(row(index)), line)));
             }
         }
-        items.extend([(None, Line::default()), (None, Line::styled("Default desk", HEADER))]);
+        items.extend([(None, Line::default()), (None, Line::styled("Default webhook", HEADER))]);
         let rows = self
-            .desks
+            .webhooks
             .iter()
-            .map(|desk| {
-                let is_default = self.default_desk.as_deref() == Some(desk.name.as_str());
-                let mut rest = vec![Span::styled(desk.host.clone(), DIM)];
-                if desk.signed {
+            .map(|webhook| {
+                let is_default = self.default_webhook.as_deref() == Some(webhook.name.as_str());
+                let mut rest = vec![Span::styled(webhook.host.clone(), DIM)];
+                if webhook.signed {
                     rest.push(Span::styled("  signed", GOOD));
                 }
-                (radio(is_default), Span::raw(desk.name.clone()), rest)
+                (radio(is_default), Span::raw(webhook.name.clone()), rest)
             })
             .collect();
         let lines = aligned("  ", rows).into_iter().enumerate();
-        items.extend(lines.map(|(index, line)| (Some(Row::Desk(index)), line)));
+        items.extend(lines.map(|(index, line)| (Some(Row::Webhook(index)), line)));
         let selected = items
             .iter()
             .position(|(row, _)| row.is_some() && *row == cursor_row)
@@ -549,17 +551,17 @@ fn draw(terminal: &mut DefaultTerminal, settings: &Settings) -> Result<()> {
     )
 }
 
-/// Test-ping `desk` and describe the result for the status line.
-fn test_desk(config: &Config, desk: &str, env: &Env) -> Result<String> {
+/// Test-ping `webhook` and describe the result for the status line.
+fn test_webhook(config: &Config, webhook: &str, env: &Env) -> Result<String> {
     let cwd = current_dir()?;
     let origin = Origin {
         env,
         cwd: &cwd,
         run: &System,
     };
-    Ok(match ping_desk(config, Some(desk), None, origin) {
-        Ok(sent) => format!("✓ \"{desk}\" received a test ping (HTTP {})", sent.http_status),
-        Err(Error::Desk(error)) => {
+    Ok(match ping_webhook(config, Some(webhook), None, origin) {
+        Ok(sent) => format!("✓ \"{webhook}\" received a test ping (HTTP {})", sent.http_status),
+        Err(Error::Webhook(error)) => {
             let hint = match error.blames() {
                 Some(Blame::Authorization) => "; copy the Authorization header again with nudge setup",
                 Some(Blame::Url) => "; copy the Webhook URL again with nudge setup",
@@ -571,7 +573,7 @@ fn test_desk(config: &Config, desk: &str, env: &Env) -> Result<String> {
     })
 }
 
-/// Save: re-read the config so desks edited meanwhile are kept, apply the edits, write it and the toggle.
+/// Save: re-read the config so webhooks edited meanwhile are kept, apply the edits, write it and the toggle.
 fn save(settings: &Settings, env: &Env) -> Result<()> {
     let path = default_config_path(env);
     let mut config = load_config(&path)?;
@@ -599,10 +601,10 @@ fn run_ui(terminal: &mut DefaultTerminal, settings: &mut Settings, config: &Conf
                 Ok(()) => return Ok(true),
                 Err(error) => settings.status = Some(format!("✗ not saved: {}", error.to_string().replace('\n', " "))),
             },
-            Outcome::Test(desk) => {
-                settings.status = Some(format!("Testing \"{desk}\"…"));
+            Outcome::Test(webhook) => {
+                settings.status = Some(format!("Testing \"{webhook}\"…"));
                 draw(terminal, settings)?;
-                settings.status = Some(test_desk(config, &desk, env)?);
+                settings.status = Some(test_webhook(config, &webhook, env)?);
             }
         }
     }
@@ -643,12 +645,12 @@ pub(crate) fn settings(pane: bool, env: &Env) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::{Key, Outcome, Row, Settings, cycle, step};
-    use crate::config::{Auto, Config, Desk, Scope};
+    use crate::config::{Auto, Config, Scope, Webhook};
     use crate::context::{ListedAgent, ListedWorkspace};
     use crate::state::State;
 
-    fn desk(name: &str) -> Desk {
-        Desk {
+    fn webhook(name: &str) -> Webhook {
+        Webhook {
             name: name.into(),
             description: None,
             url: format!("https://{name}.example/hooks/secret-path"),
@@ -666,15 +668,15 @@ mod tests {
 
     fn settings(scope: Scope) -> Settings {
         let config = Config {
-            default_desk: Some("bridge".into()),
-            desk: vec![desk("bridge"), desk("research")],
+            default_webhook: Some("bridge".into()),
+            webhook: vec![webhook("bridge"), webhook("research")],
             scope,
             ..Config::default()
         };
         Settings::new(
             &config,
             &State::default(),
-            &[workspace("w1", "Base"), workspace("wD", "web-app")],
+            &[workspace("w1", "Base"), workspace("wD", "team-web")],
             &[
                 ListedAgent {
                     name: "builder".into(),
@@ -708,8 +710,8 @@ mod tests {
 
     fn saved(settings: &Settings) -> Config {
         let mut config = Config {
-            desk: vec![desk("bridge"), desk("research")],
-            default_desk: Some("bridge".into()),
+            webhook: vec![webhook("bridge"), webhook("research")],
+            default_webhook: Some("bridge".into()),
             ..Config::default()
         };
         settings.apply(&mut config);
@@ -733,7 +735,7 @@ mod tests {
         tap(&mut ui, Row::Toast, Key::Toggle);
         tap(&mut ui, Row::MinTurn, Key::Left);
         tap(&mut ui, Row::TailLines, Key::Right);
-        tap(&mut ui, Row::Desk(1), Key::Toggle);
+        tap(&mut ui, Row::Webhook(1), Key::Toggle);
         let config = saved(&ui);
         let expected = Auto {
             min_turn_seconds: 60,
@@ -748,7 +750,7 @@ mod tests {
         tap(&mut ui, Row::Away, Key::Toggle);
         ui.apply_state(&mut state);
         assert!(state.away);
-        assert_eq!(config.default_desk.as_deref(), Some("research"));
+        assert_eq!(config.default_webhook.as_deref(), Some("research"));
         assert!(config.scope.is_everyone());
     }
 
@@ -759,7 +761,7 @@ mod tests {
         tap(&mut ui, Row::Workspace(1), Key::Toggle);
         tap(&mut ui, Row::Agent(0), Key::Toggle);
         let scope = saved(&ui).scope;
-        assert_eq!(scope.workspaces, ["web-app"]);
+        assert_eq!(scope.workspaces, ["team-web"]);
         assert_eq!(scope.agents, ["builder"]);
         tap(&mut ui, Row::Everyone, Key::Toggle);
         assert!(
@@ -783,12 +785,12 @@ mod tests {
             ticked,
             [
                 ("Base", false, true),
-                ("web-app", true, true),
+                ("team-web", true, true),
                 ("old-project", true, false)
             ]
         );
         let scope = saved(&ui).scope;
-        assert_eq!(scope.workspaces, ["web-app", "old-project"]);
+        assert_eq!(scope.workspaces, ["team-web", "old-project"]);
         assert_eq!(scope.agents, ["reviewer"]);
     }
 
@@ -797,7 +799,7 @@ mod tests {
         let mut ui = settings(Scope::default());
         assert!(!screen_text(&ui).contains("builder"));
         tap(&mut ui, Row::OnlyThese, Key::Down);
-        assert_eq!(ui.current(), Some(Row::Desk(0)), "hidden rows are not cursor stops");
+        assert_eq!(ui.current(), Some(Row::Webhook(0)), "hidden rows are not cursor stops");
         tap(&mut ui, Row::OnlyThese, Key::Toggle);
         tap(&mut ui, Row::OnlyThese, Key::Down);
         assert_eq!(ui.current(), Some(Row::Workspace(0)));
@@ -817,8 +819,8 @@ mod tests {
         let text = screen_text(&ui);
         for expected in [
             "[ ] Base\n",
-            "[ ] web-app  1 agent",
-            "[ ] builder   web-app · nudge",
+            "[ ] team-web  1 agent",
+            "[ ] builder   team-web · nudge",
             "[ ] reviewer  wX",
             "[x] gone      (not open)",
         ] {
@@ -854,11 +856,11 @@ mod tests {
     }
 
     #[test]
-    fn test_pings_only_from_a_desk_row_and_desks_show_no_url_path() {
+    fn test_pings_only_from_a_webhook_row_and_webhooks_show_no_url_path() {
         let mut ui = settings(Scope::default());
         assert_eq!(press_on(&mut ui, Row::AutoOn, Key::Test), Outcome::Continue);
         assert_eq!(
-            press_on(&mut ui, Row::Desk(1), Key::Test),
+            press_on(&mut ui, Row::Webhook(1), Key::Test),
             Outcome::Test("research".into())
         );
         let text = screen_text(&ui);
@@ -876,6 +878,6 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(ui.handle(Key::Down), Outcome::Continue);
         }
-        assert_eq!(ui.current(), Some(Row::Desk(1)));
+        assert_eq!(ui.current(), Some(Row::Webhook(1)));
     }
 }

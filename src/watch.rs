@@ -1,4 +1,4 @@
-//! Pure logic for the herdr plugin: which agent status changes become desk notifications, and how the
+//! Pure logic for the herdr plugin: which agent status changes become webhook notifications, and how the
 //! pane's terminal output is trimmed and redacted before it leaves the machine.
 use std::sync::LazyLock;
 
@@ -35,7 +35,7 @@ impl HerdrStatus {
     }
 }
 
-/// A status that ends a turn and can be worth telling the desk about.
+/// A status that ends a turn and can be worth telling the webhook about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Settled {
     Done,
@@ -53,7 +53,7 @@ pub(crate) enum Decision {
 /// - `blocked` always qualifies; `done` only after a turn of at least `rules.min_turn_seconds` with a known start.
 /// - Skipped when auto-notify is off, you are looking at the pane (`focused`), the agent already ran
 ///   `nudge notify` this turn, or the pane is in its `rules.cooldown_seconds` cooldown.
-/// - Away mode (`state.away`) overrides the first two: you said you're not at your desk.
+/// - Away mode (`state.away`) overrides the first two: you said you're away.
 pub(crate) fn decide(
     state: &mut State,
     pane_id: &str,
@@ -88,7 +88,7 @@ pub(crate) fn decide(
     }
     let self_notified_since = turn_start.unwrap_or(now - rules.min_turn_ms());
     if pane.self_notified_at.is_some_and(|at| at >= self_notified_since) {
-        return Decision::Skip("agent already notified the desk this turn".into());
+        return Decision::Skip("agent already notified the webhook this turn".into());
     }
     if settled == Settled::Done {
         let Some(start) = turn_start else {
@@ -196,7 +196,7 @@ pub(crate) fn clean_tail(raw: &str, lines: usize) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Trigger {
     Settled(Settled),
-    /// The user sent the pane with the `ask-desk` action.
+    /// The user sent the pane with the `send-pane` action.
     Manual,
 }
 
@@ -360,7 +360,7 @@ mod tests {
         state.panes.get_mut(P).unwrap().self_notified_at = Some(at(240));
         assert_eq!(
             last(&mut state, &[(300, Done)]),
-            skip("agent already notified the desk this turn")
+            skip("agent already notified the webhook this turn")
         );
     }
 

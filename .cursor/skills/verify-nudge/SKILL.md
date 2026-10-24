@@ -1,12 +1,12 @@
 ---
 name: verify-nudge
-description: Drive the real `nudge` CLI / herdr-plugin binary (any build, via $NUDGE_BIN) the way a user or herdr does, in a sandbox with a fake desk webhook (signature-checking), fake herdr and fake clipboard, and capture proof. Use to verify notify/list/test, setup (scripted and interactive PTY), the full-screen `nudge settings` editor (PTY, rendered-screen matching), doctor, request signing, plugin events/actions/startup, away mode, [auto] settings, [scope] and the MCP server, or to diff two builds (e.g. before/after a change, in CI) with `verify-nudge parity`.
+description: Drive the real `nudge` CLI / herdr-plugin binary (any build, via $NUDGE_BIN) the way a user or herdr does, in a sandbox with a fake webhook (signature-checking), fake herdr and fake clipboard, and capture proof. Use to verify notify/list/test, setup (scripted and interactive PTY), the full-screen `nudge settings` editor (PTY, rendered-screen matching), doctor, request signing, plugin events/actions/startup, away mode, [auto] settings, [scope] and the MCP server, or to diff two builds (e.g. before/after a change, in CI) with `verify-nudge parity`.
 ---
 
 # verify-nudge
 
 `nudge` is a short-lived CLI (plus herdr plugin entrypoints and a stdio MCP server) that POSTs JSON to a
-"desk" webhook. There is no server to keep alive: every drive is one isolated process. The helper
+"main" webhook. There is no server to keep alive: every drive is one isolated process. The helper
 `bin/verify-nudge` (python3 stdlib only) owns the sandbox, the fakes and the evidence.
 
 Paths below are relative to the repo root. `VN=.cursor/skills/verify-nudge/bin/verify-nudge`
@@ -46,8 +46,8 @@ the build.
 3. Seed what the journey needs (preconditions, not proof):
 
    ```sh
-   $VN seed-config [--default NAME]   # desks: desk (default) research badauth(401) nohook(404) broken(500) offline(refused) signed(signing_secret)
-   $VN seed-config --append '[scope]\nworkspaces = ["api-work"]'   # standard desks + an [auto]/[scope] table (\n expands)
+   $VN seed-config [--default NAME]   # webhooks: main (default) research badauth(401) nohook(404) broken(500) offline(refused) signed(signing_secret)
+   $VN seed-config --append '[scope]\nworkspaces = ["api-work"]'   # standard webhooks + an [auto]/[scope] table (\n expands)
    $VN herdr running                  # or: none | agent-pane | workspaces | path/to/fixture.json
    $VN seed-state '{"auto": true, "panes": {"p_1": {"working_since": {"ago": 180000}}}}'   # add "away": true for away mode
    $VN clip 'http://127.0.0.1:<port>/hook'     # or: $VN clip --clear
@@ -75,7 +75,7 @@ until it is clean; `$VN cleanup && $VN launch` is the reset.
 All drives run the binary with the sandbox env, default cwd `<sandbox>/work` (not a git repo). Each prints a JSON
 record and writes it to `.verify/<id>/NNN-<label>.json`: argv, stdin, env overrides, exit, stdout, stderr, the
 webhook requests it caused (method, path, authorization/content-type/user-agent/x-nudge-timestamp/x-nudge-signature
-headers, parsed body, the fake desk's `signature` verdict), the fake herdr calls (argv), the clipboard calls, and the
+headers, parsed body, the fake webhook's `signature` verdict), the fake herdr calls (argv), the clipboard calls, and the
 resulting files (config text + mode + dir mode, state.json, `~/.local/bin/nudge` link). Paths are shown as `<RUN>`,
 the install root as `<NUDGE_ROOT>`, the port as `<PORT>`; ids/timestamps are normalized as in Parity. The record also
 lists `secret_leaks` and `contract_problems` (see Parity), and the command prints a `WARNING:` line for each.
@@ -113,24 +113,24 @@ lists `secret_leaks` and `contract_problems` (see Parity), and the command print
 - MCP over stdio (sends `initialize` protocol `2025-06-18`, `notifications/initialized`, `tools/list`, then each call):
 
   ```sh
-  $VN mcp --call list_desks '{}' --call notify_desk '{"message":"Done via MCP","status":"question"}'
+  $VN mcp --call list_webhooks '{}' --call notify_webhook '{"message":"Done via MCP","status":"question"}'
   ```
 
 - herdr plugin entrypoints are plain commands with herdr's env, e.g.
   `$VN run --cwd home --env 'HERDR_PLUGIN_EVENT_JSON={"data":{"pane_id":"p_1","agent_status":"blocked"}}' -- plugin event`,
-  `$VN run --cwd home --env 'HERDR_PLUGIN_CONTEXT_JSON={"focused_pane_id":"p_1","focused_pane_status":"blocked"}' -- plugin action ask-desk`,
+  `$VN run --cwd home --env 'HERDR_PLUGIN_CONTEXT_JSON={"focused_pane_id":"p_1","focused_pane_status":"blocked"}' -- plugin action send-pane`,
   `$VN run --cwd home -- plugin action away-on` (away mode: state.json `away`, see features/plugin-actions.md).
 - Inspect without running nudge: `$VN files`, `$VN requests` (raw webhook log), `$VN env` (exports, for a manual shell —
   prefer `run`).
 
-The fake desk (`bin/fake-webhook`): `POST /hook` answers 200 `ok` only for `Authorization: Bearer
+The fake webhook (`bin/fake-webhook`): `POST /hook` answers 200 `ok` only for `Authorization: Bearer
 good-token-0123456789abcdef`, else 401 `{"message":"Invalid API key"}`; `POST /signed` additionally needs a valid
 `x-nudge-signature: sha256=<hex HMAC-SHA256(secret, "<x-nudge-timestamp>.<raw body>")>` for one of the secrets the
-helper passes it (`sign-secret-0123456789abcdef`, the seeded `signed` desk's; `setup-secret-fedcba9876543210`, the one
+helper passes it (`sign-secret-0123456789abcdef`, the seeded `signed` webhook's; `setup-secret-fedcba9876543210`, the one
 parity hands to `setup --signing-secret`), else 401 `{"message":"Invalid signature"}`; `/fail` answers 500
-`desk exploded`; any other path 404 `no such hook`. Each logged request carries `"signature": "valid:<signed-desk|setup>"
+`webhook exploded`; any other path 404 `no such hook`. Each logged request carries `"signature": "valid:<signed-webhook|setup>"
 | "invalid" | "missing"` when it has a signature header or targets `/signed`, and its receive time (`received_unix`).
-The offline desk URL is a closed port.
+The offline webhook URL is a closed port.
 
 The fake herdr (`bin/fake-herdr`) answers from `<sandbox>/herdr.json` (`{"rules":[{"argv":[...]|"prefix":[...],
 "stdout": str|json, "exit": n}], "default_exit": 1}`; `{RUN}` in stdout expands to the sandbox) and logs every
@@ -152,7 +152,7 @@ NUDGE_BIN=/path/to/new/nudge $VN parity .verify/parity/new.json
 diff -u .verify/parity/old.json .verify/parity/new.json
 ```
 
-Runs the fixed scenario list (200 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
+Runs the fixed scenario list (201 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
 with its own fakes and one shared fake webhook, then writes one JSON transcript with sorted keys. Per step it
 records the same fields as `run`, with JSON payloads (webhook bodies, `list --json` stdout as `stdout_json`, MCP
 responses keyed by JSON-RPC id with JSON tool text as `text_json`, state.json) compared as data. Multi-line text is
@@ -164,12 +164,12 @@ end of doctor's `Recent:` lines (`just now`, `5m ago`, `371d ago`) as `<ago>`, a
 `x-nudge-timestamp` within 60 s of receipt as `<ts>`, a well-formed `x-nudge-signature` as `sha256=<hmac>` (whether it
 verified is the request's `signature` field), `received_unix` dropped, and fake herdr calls sorted (nudge issues some
 concurrently). The version in `user-agent` is kept. Each scenario lists `check_failures`: unexpected exit code,
-expectation not seen in a PTY, missing MCP response, a desk secret (Authorization token or signing secret) in stdout,
+expectation not seen in a PTY, missing MCP response, a webhook secret (Authorization token or signing secret) in stdout,
 stderr, PTY output, an MCP response, a webhook body or a herdr call, harness error, and these contract problems:
-a `/signed` request whose signature is `invalid`/`missing`, `x-nudge-*` headers sent to a desk without
+a `/signed` request whose signature is `invalid`/`missing`, `x-nudge-*` headers sent to a webhook without
 `signing_secret`, an `x-nudge-timestamp` that is not unix seconds within 60 s, a webhook body without a lowercase UUID v4
-`id` or a `sent_at` in that format within 60 s, and an MCP `notify_desk` result whose `id`/`sent_at` is missing or is
-not the request the desk received. Steps may also assert `sends=N` (requests the desk got), `toasts=[…]` (exact
+`id` or a `sent_at` in that format within 60 s, and an MCP `notify_webhook` result whose `id`/`sent_at` is missing or is
+not the request the webhook received. Steps may also assert `sends=N` (requests the webhook got), `toasts=[…]` (exact
 `notification show nudge --body` bodies), `has=TEXT|[…]` / `lacks=[…]` (in / not in the output, PTY screens included),
 `scope_is=(workspaces, agents)` (the config's `[scope]` after the step), `config_keys={key: value}` (top-level config
 keys after the step, `None` = absent), `state_auto=BOOL`, `state_keys={key: value}` (top-level state.json keys after the
@@ -182,23 +182,23 @@ any (0 otherwise), so CI can run it directly:
 Two runs of the same binary must produce identical files — if not, the harness has a nondeterminism bug; fix it
 before trusting a cross-build diff. Transcripts from an older harness (`"harness"` other than `verify-nudge parity v4`)
 differ in scenarios and normalization; regenerate both sides with the same harness before diffing. A build without
-away mode (before 0.8.0) fails the `*away*` scenarios and the `settings-*` cursor steps (the `Away from my desk` row
+away mode (before 0.8.0) fails the `*away*` scenarios and the `settings-*` cursor steps (the `I'm away` row
 moves every cursor stop below `Auto-notify` down by one): that is the expected diff, not a harness problem.
 
 ## Evidence
 
 - Session drives: `.verify/<id>/NNN-<label>.json` (one per `run`/`pty`/`mcp`), `.verify/<id>/session.json`, and
-  after cleanup `.verify/<id>/webhook-requests.jsonl` (every request the fake desk received). Parity: the
+  after cleanup `.verify/<id>/webhook-requests.jsonl` (every request the fake webhook received). Parity: the
   transcript path you pass (convention `.verify/parity/<build>.json`). `.verify/` is git-ignored.
 - Proof standards:
   - Drive the user path: `nudge …` commands, a PTY for interactive setup, herdr's env vars for plugin
     entrypoints. Do not call internals or edit config/state to fake an outcome; seeding preconditions is fine.
-  - Capture the action and the resulting state: the record's `webhook` (what the desk got), `files` (config
+  - Capture the action and the resulting state: the record's `webhook` (what the webhook got), `files` (config
     mode 600 / dir 700, state.json, command link), `herdr_calls` (toasts, overlays opened) — not only stdout.
   - Side effects are part of the proof: "nothing saved" means `files.config` is `null`; "no request sent" means
     `webhook` is `[]`; a hidden header means the token text is absent from `output` (`secret_leaks` is `[]`); a
     signed request means the request's `signature` is `valid:…`.
-  - Mocks stop only at real process boundaries nudge already has: HTTP to the desk, the `herdr` CLI, the
+  - Mocks stop only at real process boundaries nudge already has: HTTP to the webhook, the `herdr` CLI, the
     clipboard CLIs. Git is real (scenarios create temp repos).
 - Read-only second view for mutations: after `setup`, `$VN run -- list` and `$VN files`.
 
@@ -219,7 +219,7 @@ name. Drives are synchronous; a PTY or MCP child that outlives its timeout is ki
 All in `.cursor/skills/verify-nudge/bin/`, executable, python3 stdlib:
 
 - `verify-nudge` — every command above; `$VN --help` prints the usage.
-- `fake-webhook --dir DIR --id ID [--secret LABEL=SECRET]...` — the desk; started by `launch`/`parity`, not by hand.
+- `fake-webhook --dir DIR --id ID [--secret LABEL=SECRET]...` — the webhook; started by `launch`/`parity`, not by hand.
 - `fake-herdr` — run by the sh wrapper `<sandbox>/fakebin/herdr`; fixture `<sandbox>/herdr.json`, log `<sandbox>/herdr-calls.jsonl`.
 - `fake-clipboard` — run by the wrappers `<sandbox>/fakebin/wl-paste` and `xclip`; prints `<sandbox>/clipboard.txt` (exit 1 if empty),
   logs to `<sandbox>/clipboard-calls.jsonl` with `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`.

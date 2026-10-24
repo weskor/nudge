@@ -2,7 +2,7 @@ id = "weskor.nudge"
 name = "Nudge"
 version = "0.8.0"
 min_herdr_version = "0.9.0"
-description = "Tell your AI desk (a webhook automation) when an agent finishes or is blocked; the desk replies with herdr agent prompt."
+description = "Tell your webhook (an AI routine or automation) when an agent finishes or is blocked; it replies with herdr agent prompt."
 platforms = ["linux", "macos"]
 
 # Downloads the prebuilt nudge binary for this platform into dist/ (or builds it with cargo).
@@ -19,7 +19,7 @@ command = ["sh", "bin/nudge", "plugin", "event"]
 
 [[actions]]
 id = "setup"
-title = "Nudge: set up a desk"
+title = "Nudge: set up a webhook"
 command = ["sh", "bin/nudge", "plugin", "action", "setup"]
 
 [[actions]]
@@ -33,9 +33,9 @@ title = "Nudge: settings"
 command = ["sh", "bin/nudge", "plugin", "action", "settings"]
 
 [[actions]]
-id = "ask-desk"
-title = "Nudge: send this pane to the desk"
-command = ["sh", "bin/nudge", "plugin", "action", "ask-desk"]
+id = "send-pane"
+title = "Nudge: send this pane to the webhook"
+command = ["sh", "bin/nudge", "plugin", "action", "send-pane"]
 
 [[actions]]
 id = "toggle"
@@ -54,17 +54,17 @@ command = ["sh", "bin/nudge", "plugin", "action", "disable"]
 
 [[actions]]
 id = "away"
-title = "Nudge: away from desk (toggle)"
+title = "Nudge: away (toggle)"
 command = ["sh", "bin/nudge", "plugin", "action", "away"]
 
 [[actions]]
 id = "away-on"
-title = "Nudge: I'm away from my desk"
+title = "Nudge: I'm away"
 command = ["sh", "bin/nudge", "plugin", "action", "away-on"]
 
 [[actions]]
 id = "away-off"
-title = "Nudge: I'm back at my desk"
+title = "Nudge: I'm back"
 command = ["sh", "bin/nudge", "plugin", "action", "away-off"]
 
 [[actions]]
