@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 404" width="860" height="404" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 532" width="860" height="532" role="img" aria-labelledby="title desc">
   <title id="title">nudge setup in a terminal</title>
-  <desc id="desc">The nudge setup form: the webhook URL was pasted from the clipboard and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401), so the cursor is back on it; below, auto-notify and the nudge command install are ticked, and a Test and save button.</desc>
+  <desc id="desc">The nudge setup form in three numbered steps: the webhook URL was pasted from the clipboard and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401), so the cursor is back on it; the desk is named desk and will be added; auto-notify and the nudge command install are ticked; a Test and save button.</desc>
   <style>
     .mono { white-space: pre; font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; }
     .t { fill: #e6edf3; } .d { fill: #8b949e; } .g { fill: #3fb950; } .r { fill: #f85149; } .c { fill: #39c5cf; } .k { fill: #0d1117; } .w { font-weight: 700; }
   </style>
-  <rect x="0" y="0" width="860" height="404" rx="14" fill="#0d1117" stroke="#30363d"/>
+  <rect x="0" y="0" width="860" height="532" rx="14" fill="#0d1117" stroke="#30363d"/>
   <rect x="0.5" y="0.5" width="859" height="36" rx="14" fill="#161b22"/>
   <rect x="0.5" y="22" width="859" height="15" fill="#161b22"/>
   <line x1="0" y1="37" x2="860" y2="37" stroke="#30363d"/>
@@ -14,24 +14,28 @@
   <circle cx="62" cy="18" r="6" fill="#3fb950"/>
   <text x="430" y="23" class="mono d" text-anchor="middle" font-size="12">herdr plugin action invoke weskor.nudge.setup</text>
 
-  <rect x="28" y="58" width="804" height="326" rx="10" fill="none" stroke="#484f58"/>
+  <rect x="28" y="58" width="804" height="454" rx="10" fill="none" stroke="#484f58"/>
   <rect x="42" y="50" width="104" height="16" fill="#0d1117"/>
   <text x="48" y="62" class="mono c w">nudge setup</text>
 
-  <rect x="44" y="123" width="772" height="21" fill="#e6edf3"/>
-  <line x1="52" y1="300" x2="808" y2="300" stroke="#484f58"/>
+  <rect x="44" y="185" width="772" height="21" fill="#e6edf3"/>
+  <line x1="52" y1="428" x2="808" y2="428" stroke="#484f58"/>
 
   <text class="mono" xml:space="preserve">
-    <tspan x="52" y="96" class="c w">Desk "desk"</tspan><tspan class="d">  new desk</tspan>
-    <tspan x="52" y="117" class="t">  Webhook URL    https://hooks.example.com/desk/7f3c2a</tspan><tspan class="g">  ✓</tspan>
-    <tspan x="52" y="138" class="k w">  Authorization  Bearer ••••••••a1b2  (52 characters)</tspan><tspan class="r w">  ✗</tspan>
-    <tspan x="52" y="159" class="t">  Description    </tspan><tspan class="d">optional</tspan>
-    <tspan x="52" y="201" class="c w">After saving</tspan>
-    <tspan x="52" y="222" class="t">  </tspan><tspan class="g w">[x]</tspan><tspan class="t"> Turn on auto-notify        </tspan><tspan class="d">herdr plugin enabled</tspan>
-    <tspan x="52" y="243" class="t">  </tspan><tspan class="g w">[x]</tspan><tspan class="t"> Install the nudge command  </tspan><tspan class="d">into ~/.local/bin</tspan>
-    <tspan x="52" y="285" class="c w">  [ Test and save ]</tspan>
-    <tspan x="52" y="324" class="r w">✗ the webhook rejected the Authorization header (returned HTTP 401: Invalid</tspan>
-    <tspan x="52" y="345" class="r w">API key)</tspan>
-    <tspan x="52" y="366" class="c w">↑↓</tspan><tspan class="d"> move  </tspan><tspan class="c w">enter</tspan><tspan class="d"> paste/next  </tspan><tspan class="c w">space</tspan><tspan class="d"> tick  </tspan><tspan class="c w">ctrl-s</tspan><tspan class="d"> test &amp; save  </tspan><tspan class="c w">esc</tspan><tspan class="d"> quit</tspan>
+    <tspan x="52" y="96" class="t">Your desk is the webhook that receives nudge's events: an AI routine,</tspan>
+    <tspan x="52" y="117" class="t">a workflow automation or your own service.</tspan>
+    <tspan x="52" y="159" class="c w">1  Webhook</tspan><tspan class="d">  copy both from your desk's webhook settings</tspan>
+    <tspan x="52" y="180" class="t">   Webhook URL    https://hooks.example.com/desk/7f3c2a</tspan><tspan class="g">  ✓</tspan>
+    <tspan x="52" y="201" class="k w">   Authorization  Bearer ••••••••a1b2  (52 characters)</tspan><tspan class="r w">  ✗</tspan>
+    <tspan x="52" y="243" class="c w">2  This desk</tspan>
+    <tspan x="52" y="264" class="t">   Name           desk  </tspan><tspan class="d">will be added</tspan>
+    <tspan x="52" y="285" class="t">   Description    </tspan><tspan class="d">optional</tspan>
+    <tspan x="52" y="327" class="c w">3  After saving</tspan>
+    <tspan x="52" y="348" class="t">   </tspan><tspan class="g w">[x]</tspan><tspan class="t"> Turn on auto-notify        </tspan><tspan class="d">herdr plugin enabled</tspan>
+    <tspan x="52" y="369" class="t">   </tspan><tspan class="g w">[x]</tspan><tspan class="t"> Install the nudge command  </tspan><tspan class="d">into ~/.local/bin</tspan>
+    <tspan x="52" y="411" class="c w">   [ Test and save ]</tspan>
+    <tspan x="52" y="452" class="r w">✗ the webhook rejected the Authorization header (returned HTTP 401: Invalid</tspan>
+    <tspan x="52" y="473" class="r w">API key)</tspan>
+    <tspan x="52" y="494" class="c w">↑↓</tspan><tspan class="d"> move  </tspan><tspan class="c w">enter</tspan><tspan class="d"> paste/next  </tspan><tspan class="c w">space</tspan><tspan class="d"> tick  </tspan><tspan class="c w">ctrl-s</tspan><tspan class="d"> test &amp; save  </tspan><tspan class="c w">esc</tspan><tspan class="d"> quit</tspan>
   </text>
 </svg>

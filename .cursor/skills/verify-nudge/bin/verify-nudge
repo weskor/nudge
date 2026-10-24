@@ -1650,28 +1650,29 @@ def scenarios():
     add("setup-missing-values", cmd(["setup"], stdin="", expect=1), cmd(["setup", "--url", URL], stdin="", expect=1))
     add("setup-existing-bad-toml", raw_config(BAD_TOML), cmd(["setup", "--url", URL, "--authorization", GOOD], expect=1))
 
-    # ---- setup, interactive (PTY): a full-screen form. Cursor stops: Webhook URL, Authorization, Description, then
-    # (when offered) Make "<desk>" the default desk, Turn on auto-notify, Install the nudge command, then the button.
+    # ---- setup, interactive (PTY): a full-screen form. Cursor stops: Webhook URL, Authorization, Name, Description,
+    # then (when offered) Make it the default desk, Turn on auto-notify, Install the nudge command, then the button.
     done = "Done. Check everything any time with nudge doctor."
     add("setup-tty-clipboard", herdr(PRESETS["running"]), clip(URL),
         pty(["setup"], [
-            on_screen("nudge setup", 'Desk "desk"  new desk', "Webhook URL    ▏Enter pastes from the clipboard",
-                      "Authorization  Enter pastes from the clipboard", "Description    optional", "After saving",
+            on_screen("nudge setup", "Your desk is the webhook that receives nudge's events", "1  Webhook",
+                      "Webhook URL    press Enter to paste, or type", "Authorization  not set", "2  This desk",
+                      "Name           desk  will be added", "Description    optional", "3  After saving",
                       "[x] Turn on auto-notify        herdr plugin enabled", "[x] Install the nudge command  into ~/.local/bin",
                       "[ Test and save ]", "Copy the Webhook URL", SETUP_HELP, cursor="Webhook URL"),
-            keys("\\r"), on_screen("/hook  ✓", cursor="Authorization  ▏Enter pastes"),
-            ["clip", GOOD], keys("\\r"), on_screen("Authorization  Bearer ••••••••cdef  (34 characters)  ✓", cursor="Description"),
+            keys("\\r"), on_screen("/hook  ✓", cursor="Authorization  press Enter to paste"),
+            ["clip", GOOD], keys("\\r"), on_screen("Authorization  Bearer ••••••••cdef  (34 characters)  ✓", cursor="Name"),
             keys(CTRL_S)], expect=0, sends=1, state_auto=True,
             has=["✓ Test ping: HTTP 200, the desk received it", '✓ Saved "desk" as the default desk', "✓ auto-notify on",
                  "✓ nudge command ", done]))
     add("setup-tty-paste-typed-and-401",
         pty(["setup", "--desk", "manual"], [
-            on_screen("herdr isn't running: for auto-notify, run nudge setup in herdr", cursor="Webhook URL"),
+            on_screen("!  herdr isn't running        run nudge setup in herdr for auto-notify", cursor="Webhook URL"),
             keys("\\r"), on_screen("No clipboard text found. Type or paste the Webhook URL here.", cursor="Webhook URL"),
             keys("\\e[200~" + URL + "\\e[201~\\r"), on_screen("/hook  ✓", cursor="Authorization"),  # bracketed paste
             keys(WRONG), on_screen("Authorization  ••••••••••", cursor="Authorization"),  # typed: dots only
             keys(CTRL_S), on_screen("✗ the webhook rejected the Authorization header", cursor="Authorization"),
-            keys("  Authorization: " + GOOD), keys(DOWN + DOWN + " "), on_screen(cursor="[ ] Install the nudge command"),
+            keys("  Authorization: " + GOOD), keys(DOWN * 3 + " "), on_screen(cursor="[ ] Install the nudge command"),
             keys(CTRL_S)], expect=0, sends=2,
             has=["✓ Test ping: HTTP 200", '✓ Saved "manual" as the default desk', "herdr isn't running", done],
             lacks=["✓ nudge command"]))
@@ -1698,26 +1699,34 @@ def scenarios():
         pty(["setup"], [on_screen(cursor="Webhook URL"), keys(CTRL_C)], expect=1, has="Cancelled; nothing saved."),
         pty(["setup", "--url", URL], [on_screen(cursor="Webhook URL"), keys(DOWN + "Bearer typed" + CTRL_C)],
             expect=1, has="Cancelled; nothing saved."),
-        pty(["setup"], [on_screen(cursor="Webhook URL"), keys("h"), on_screen(cursor="Webhook URL    h▏"),
+        pty(["setup"], [on_screen(cursor="Webhook URL"), keys("h"), on_screen(cursor="Webhook URL    h"),
                         keys(ESC), on_screen("Press Esc again to leave without saving."), keys(ESC)],
             expect=1, has="Cancelled; nothing saved."))
     add("setup-tty-update-keep", config(), herdr(fixture(HERDR_VERSION, plugin_list(), NO_AGENTS)),
         pty(["setup"], [
-            on_screen('Desk "desk"  saved desk', "/hook▏  ✓", "Bearer ••••••••cdef  (34 characters)  ✓",
-                      "herdr plugin not installed: herdr plugin install weskor/nudge", cursor="Webhook URL"),
+            on_screen("/hook  ✓", "Bearer ••••••••cdef  (34 characters)  ✓", "Name           desk  already saved: saving updates it",
+                      "Description    Main desk", "herdr plugin not installed  herdr plugin install weskor/nudge", cursor="Webhook URL"),
             keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "desk" as the default desk', "! The herdr plugin isn't installed", done]))
     add("setup-tty-make-default", config(),
         pty(["setup", "--desk", "research"], [
-            on_screen('Desk "research"  saved desk', '[ ] Make "research" the default desk', cursor="Webhook URL"),
-            keys(DOWN * 3 + " "), on_screen(cursor='[x] Make "research" the default desk'),
+            on_screen("Name           research  already saved: saving updates it", "[ ] Make it the default desk",
+                      cursor="Webhook URL"),
+            keys(DOWN * 4 + " "), on_screen(cursor="[x] Make it the default desk"),
             keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "research" as the default desk', done],
             config_keys={"default_desk": "research"}))
+    add("setup-tty-rename", config(),
+        pty(["setup"], [
+            on_screen("Name           desk  already saved: saving updates it", cursor="Webhook URL"),
+            keys(DOWN * 2 + CTRL_U + "research"), on_screen(cursor="research  replaces the saved desk with this name"),
+            keys(CTRL_U + "my laptop" + CTRL_S), on_screen('may only contain letters, digits, "-" and "_"', cursor="Name"),
+            keys(CTRL_U + "laptop"), on_screen("[ ] Make it the default desk", cursor="laptop  will be added"),
+            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "laptop" (', done], config_keys={"default_desk": "desk"}))
     add("setup-tty-plugin-decline-auto", herdr(fixture(HERDR_VERSION, plugin_list(plugin(enabled=False)))), link("/opt/old/bin/nudge"),
         pty(["setup", "--url", URL, "--authorization", GOOD], [
-            on_screen("[x] Turn on auto-notify        herdr plugin disabled", "✓ nudge command  ", ".local/bin/nudge",
+            on_screen("[x] Turn on auto-notify        herdr plugin disabled", "nudge command installed    ~/.local/bin/nudge",
                       cursor="Webhook URL"),
-            keys(DOWN * 3 + " "), on_screen(cursor="[ ] Turn on auto-notify"),
-            keys(CTRL_S)], expect=0, sends=1, state_auto=False, has=["! auto-notify off", done]))
+            keys(DOWN * 4 + " "), on_screen(cursor="[ ] Turn on auto-notify"),
+            keys(CTRL_S)], expect=0, sends=1, state_auto=False, has=["! auto-notify off", "✓ nudge command ~/.local/bin/nudge", done]))
     add("setup-tty-pane-wait", pty(["setup", "--pane"], [
         on_screen(cursor="Webhook URL"), keys(CTRL_C), ["expect", "Press any key to close"], ["send", "x"]], expect=1))
 

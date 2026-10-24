@@ -410,6 +410,13 @@ pub(crate) fn check_authorization(value: &str) -> Result<String> {
     problems.into_result(authorization, "invalid Authorization value")
 }
 
+/// Validate a desk name entered during setup.
+pub(crate) fn check_desk_name(value: &str) -> Result<String> {
+    let mut problems = Problems::default();
+    let name = problems.desk_name("", value);
+    problems.into_result(name, "invalid desk name")
+}
+
 /// Validate one desk entered via `nudge setup`.
 pub(crate) fn validate_desk(
     name: &str,

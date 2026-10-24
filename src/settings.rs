@@ -541,6 +541,7 @@ fn draw(terminal: &mut DefaultTerminal, settings: &Settings) -> Result<()> {
             unsaved: settings.edits != Edits::None,
             lines,
             selected,
+            caret: None,
             note: ui::note(settings.status.as_deref(), settings.current().map_or("", describe)),
             help: &HELP,
             width: None,

@@ -20,16 +20,21 @@ the config with mode 600 in a mode 700 directory. In a terminal the form also of
 - `setup-signing-secret` `--signing-secret VALUE` (printable ASCII, 16+ characters) saves `signing_secret` for the
   desk, and the test ping is already signed; re-running setup without the flag keeps the saved secret; the flag
   again replaces it. The secret never appears in output; invalid values exit 1 with nothing saved.
-- `setup-tty-form` a rounded box titled ` nudge setup `: header `Desk "<name>"  new desk|saved desk`; fields `Webhook URL`,
-  `Authorization`, `Description` (label padded to 15; values prefilled from flags or the saved desk; empty ones show
-  `Enter pastes from the clipboard` / `optional`; the focused text field shows a `▏` caret; `  ✓` after a checked value,
-  `  ✗` after a rejected one); then `[ ]/[x] Make "<name>" the default desk` when offered; under `After saving`,
-  `[x] Turn on auto-notify        herdr plugin enabled|disabled` (plugin registered; else a `! herdr isn't running…` or
-  `! herdr plugin not installed: herdr plugin install weskor/nudge` line), `[x] Install the nudge command  into
-  ~/.local/bin` (no `nudge` on PATH or linked; else `✓ nudge command  <path>`, long paths keep their end); then
-  `[ Test and save ]` (`[ Save ]` with `--no-test`, `[ Save anyway ]` after an unblamed failure). Footer: the status or the
-  field's problem (✓ green, ✗ red, other yellow), else a dim hint for the row under the cursor; then
-  `↑↓ move  enter paste/next  space tick  ctrl-s test & save  esc quit` (`ctrl-s save` with `--no-test`).
+- `setup-tty-form` a rounded box titled ` nudge setup `: two intro lines (`Your desk is the webhook that receives nudge's
+  events: …`), then numbered sections. `1  Webhook  copy both from your desk's webhook settings`: `Webhook URL`,
+  `Authorization`. `2  This desk`: `Name` (starts as `--desk`, default `desk`; then `will be added`, `already saved:
+  saving updates it` or, in yellow, `replaces the saved desk with this name`), `Description`, and `[ ]/[x] Make it the
+  default desk` when other desks are saved and this name isn't the default. `3  After saving`: `[x] Turn on auto-notify
+  herdr plugin enabled|disabled` (plugin registered; else `!  herdr isn't running  … run nudge setup in herdr for
+  auto-notify` or `!  herdr plugin not installed  herdr plugin install weskor/nudge`), `[x] Install the nudge command
+  into ~/.local/bin` (no `nudge` on PATH or linked; else ` ✓  nudge command installed  ~/…`, long paths keep their
+  end); then `[ Test and save ]` (`[ Save ]` with `--no-test`, `[ Save anyway ]` after an unblamed failure). Rows start
+  3 columns in, under the section titles; field labels are padded to 15. Values are prefilled from flags or the saved
+  desk; empty ones show `press Enter to paste, or type` (focused URL/Authorization), `not set` or `optional`; `  ✓`
+  follows a checked URL/header, `  ✗` a rejected value. The focused text field shows the terminal's own cursor (not
+  drawn, so not on the harness screen). Footer: the status or the field's problem (✓ green, ✗ red, other yellow), else
+  a dim hint for the row under the cursor; then `↑↓ move  enter paste/next  space tick  ctrl-s test & save  esc quit`
+  (`ctrl-s save` with `--no-test`).
 - `setup-tty-clipboard` Enter on an empty URL/Authorization field reads the clipboard (wl-paste, then xclip, then
   `env DISPLAY=:0 xclip`); a valid value fills the field and moves on; an invalid one is not shown, only `✗ The clipboard
   doesn't hold the <field>: <problem>`; an empty clipboard says `No clipboard text found. Type or paste the <field> here.`
@@ -41,9 +46,11 @@ the config with mode 600 in a mode 700 directory. In a terminal the form also of
   test-pings: 401/403 puts `✗ the webhook rejected the Authorization header (…)` on the Authorization field, 404/405/410
   `✗ there's no webhook at that URL (…)` on the URL; the same value can't be resent until edited. Other failures:
   `✗ <reason>. Press Enter to save it anyway.` with the cursor on `[ Save anyway ]`; any edit re-arms the test.
+- `setup-tty-name` the name is checked like `--desk` (letters, digits, `-`, `_`); a rename saves a new desk and keeps
+  the old one; naming it after another saved desk replaces that one.
 - `setup-tty-finish` after saving, the normal screen shows `✓ Test ping: HTTP 200, the desk received it` (or `! Saved
   without a successful test ping`), `✓ Saved "<name>"[ as the default desk] (<path>, mode 600)`, `✓ auto-notify on` / `!
-  auto-notify off` (writes state `auto`) or the herdr warning, `✓ nudge command <path>` (linking it when ticked), then
+  auto-notify off` (writes state `auto`) or the herdr warning, `✓ nudge command ~/…` (linking it when ticked), then
   `Done. Check everything any time with nudge doctor.`
 - `setup-tty-cancel` Ctrl-C leaves at once; Esc leaves at once if nothing was entered, else asks `Press Esc again to
   leave without saving.`; both print `Cancelled; nothing saved.`, exit 1; `--pane` then waits for a key.
@@ -69,7 +76,7 @@ Preconditions:
 - **Two desks + default.** After the flags step run `$VN run -- setup --desk research --url "$URL" --authorization "$GOOD"`, `$VN run -- list` (`* desk`), `$VN run --stdin '' -- setup --desk research --default`, `$VN run -- list` (`* research`).
 - **Prefix stripped.** Run `$VN run -- setup --url "$URL" --authorization "Authorization: $GOOD"`. Saved `authorization` has no prefix; the ping used it.
 - **Signing secret.** Run `$VN run --expect 0 -- setup --url "${URL%/hook}/signed" --authorization "$GOOD" --signing-secret setup-secret-fedcba9876543210`. The ping is `POST /signed` with `signature: "valid:setup"`; `files.config.text` has `signing_secret = "setup-secret-fedcba9876543210"`; `secret_leaks` is `[]`. Then `$VN run --stdin '' -- setup --description again`: the secret line is still there and the ping is still `valid:setup`. `--signing-secret too-short` exits 1 with `files.config: null`.
-- **Interactive, clipboard.** `$VN herdr running; $VN clip "$URL"`, then `$VN pty --screen 'Webhook URL +▏Enter pastes' --send '\r' --screen '^> .*Authorization' --clip "$GOOD" --send '\r' --screen 'Bearer ••••••••cdef  \(34 characters\)  ✓' --send '\x13' --expect-exit 0 -- setup`. `output` ends with the `Saved "desk" as the default desk`, `auto-notify on`, `nudge command` and `Done.` lines; `files.state.json.auto` is `true`; `files.command_link.target` is `<NUDGE_ROOT>/bin/nudge`; `secret_leaks` is `[]`.
+- **Interactive, clipboard.** `$VN herdr running; $VN clip "$URL"`, then `$VN pty --screen 'Webhook URL +press Enter to paste' --send '\r' --screen '^> .*Authorization' --clip "$GOOD" --send '\r' --screen 'Bearer ••••••••cdef  \(34 characters\)  ✓' --send '\x13' --expect-exit 0 -- setup`. `output` ends with the `Saved "desk" as the default desk`, `auto-notify on`, `nudge command ~/.local/bin/nudge` and `Done.` lines; `files.state.json.auto` is `true`; `files.command_link.target` is `<NUDGE_ROOT>/bin/nudge`; `secret_leaks` is `[]`.
 - **Interactive, typed + 401.** `$VN clip --clear`, then `$VN pty --screen 'Webhook URL' --send '\r' --screen 'No clipboard text found' --send "\e[200~$URL\e[201~\r" --screen '^> .*Authorization' --send 'Bearer wrong-token-0123456789abcdef' --send '\x13' --screen 'rejected the Authorization header' --send "$GOOD" --send '\x13' --expect-exit 0 -- setup --desk manual`. Two requests (wrong then good token); neither token text appears in the screens or `output`.
 - **Ctrl-C.** Run `$VN pty --screen 'Webhook URL' --send '\x03' --expect-exit 1 -- setup`: `output` is `Cancelled; nothing saved.`, `files.config` is `null`, `webhook` `[]`.
 - **Proof.** Pair each setup record with a read-only `$VN run -- list` and `$VN files`.

@@ -46,10 +46,10 @@ The install step downloads the prebuilt `nudge` binary for your platform (about 
 herdr plugin action invoke weskor.nudge.setup
 ```
 
-Setup is a form. Copy the webhook URL and press Enter on its field to paste it, then do the same for the Authorization header (typing or pasting works too). nudge never shows the header, only a masked preview. Below the fields, tick whether to turn on auto-notify and to install the `nudge` command into `~/.local/bin`, then press **Test and save** (or Ctrl-S): nudge test-pings the webhook and saves only if it answers. If the desk rejects the header or the URL, the cursor goes back to that field.
+Setup is a form in three steps. **1 Webhook**: copy the webhook URL from your desk's webhook settings and press Enter on its field to paste it, then do the same for the Authorization header (typing or pasting works too); nudge never shows the header, only a masked preview. **2 This desk**: a name (`desk` is fine if you only have one) and an optional description. **3 After saving**: tick whether to turn on auto-notify and to install the `nudge` command into `~/.local/bin`. Then press **Test and save** (or Ctrl-S): nudge test-pings the webhook and saves only if it answers. If the desk rejects the header or the URL, the cursor goes back to that field.
 
 <p align="center">
-  <img src="assets/setup.svg" width="860" alt="The nudge setup form: the webhook URL is filled in and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401) so the cursor is back on it, auto-notify and the command install are ticked, and a Test and save button.">
+  <img src="assets/setup.svg" width="860" alt="The nudge setup form in three numbered steps: the webhook URL is filled in and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401) so the cursor is back on it; the desk is named desk; auto-notify and the command install are ticked; a Test and save button.">
 </p>
 
 **2. Tell your desk what to do with events.** Paste [docs/desk-instructions.md](docs/desk-instructions.md) into its instructions. The template covers when to reply, when to escalate to you, and how to avoid reply loops.

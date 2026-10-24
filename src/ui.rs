@@ -99,6 +99,8 @@ pub(crate) struct View<'a> {
     pub(crate) lines: Vec<Line<'static>>,
     /// The line the cursor is on.
     pub(crate) selected: usize,
+    /// Where on that line to show the terminal's text cursor, for typing; `None` hides it.
+    pub(crate) caret: Option<u16>,
     pub(crate) note: Line<'static>,
     /// Keys and what they do, for the help line.
     pub(crate) help: &'a [(&'a str, &'a str)],
@@ -112,6 +114,7 @@ pub(crate) fn draw(terminal: &mut DefaultTerminal, view: View<'_>) -> Result<()>
         unsaved,
         lines,
         selected,
+        caret,
         note,
         help,
         width,
@@ -165,6 +168,13 @@ pub(crate) fn draw(terminal: &mut DefaultTerminal, view: View<'_>) -> Result<()>
         let list = List::new(lines.into_iter().map(ListItem::new)).highlight_style(CURSOR);
         let mut state = ListState::default().with_selected(Some(selected));
         frame.render_stateful_widget(list, body, &mut state);
+        let row = selected.saturating_sub(state.offset());
+        if let (Some(column), Ok(row)) = (caret, u16::try_from(row))
+            && row < body.height
+            && column < body.width
+        {
+            frame.set_cursor_position((body.x + column, body.y + row));
+        }
         frame.render_widget(Block::new().borders(Borders::TOP).border_style(BORDER), rule);
         frame.render_widget(note, note_area);
         frame.render_widget(help, help_area);

@@ -3,7 +3,7 @@
 //! stdin.
 use std::borrow::Cow;
 use std::io::{IsTerminal as _, Read as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
@@ -14,8 +14,8 @@ use ratatui::text::{Line, Span};
 
 use crate::clipboard::{read_clipboard, runtime_dir};
 use crate::config::{
-    Auto, Config, Desk, check_authorization, check_webhook_url, default_config_path, read_config, seconds_in_words,
-    upsert_desk, validate_desk, write_config,
+    Auto, Config, Desk, check_authorization, check_desk_name, check_webhook_url, default_config_path, read_config,
+    seconds_in_words, upsert_desk, validate_desk, write_config,
 };
 use crate::context::{Env, System};
 use crate::error::{Blame, DeskError, Error, Result};
@@ -23,7 +23,7 @@ use crate::install::{Plugin, command_link, link_command, nudge_root, plugin};
 use crate::notify::{Origin, current_dir, ping_desk};
 use crate::state::{current_state, update_state};
 use crate::tty::{Mark, Style, mask_secret, wait_for_key};
-use crate::ui::{self, BAD, DIM, GOOD, HEADER, View, WARN, check, toggle};
+use crate::ui::{self, BAD, DIM, GOOD, HEADER, View, WARN, check};
 
 const HELP: [(&str, &str); 5] = [
     ("↑↓", "move"),
@@ -41,8 +41,10 @@ const HELP_NO_TEST: [(&str, &str); 5] = [
 ];
 /// The form's width (or the screen's, if narrower): room for a typical webhook URL.
 const FORM_WIDTH: u16 = 84;
+/// Where field labels, checkboxes and the button start: under a section's title, after its number.
+const INDENT: &str = "   ";
 /// Columns before a field's value: indent and label.
-const LABEL_WIDTH: usize = 17;
+const LABEL_WIDTH: usize = 18;
 
 #[derive(Debug, Default)]
 pub(crate) struct SetupOptions {
@@ -64,14 +66,19 @@ pub(crate) struct SetupOptions {
 enum Field {
     Url,
     Authorization,
+    Name,
     Description,
 }
+
+/// The text fields, in the order they're shown and checked.
+const FIELDS: [Field; 4] = [Field::Url, Field::Authorization, Field::Name, Field::Description];
 
 impl Field {
     const fn label(self) -> &'static str {
         match self {
             Self::Url => "Webhook URL",
             Self::Authorization => "Authorization",
+            Self::Name => "Name",
             Self::Description => "Description",
         }
     }
@@ -91,6 +98,7 @@ impl Field {
                 }
                 Ok(checked)
             }
+            Self::Name => check_desk_name(value),
             Self::Description => Ok(value.trim().to_owned()),
         }
     }
@@ -175,13 +183,16 @@ struct Start<'a> {
     url: Option<String>,
     authorization: Option<String>,
     description: Option<String>,
-    /// `Some` when other desks exist and this one isn't the default yet: whether to make it the default.
-    make_default: Option<bool>,
+    /// The names of the saved desks, and which one is the default.
+    saved: Vec<String>,
+    default_desk: Option<String>,
+    /// `--default`: whether "Make it the default desk" starts ticked.
+    make_default: bool,
     plugin: Plugin,
     /// Whether auto-notify starts ticked.
     auto_notify: bool,
-    /// Where `nudge` already is; `None` offers to link it.
-    command: Option<PathBuf>,
+    /// Where `nudge` already is, as shown; `None` offers to link it.
+    command: Option<String>,
     /// The shortest turn auto-notify sends, in words.
     min_turn: String,
     test: bool,
@@ -209,15 +220,18 @@ enum Edits {
 /// The setup form. Pure state: no terminal, no files, no network.
 #[derive(Debug)]
 struct Form {
-    name: String,
-    updating: bool,
     url: Entry,
     authorization: Entry,
+    name: Entry,
     description: Entry,
-    make_default: Option<bool>,
+    /// The saved desk the form started from, if any.
+    loaded: Option<String>,
+    saved: Vec<String>,
+    default_desk: Option<String>,
+    make_default: bool,
     plugin: Plugin,
     auto_notify: bool,
-    command: Option<PathBuf>,
+    command: Option<String>,
     link_command: bool,
     min_turn: String,
     ping: Ping,
@@ -230,19 +244,25 @@ impl Form {
     fn new(start: Start<'_>) -> Self {
         let current = start.current;
         Self {
-            name: start.name.to_owned(),
-            updating: current.is_some(),
             url: Entry::new(start.url.or_else(|| current.map(|desk| desk.url.clone()))),
             authorization: Entry::new(
                 start
                     .authorization
                     .or_else(|| current.map(|desk| desk.authorization.clone())),
             ),
+            // Not checked yet: `--desk` is only validated when the form is saved or the field is left.
+            name: Entry {
+                value: start.name.to_owned(),
+                ..Entry::default()
+            },
             description: Entry::new(
                 start
                     .description
                     .or_else(|| current.and_then(|desk| desk.description.clone())),
             ),
+            loaded: current.map(|desk| desk.name.clone()),
+            saved: start.saved,
+            default_desk: start.default_desk,
             make_default: start.make_default,
             plugin: start.plugin,
             auto_notify: start.auto_notify,
@@ -256,13 +276,15 @@ impl Form {
         }
     }
 
+    /// Whether there's a default to choose: other desks are saved and this one isn't the default already.
+    fn offers_default(&self) -> bool {
+        let name = self.name.value.as_str();
+        self.saved.iter().any(|saved| saved != name) && self.default_desk.as_deref() != Some(name)
+    }
+
     fn rows(&self) -> Vec<Row> {
-        let mut rows = vec![
-            Row::Field(Field::Url),
-            Row::Field(Field::Authorization),
-            Row::Field(Field::Description),
-        ];
-        if self.make_default.is_some() {
+        let mut rows: Vec<Row> = FIELDS.into_iter().map(Row::Field).collect();
+        if self.offers_default() {
             rows.push(Row::Default);
         }
         if matches!(self.plugin, Plugin::Installed(_)) {
@@ -293,6 +315,7 @@ impl Form {
         match field {
             Field::Url => &self.url,
             Field::Authorization => &self.authorization,
+            Field::Name => &self.name,
             Field::Description => &self.description,
         }
     }
@@ -301,6 +324,7 @@ impl Form {
         match field {
             Field::Url => &mut self.url,
             Field::Authorization => &mut self.authorization,
+            Field::Name => &mut self.name,
             Field::Description => &mut self.description,
         }
     }
@@ -349,7 +373,7 @@ impl Form {
 
     fn toggle(&mut self, row: Row) {
         match row {
-            Row::Default => self.make_default = self.make_default.map(|on| !on),
+            Row::Default => self.make_default = !self.make_default,
             Row::AutoNotify => self.auto_notify = !self.auto_notify,
             Row::Command => self.link_command = !self.link_command,
             Row::Field(_) | Row::Save => return,
@@ -360,11 +384,15 @@ impl Form {
     /// Check every field; ready to submit unless one needs fixing, which gets the cursor.
     fn submit(&mut self) -> Outcome {
         self.leave();
-        for field in [Field::Url, Field::Authorization, Field::Description] {
+        for field in FIELDS {
             self.check_field(field);
             let entry = self.entry_mut(field);
-            if field != Field::Description && entry.value.is_empty() {
-                entry.problem = Some(format!("Paste or type the {}.", field.label()));
+            if entry.value.is_empty() {
+                entry.problem = match field {
+                    Field::Url | Field::Authorization => Some(format!("Paste or type the {}.", field.label())),
+                    Field::Name => Some("Give this desk a name.".into()),
+                    Field::Description => None,
+                };
             }
             if entry.problem.is_some() {
                 self.status = None;
@@ -457,7 +485,7 @@ impl Form {
     fn desk(&self, signing_secret: Option<&str>) -> Result<Desk> {
         let description = Some(self.description.value.as_str()).filter(|text| !text.is_empty());
         validate_desk(
-            &self.name,
+            &self.name.value,
             &self.url.value,
             &self.authorization.value,
             description,
@@ -505,6 +533,10 @@ impl Form {
                 "Copy the Authorization header from the same page and press Enter here to paste it. It's never shown."
                     .into()
             }
+            Some(Row::Field(Field::Name)) => {
+                "A short name for this desk, used by nudge list, --desk and settings. With one desk, the default is fine."
+                    .into()
+            }
             Some(Row::Field(Field::Description)) => {
                 "Optional. Shown by nudge list and to agents choosing a desk.".into()
             }
@@ -526,11 +558,24 @@ impl Form {
         }
     }
 
-    /// A text field's line; values get `room` columns.
-    fn field_line(&self, field: Field, focused: bool, room: usize) -> Line<'static> {
+    /// What saving does to the desk of this name: a new one, an update, or replacing another saved desk.
+    fn name_note(&self) -> Option<Span<'static>> {
+        let name = self.name.value.as_str();
+        if name.is_empty() || self.name.problem.is_some() {
+            None
+        } else if self.loaded.as_deref() == Some(name) {
+            Some(Span::styled("already saved: saving updates it", DIM))
+        } else if self.saved.iter().any(|saved| saved == name) {
+            Some(Span::styled("replaces the saved desk with this name", WARN))
+        } else {
+            Some(Span::styled("will be added", DIM))
+        }
+    }
+
+    /// A text field's line, and where the text cursor goes when it's focused; values get `room` columns.
+    fn field_line(&self, field: Field, focused: bool, room: usize) -> (Line<'static>, Option<usize>) {
         let entry = self.entry(field);
-        let mut spans = vec![Span::raw(format!("  {:<15}", field.label()))];
-        let hidden_checked = field == Field::Authorization && entry.checked;
+        let mut spans = vec![Span::raw(format!("{INDENT}{:<15}", field.label()))];
         // A header shows only its masked preview once checked; while it's typed, only dots.
         let shown = match field {
             Field::Authorization if entry.checked => format!(
@@ -539,92 +584,116 @@ impl Form {
                 entry.value.chars().count()
             ),
             Field::Authorization => "•".repeat(entry.value.chars().count().min(room)),
-            Field::Url | Field::Description => fit(&entry.value, room, focused),
+            Field::Url | Field::Name | Field::Description => fit(&entry.value, room, focused),
         };
-        spans.push(Span::raw(shown));
-        if focused && !hidden_checked {
-            spans.push(Span::raw("▏"));
-        }
+        let shown = Span::raw(shown);
+        // A checked header can't be edited in place (typing replaces it), so it gets no text cursor.
+        let caret = (focused && !(field == Field::Authorization && entry.checked)).then(|| LABEL_WIDTH + shown.width());
+        spans.push(shown);
         if entry.value.is_empty() {
-            let placeholder = match field {
-                Field::Url | Field::Authorization => "Enter pastes from the clipboard",
-                Field::Description => "optional",
+            let placeholder = match (field, focused) {
+                (Field::Url | Field::Authorization, true) => "press Enter to paste, or type",
+                (Field::Url | Field::Authorization | Field::Name, _) => "not set",
+                (Field::Description, _) => "optional",
             };
             spans.push(Span::styled(placeholder, DIM));
         }
         if entry.problem.is_some() {
             spans.push(Span::styled("  ✗", BAD));
-        } else if entry.checked && !entry.value.is_empty() {
+        } else if field == Field::Name {
+            spans.extend(
+                self.name_note()
+                    .map(|note| [Span::raw("  "), note])
+                    .into_iter()
+                    .flatten(),
+            );
+        } else if entry.checked && !entry.value.is_empty() && field != Field::Description {
             spans.push(Span::styled("  ✓", GOOD));
         }
-        Line::from(spans)
+        (Line::from(spans), caret)
     }
 
-    /// The lines to draw, and which one the cursor is on. Field values get `room` columns.
-    fn lines(&self, room: usize) -> (Vec<Line<'static>>, usize) {
+    /// The lines to draw, which one the cursor is on, and where the text cursor goes on it. Field values get
+    /// `room` columns.
+    fn lines(&self, room: usize) -> (Vec<Line<'static>>, usize, Option<usize>) {
         let cursor_row = self.current();
-        let state = if self.updating { "  saved desk" } else { "  new desk" };
-        let mut items: Vec<(Option<Row>, Line<'static>)> = vec![(
-            None,
+        let section = |number: &str, title: &str, note: &'static str| {
             Line::from(vec![
-                Span::styled(format!("Desk \"{}\"", self.name), HEADER),
-                Span::styled(state, DIM),
-            ]),
-        )];
-        for field in [Field::Url, Field::Authorization, Field::Description] {
-            let line = self.field_line(field, cursor_row == Some(Row::Field(field)), room);
+                Span::styled(format!("{number}  {title}"), HEADER),
+                Span::styled(note, DIM),
+            ])
+        };
+        // A checkbox or a status mark (padded to a checkbox's width), a label and a detail, all lined up.
+        let option = |mark: Span<'static>, label: &str, detail: Option<Span<'static>>| {
+            let mut spans = vec![Span::raw(INDENT), mark, Span::raw(format!(" {label:<25}"))];
+            spans.extend(detail.map(|detail| [Span::raw("  "), detail]).into_iter().flatten());
+            Line::from(spans)
+        };
+        let mut items: Vec<(Option<Row>, Line<'static>)> = vec![
+            (
+                None,
+                Line::raw("Your desk is the webhook that receives nudge's events: an AI routine,"),
+            ),
+            (None, Line::raw("a workflow automation or your own service.")),
+            (None, Line::default()),
+            (
+                None,
+                section("1", "Webhook", "  copy both from your desk's webhook settings"),
+            ),
+        ];
+        let mut caret = None;
+        for field in FIELDS {
+            if field == Field::Name {
+                items.extend([(None, Line::default()), (None, section("2", "This desk", ""))]);
+            }
+            let focused = cursor_row == Some(Row::Field(field));
+            let (line, at) = self.field_line(field, focused, room);
+            if focused {
+                caret = at;
+            }
             items.push((Some(Row::Field(field)), line));
         }
-        if let Some(on) = self.make_default {
-            let label = format!(" Make \"{}\" the default desk", self.name);
-            items.push((Some(Row::Default), toggle(check(on), label)));
+        if self.offers_default() {
+            let line = option(check(self.make_default), "Make it the default desk", None);
+            items.push((Some(Row::Default), line));
         }
-        items.extend([(None, Line::default()), (None, Line::styled("After saving", HEADER))]);
+        items.extend([(None, Line::default()), (None, section("3", "After saving", ""))]);
         let warn = |text: &'static str, command: &'static str| {
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled("!", WARN),
-                Span::raw(text),
-                Span::styled(command, HEADER),
-            ])
+            option(Span::styled(" ! ", WARN), text, Some(Span::styled(command, HEADER)))
         };
         match &self.plugin {
             Plugin::Installed(info) => {
-                let mut line = toggle(check(self.auto_notify), " Turn on auto-notify      ");
-                line.push_span(if info.enabled {
-                    Span::styled("  herdr plugin enabled", DIM)
+                let state = if info.enabled {
+                    Span::styled("herdr plugin enabled", DIM)
                 } else {
-                    Span::styled("  herdr plugin disabled", WARN)
-                });
+                    Span::styled("herdr plugin disabled", WARN)
+                };
+                let line = option(check(self.auto_notify), "Turn on auto-notify", Some(state));
                 items.push((Some(Row::AutoNotify), line));
             }
             Plugin::HerdrUnavailable => {
                 items.push((
                     None,
-                    warn(" herdr isn't running: for auto-notify, run ", "nudge setup in herdr"),
+                    warn("herdr isn't running", "run nudge setup in herdr for auto-notify"),
                 ));
             }
             Plugin::NotInstalled => {
                 items.push((
                     None,
-                    warn(" herdr plugin not installed: ", "herdr plugin install weskor/nudge"),
+                    warn("herdr plugin not installed", "herdr plugin install weskor/nudge"),
                 ));
             }
         }
         if let Some(path) = &self.command {
+            // Keep the end of a long path: that's where it says what it is.
+            let shown = Span::styled(fit(path, room, true), DIM);
             items.push((
                 None,
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled("✓", GOOD),
-                    Span::raw(" nudge command  "),
-                    // Keep the end of a long path: that's where it says what it is.
-                    Span::styled(fit(&path.display().to_string(), room, true), DIM),
-                ]),
+                option(Span::styled(" ✓ ", GOOD), "nudge command installed", Some(shown)),
             ));
         } else {
-            let mut line = toggle(check(self.link_command), " Install the nudge command");
-            line.push_span(Span::styled("  into ~/.local/bin", DIM));
+            let detail = Span::styled("into ~/.local/bin", DIM);
+            let line = option(check(self.link_command), "Install the nudge command", Some(detail));
             items.push((Some(Row::Command), line));
         }
         let button = match self.ping {
@@ -636,14 +705,14 @@ impl Form {
             (None, Line::default()),
             (
                 Some(Row::Save),
-                Line::from(vec![Span::raw("  "), Span::styled(button, HEADER)]),
+                Line::from(vec![Span::raw(INDENT), Span::styled(button, HEADER)]),
             ),
         ]);
         let selected = items
             .iter()
             .position(|(row, _)| row.is_some() && *row == cursor_row)
             .unwrap_or(0);
-        (items.into_iter().map(|(_, line)| line).collect(), selected)
+        (items.into_iter().map(|(_, line)| line).collect(), selected, caret)
     }
 }
 
@@ -725,7 +794,7 @@ fn draw(terminal: &mut DefaultTerminal, form: &Form) -> Result<()> {
     let room = usize::from(width.saturating_sub(ui::FRAME_WIDTH))
         .saturating_sub(LABEL_WIDTH + 4)
         .max(8);
-    let (lines, selected) = form.lines(room);
+    let (lines, selected, caret) = form.lines(room);
     let status = form.status();
     ui::draw(
         terminal,
@@ -734,6 +803,7 @@ fn draw(terminal: &mut DefaultTerminal, form: &Form) -> Result<()> {
             unsaved: false,
             lines,
             selected,
+            caret: caret.and_then(|column| u16::try_from(column).ok()),
             note: ui::note(status.as_deref(), &form.hint()),
             help: if form.ping == Ping::Skip { &HELP_NO_TEST } else { &HELP },
             width: Some(width),
@@ -781,6 +851,12 @@ fn run_form(
     }
 }
 
+/// `path` with the home directory shown as `~`.
+fn tilde(path: &Path, home: &Path) -> String {
+    path.strip_prefix(home)
+        .map_or_else(|_| path.display().to_string(), |rest| format!("~/{}", rest.display()))
+}
+
 /// Do what the form's ticks asked for after saving, and say so.
 fn finish_extras(form: &Form, env: &Env) -> Result<()> {
     match &form.plugin {
@@ -801,9 +877,9 @@ fn finish_extras(form: &Form, env: &Env) -> Result<()> {
         ),
     }
     match &form.command {
-        Some(path) => eprintln!("{} nudge command {}", Mark::Ok, path.display()),
+        Some(shown) => eprintln!("{} nudge command {shown}", Mark::Ok),
         None if form.link_command => match link_command(&nudge_root(env), env) {
-            Ok(path) => eprintln!("{} nudge command {}", Mark::Ok, path.display()),
+            Ok(path) => eprintln!("{} nudge command {}", Mark::Ok, tilde(&path, &env.home())),
             Err(error) => eprintln!("{} {error}", Mark::Fail),
         },
         None => {}
@@ -832,13 +908,6 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
     let authorization = flag(&options.authorization)
         .map(|value| check_authorization(&value))
         .transpose()?;
-    // Offer the default only when there's a choice: other desks, and this one isn't the default already.
-    let make_default = existing
-        .as_ref()
-        .is_some_and(|config| {
-            config.desk.iter().any(|desk| desk.name != name) && config.default_desk.as_deref() != Some(name)
-        })
-        .then_some(options.make_default);
     let link = command_link(env);
     let mut form = Form::new(Start {
         name,
@@ -846,12 +915,20 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
         url,
         authorization,
         description: options.description.clone(),
-        make_default,
+        saved: existing
+            .as_ref()
+            .map(|config| config.desk.iter().map(|desk| desk.name.clone()).collect())
+            .unwrap_or_default(),
+        default_desk: existing.as_ref().and_then(|config| config.default_desk.clone()),
+        make_default: options.make_default,
         plugin: plugin(env, &System),
         // A first setup suggests auto-notify; a rerun keeps what's on.
         auto_notify: existing.is_none() || current_state(env).auto,
         // Plugin panes get herdr's server PATH, which usually lacks ~/.local/bin, so also accept the link itself.
-        command: env.which("nudge").or_else(|| link.exists.then_some(link.path)),
+        command: env
+            .which("nudge")
+            .or_else(|| link.exists.then_some(link.path))
+            .map(|path| tilde(&path, &env.home())),
         min_turn: seconds_in_words(
             existing
                 .as_ref()
@@ -881,8 +958,15 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
         None if options.test => eprintln!("{} Saved without a successful test ping", Mark::Warn),
         None => {}
     }
-    let config = save(&path, existing, desk, form.make_default.unwrap_or(options.make_default))?;
-    let as_default = if config.default_desk.as_deref() == Some(name) {
+    // Without a choice on screen (no other desks, or it's the default already), `--default` decides.
+    let make_default = if form.offers_default() {
+        form.make_default
+    } else {
+        options.make_default
+    };
+    let name = desk.name.clone();
+    let config = save(&path, existing, desk, make_default)?;
+    let as_default = if config.default_desk.as_deref() == Some(name.as_str()) {
         " as the default desk"
     } else {
         ""
@@ -986,7 +1070,6 @@ pub(crate) fn setup(options: &SetupOptions, env: &Env) -> Result<u8> {
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
-    use std::path::PathBuf;
 
     use super::{Field, Form, Key, Outcome, Row, SetupOptions, Start, scripted};
     use crate::config::{Desk, read_config};
@@ -1103,24 +1186,27 @@ mod tests {
         assert!(!message.contains("do-not-print"));
     }
 
-    fn form(current: Option<&Desk>, url: Option<&str>, authorization: Option<&str>) -> Form {
+    /// A form with `saved` desks (the first is the default), starting from `current` and the given flags.
+    fn form(saved: &[&str], current: Option<&Desk>, url: Option<&str>, authorization: Option<&str>) -> Form {
         Form::new(Start {
             name: "desk",
             current,
             url: url.map(str::to_owned),
             authorization: authorization.map(str::to_owned),
             description: None,
-            make_default: None,
+            saved: saved.iter().map(|name| (*name).to_owned()).collect(),
+            default_desk: saved.first().map(|name| (*name).to_owned()),
+            make_default: false,
             plugin: Plugin::HerdrUnavailable,
             auto_notify: true,
-            command: Some(PathBuf::from("/usr/bin/nudge")),
+            command: Some("/usr/bin/nudge".into()),
             min_turn: "2 minutes".into(),
             test: true,
         })
     }
 
     fn screen(form: &Form) -> String {
-        let (lines, _) = form.lines(60);
+        let (lines, _, _) = form.lines(60);
         let mut text = lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         text.push('\n');
         text.push_str(&form.status().unwrap_or_default());
@@ -1142,7 +1228,7 @@ mod tests {
 
     #[test]
     fn enter_on_an_empty_field_pastes_the_clipboard_and_a_value_that_fails_its_check_is_not_shown() {
-        let mut ui = form(None, None, None);
+        let mut ui = form(&[], None, None, None);
         assert_eq!(ui.handle(Key::Enter), Outcome::ReadClipboard);
         ui.fill_from_clipboard(Some("Bearer wrong-place-0123456789abcdef".into()));
         let text = screen(&ui);
@@ -1162,7 +1248,7 @@ mod tests {
 
     #[test]
     fn the_authorization_header_is_never_on_screen_and_typing_replaces_a_checked_one() {
-        let mut ui = form(None, Some("https://desks.example/hook"), None);
+        let mut ui = form(&[], None, Some("https://desks.example/hook"), None);
         ui.handle(Key::Down);
         type_text(&mut ui, "Bearer good-token-0123456789abcdef");
         let typing = screen(&ui);
@@ -1178,12 +1264,13 @@ mod tests {
 
     #[test]
     fn missing_values_and_rejected_ones_get_the_cursor_and_block_saving() {
-        let mut ui = form(None, None, None);
+        let mut ui = form(&[], None, None, None);
         assert_eq!(ui.handle(Key::Save), Outcome::Continue);
         assert_eq!(ui.current(), Some(Row::Field(Field::Url)));
         assert!(screen(&ui).contains("✗ Paste or type the Webhook URL."));
 
         let mut ui = form(
+            &[],
             None,
             Some("https://desks.example/hook"),
             Some("Bearer token-0123456789abcdef"),
@@ -1204,6 +1291,7 @@ mod tests {
     #[test]
     fn a_failed_test_that_blames_neither_value_offers_saving_anyway_until_something_changes() {
         let mut ui = form(
+            &[],
             None,
             Some("https://desks.example/hook"),
             Some("Bearer token-0123456789abcdef"),
@@ -1214,7 +1302,6 @@ mod tests {
         assert!(screen(&ui).contains("[ Save anyway ]"));
         assert_eq!(ui.handle(Key::Enter), Outcome::Submit { test: false });
         ui.test_failed(&failure(500));
-        ui.handle(Key::Up);
         ui.handle(Key::Up);
         type_text(&mut ui, "Main desk");
         assert_eq!(ui.handle(Key::Save), Outcome::Submit { test: true });
@@ -1229,22 +1316,54 @@ mod tests {
             authorization: "Bearer saved-0123456789abcdef".into(),
             signing_secret: None,
         };
-        let mut ui = form(Some(&saved), None, None);
-        assert!(screen(&ui).contains("saved desk"));
+        let mut ui = form(&["desk"], Some(&saved), None, None);
+        assert!(screen(&ui).contains("already saved: saving updates it"));
         assert_eq!(ui.handle(Key::Save), Outcome::Submit { test: true });
         assert_eq!(ui.desk(None).unwrap(), saved);
     }
 
     #[test]
+    fn renaming_the_desk_says_what_saving_will_do_and_offers_the_default() {
+        let saved = Desk {
+            name: "desk".into(),
+            description: None,
+            url: "https://desks.example/hook".into(),
+            authorization: "Bearer saved-0123456789abcdef".into(),
+            signing_secret: None,
+        };
+        let mut ui = form(&["desk", "research"], Some(&saved), None, None);
+        assert!(!ui.rows().contains(&Row::Default), "it's the default already");
+        ui.move_to(Row::Field(Field::Name));
+        ui.handle(Key::Clear);
+        type_text(&mut ui, "research");
+        assert!(screen(&ui).contains("replaces the saved desk with this name"));
+        ui.handle(Key::Clear);
+        type_text(&mut ui, "laptop");
+        let text = screen(&ui);
+        assert!(
+            text.contains("laptop  will be added") && text.contains("[ ] Make it the default desk"),
+            "{text}"
+        );
+        ui.handle(Key::Clear);
+        type_text(&mut ui, "my laptop");
+        assert_eq!(ui.handle(Key::Save), Outcome::Continue);
+        assert!(screen(&ui).contains(r#"may only contain letters, digits, "-" and "_""#));
+        ui.handle(Key::Clear);
+        type_text(&mut ui, "laptop");
+        assert_eq!(ui.handle(Key::Save), Outcome::Submit { test: true });
+        assert_eq!(ui.desk(None).unwrap().name, "laptop");
+    }
+
+    #[test]
     fn esc_asks_again_once_something_was_entered_and_ctrl_c_leaves_at_once() {
-        let mut ui = form(None, None, None);
+        let mut ui = form(&[], None, None, None);
         assert_eq!(ui.handle(Key::Quit), Outcome::Quit, "nothing entered");
-        let mut ui = form(None, None, None);
+        let mut ui = form(&[], None, None, None);
         type_text(&mut ui, "https://desks.example/hook");
         assert_eq!(ui.handle(Key::Quit), Outcome::Continue);
         assert!(screen(&ui).contains("Press Esc again"));
         assert_eq!(ui.handle(Key::Quit), Outcome::Quit);
-        let mut ui = form(None, None, None);
+        let mut ui = form(&[], None, None, None);
         type_text(&mut ui, "h");
         assert_eq!(ui.handle(Key::Cancel), Outcome::Quit);
     }
