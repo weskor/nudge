@@ -97,6 +97,8 @@ pub(super) fn problem(message: &str) -> &str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Source {
     Flag,
+    File,
+    Environment,
     Saved,
     Clipboard,
     Pasted,
@@ -106,12 +108,17 @@ impl Source {
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Flag => "from the command line",
+            Self::File => "from --authorization-file",
+            Self::Environment => "from the environment",
             Self::Saved => "saved",
             Self::Clipboard => "from the clipboard",
             Self::Pasted => "pasted",
         }
     }
 }
+
+/// A step-1 value and where it came from, if there is one.
+pub(super) type Sourced = Option<(String, Source)>;
 
 /// A text field's value and what is known about it.
 #[derive(Clone, Debug, Default)]
@@ -126,7 +133,7 @@ pub(super) struct Entry {
 }
 
 impl Entry {
-    fn given(value: Option<(String, Source)>) -> Self {
+    fn given(value: Sourced) -> Self {
         value.map_or_else(Self::default, |(value, source)| Self {
             value,
             checked: true,
@@ -219,8 +226,8 @@ pub(super) struct Start {
     pub(super) name: String,
     /// The saved webhook this run updates, if `name` is one.
     pub(super) loaded: Option<String>,
-    pub(super) url: Option<(String, Source)>,
-    pub(super) authorization: Option<(String, Source)>,
+    pub(super) url: Sourced,
+    pub(super) authorization: Sourced,
     pub(super) description: Option<String>,
     /// The names of the saved webhooks, and which one is the default.
     pub(super) saved: Vec<String>,

@@ -11,7 +11,7 @@ use std::path::Path;
 use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use ratatui::crossterm::execute;
 
-use self::wizard::{Source, Start, Wizard};
+use self::wizard::{Source, Sourced, Start, Wizard};
 use crate::config::{
     Auto, Config, Webhook, check_authorization, check_webhook_url, default_config_path, read_config, seconds_in_words,
     upsert_webhook, validate_webhook, write_config,
@@ -24,16 +24,23 @@ use crate::state::{current_state, update_state};
 use crate::tty::{Mark, Style, wait_for_key};
 
 #[derive(Debug, Default)]
+#[expect(clippy::struct_excessive_bools, reason = "independent command-line flags")]
 pub(crate) struct SetupOptions {
     pub(crate) webhook: Option<String>,
     pub(crate) url: Option<String>,
     pub(crate) authorization: Option<String>,
+    /// A file holding the Authorization header (`-`: stdin), so it stays out of shell history.
+    pub(crate) authorization_file: Option<String>,
     pub(crate) description: Option<String>,
     /// HMAC signing secret shared with the webhook; kept from the existing webhook when not given.
     pub(crate) signing_secret: Option<String>,
     pub(crate) make_default: bool,
     /// Test-ping the webhook before saving (off with `--no-test`).
     pub(crate) test: bool,
+    /// No screen: accept every default, and do the step-3 choices that plain scripted setup leaves alone.
+    pub(crate) yes: bool,
+    pub(crate) no_auto_notify: bool,
+    pub(crate) no_install_command: bool,
     /// Running inside a herdr plugin pane: wait for a key before exiting.
     pub(crate) pane: bool,
 }
@@ -56,22 +63,57 @@ fn tilde(path: &Path, home: &Path) -> String {
         .map_or_else(|_| path.display().to_string(), |rest| format!("~/{}", rest.display()))
 }
 
-/// What setup starts from on this machine: herdr's plugin, the command on PATH, the auto-notify state.
-fn choices(make_default: bool, first_setup: bool, env: &Env) -> Choices {
+/// What setup starts from on this machine (herdr's plugin, the command on PATH, the auto-notify state), with the
+/// step-3 flags applied.
+fn choices(options: &SetupOptions, first_setup: bool, env: &Env) -> Choices {
     let plugin = plugin(env, &System);
     let link = command_link(env);
     Choices {
         // A first setup suggests auto-notify; a rerun keeps what's on.
-        auto_notify: matches!(plugin, Plugin::Installed(_)).then(|| first_setup || current_state(env).auto),
+        auto_notify: matches!(plugin, Plugin::Installed(_))
+            .then(|| !options.no_auto_notify && (first_setup || current_state(env).auto)),
         plugin,
         // Plugin panes get herdr's server PATH, which usually lacks ~/.local/bin, so also accept the link itself.
         command: env
             .which("nudge")
             .or_else(|| link.exists.then_some(link.path))
             .map(|path| tilde(&path, &env.home())),
-        link_command: true,
-        make_default,
+        link_command: !options.no_install_command,
+        make_default: options.make_default,
     }
+}
+
+/// The step-1 values from the command line and the environment, before the saved webhook, with where each came
+/// from. Values are as given (scripted setup reports problems with the whole webhook; the wizard checks them first).
+fn given(options: &SetupOptions, env: &Env) -> Result<(Sourced, Sourced)> {
+    let flag = |value: &Option<String>| value.clone().filter(|value| !value.is_empty());
+    let from_env = |name: &str, source| env.get(name).map(|value| (value.to_owned(), source));
+    let url = flag(&options.url)
+        .map(|url| (url, Source::Flag))
+        .or_else(|| from_env("NUDGE_WEBHOOK_URL", Source::Environment));
+    let file = match (flag(&options.authorization), flag(&options.authorization_file)) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Usage(
+                "use --authorization or --authorization-file, not both".into(),
+            ));
+        }
+        (Some(value), None) => return Ok((url, Some((value, Source::Flag)))),
+        (None, file) => file,
+    };
+    let authorization = match file.as_deref() {
+        Some("-") => {
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            Some((input.trim().to_owned(), Source::File))
+        }
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|error| Error::Setup(format!("can't read --authorization-file {path}: {error}")))?;
+            Some((text.trim().to_owned(), Source::File))
+        }
+        None => from_env("NUDGE_WEBHOOK_AUTHORIZATION", Source::Environment),
+    };
+    Ok((url, authorization))
 }
 
 /// Do what the choices ask for, and say so.
@@ -143,6 +185,11 @@ fn finish(
     Ok(0)
 }
 
+/// The shortest turn auto-notify sends, in words.
+fn min_turn(config: Option<&Config>) -> String {
+    seconds_in_words(config.map_or_else(Auto::default, |config| config.auto).min_turn_seconds)
+}
+
 /// The setup wizard in a terminal; returns the exit code.
 fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
     let existing = read_config(&default_config_path(env))?;
@@ -151,25 +198,21 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
         .as_ref()
         .and_then(|config| config.webhook.iter().find(|webhook| webhook.name == name))
         .cloned();
-    let flag = |value: &Option<String>| value.clone().filter(|value| !value.is_empty());
-    let url = flag(&options.url)
-        .map(|url| check_webhook_url(&url).map(|url| (url, Source::Flag)))
+    // Values from flags, the file and the environment are checked now: the wizard shows them as accepted.
+    let (url, authorization) = given(options, env)?;
+    let url = url
+        .map(|(url, source)| check_webhook_url(&url).map(|url| (url, source)))
         .transpose()?
         .or_else(|| current.as_ref().map(|webhook| (webhook.url.clone(), Source::Saved)));
-    let authorization = flag(&options.authorization)
-        .map(|value| check_authorization(&value).map(|value| (value, Source::Flag)))
+    let authorization = authorization
+        .map(|(value, source)| check_authorization(&value).map(|value| (value, source)))
         .transpose()?
         .or_else(|| {
             current
                 .as_ref()
                 .map(|webhook| (webhook.authorization.clone(), Source::Saved))
         });
-    let min_turn = seconds_in_words(
-        existing
-            .as_ref()
-            .map_or_else(Auto::default, |config| config.auto)
-            .min_turn_seconds,
-    );
+    let min_turn = min_turn(existing.as_ref());
     let mut wizard = Wizard::new(Start {
         name,
         loaded: current.as_ref().map(|webhook| webhook.name.clone()),
@@ -184,7 +227,7 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
             .map(|config| config.webhook.iter().map(|webhook| webhook.name.clone()).collect())
             .unwrap_or_default(),
         default_webhook: existing.as_ref().and_then(|config| config.default_webhook.clone()),
-        choices: choices(options.make_default, existing.is_none(), env),
+        choices: choices(options, existing.is_none(), env),
         min_turn: min_turn.clone(),
         signing_secret: options
             .signing_secret
@@ -255,7 +298,22 @@ fn save(path: &Path, existing: Option<Config>, webhook: Webhook, make_default: b
     Ok(config)
 }
 
-/// Non-interactive setup from flags and stdin (URL, then Authorization, one per line).
+/// What a run without a screen says when a value is missing (`yes`: name the ways to give it).
+fn missing(yes: bool, url_missing: bool) -> String {
+    match (yes, url_missing) {
+        (true, true) => "setup --yes needs the webhook URL: --url or NUDGE_WEBHOOK_URL".into(),
+        (true, false) => "setup --yes needs the Authorization header: --authorization, --authorization-file or \
+             NUDGE_WEBHOOK_AUTHORIZATION"
+            .into(),
+        (false, _) => "setup needs the webhook URL and Authorization value: run it in a terminal, pass \
+                       --url/--authorization, or pipe them on stdin (one per line)"
+            .into(),
+    }
+}
+
+/// Setup without a screen. Values come from flags, the file and the environment, then stdin (URL, then
+/// Authorization, one per line), then the saved webhook. With `--yes` it also does the step-3 choices (plain
+/// scripted setup leaves them alone) and says what happens next.
 fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
     let path = default_config_path(env);
     let existing = read_config(&path)?;
@@ -264,9 +322,11 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
         .as_ref()
         .and_then(|config| config.webhook.iter().find(|webhook| webhook.name == name))
         .cloned();
-    let mut url = options.url.clone();
-    let mut authorization = options.authorization.clone();
-    if url.is_none() || authorization.is_none() {
+    let (url, authorization) = given(options, env)?;
+    let mut url = url.map(|(url, _)| url);
+    let mut authorization = authorization.map(|(value, _)| value);
+    let stdin_read = options.authorization_file.as_deref() == Some("-");
+    if (url.is_none() || authorization.is_none()) && !stdin_read && !std::io::stdin().is_terminal() {
         let mut input = String::new();
         std::io::stdin().read_to_string(&mut input)?;
         let mut lines = input
@@ -279,12 +339,9 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
     }
     let url = url.or_else(|| current.as_ref().map(|webhook| webhook.url.clone()));
     let authorization = authorization.or_else(|| current.as_ref().map(|webhook| webhook.authorization.clone()));
+    let url_missing = url.is_none();
     let (Some(url), Some(authorization)) = (url, authorization) else {
-        return Err(Error::Setup(
-            "setup needs the webhook URL and Authorization value: run it in a terminal, pass --url/--authorization, \
-             or pipe them on stdin (one per line)"
-                .into(),
-        ));
+        return Err(Error::Setup(missing(options.yes, url_missing)));
     };
     let signing_secret = options
         .signing_secret
@@ -301,9 +358,9 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
         description.as_deref(),
         signing_secret.as_deref(),
     )?;
-    if options.test {
+    let tested = if options.test {
         match ping(&webhook, env)? {
-            Ok(status) => println!("Test ping to \"{}\": HTTP {status}.", webhook.name),
+            Ok(status) => Some(status),
             Err(error) => {
                 return Err(Error::Setup(format!(
                     "test ping failed, nothing saved: {}. Use --no-test to save without testing.",
@@ -311,6 +368,22 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
                 )));
             }
         }
+    } else {
+        None
+    };
+    if options.yes {
+        let choices = choices(options, existing.is_none(), env);
+        return finish(
+            tested,
+            options.test,
+            webhook,
+            &choices,
+            &min_turn(existing.as_ref()),
+            env,
+        );
+    }
+    if let Some(status) = tested {
+        println!("Test ping to \"{name}\": HTTP {status}.");
     }
     let config = save(&path, existing, webhook, options.make_default)?;
     let as_default = if config.default_webhook.as_deref() == Some(name) {
@@ -323,7 +396,7 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
 }
 
 pub(crate) fn setup(options: &SetupOptions, env: &Env) -> Result<u8> {
-    if !std::io::stdin().is_terminal() {
+    if options.yes || !std::io::stdin().is_terminal() {
         return scripted(options, env);
     }
     let result = match interactive(options, env) {
@@ -343,6 +416,7 @@ pub(crate) fn setup(options: &SetupOptions, env: &Env) -> Result<u8> {
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
+    use std::path::{Path, PathBuf};
 
     use super::{SetupOptions, scripted};
     use crate::config::read_config;
@@ -460,5 +534,105 @@ mod tests {
             &env,
         ));
         assert!(!message.contains("do-not-print"));
+    }
+
+    /// A machine with no herdr and no `nudge` on PATH, home, state and config in `dir`; `url` and `authorization`
+    /// go into the setup environment variables (empty: unset).
+    fn bare_env(dir: &Path, url: &str, authorization: &str) -> Env {
+        let empty = dir.join("empty-path");
+        fs::create_dir_all(&empty).unwrap();
+        let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
+        Env::from([
+            ("NUDGE_CONFIG", path("config.toml").as_str()),
+            ("NUDGE_STATE_DIR", dir.to_str().unwrap()),
+            ("NUDGE_AGENT", "setup-test"),
+            ("NUDGE_ROOT", "/opt/nudge"),
+            ("HOME", path("home").as_str()),
+            ("PATH", empty.to_str().unwrap()),
+            ("HERDR_BIN_PATH", path("no-herdr").as_str()),
+            ("NUDGE_WEBHOOK_URL", url),
+            ("NUDGE_WEBHOOK_AUTHORIZATION", authorization),
+        ])
+    }
+
+    fn saved(dir: &Path) -> (String, String) {
+        let webhook = read_config(&dir.join("config.toml"))
+            .unwrap()
+            .unwrap()
+            .webhook
+            .remove(0);
+        (webhook.url, webhook.authorization)
+    }
+
+    fn command_link(dir: &Path) -> Option<PathBuf> {
+        fs::read_link(dir.join("home/.local/bin/nudge")).ok()
+    }
+
+    #[test]
+    fn yes_takes_values_from_the_environment_and_does_the_step_three_choices() {
+        let (hook, dir, _) = fixture();
+        let url = format!("{}/hook", hook.base);
+        let yes = SetupOptions {
+            yes: true,
+            test: true,
+            ..SetupOptions::default()
+        };
+        assert_eq!(scripted(&yes, &bare_env(dir.path(), &url, GOOD)).unwrap(), 0);
+        assert_eq!(saved(dir.path()), (url.clone(), GOOD.to_owned()));
+        assert_eq!(command_link(dir.path()), Some(PathBuf::from("/opt/nudge/bin/nudge")));
+
+        let declined = tempfile::tempdir().unwrap();
+        let options = SetupOptions {
+            no_install_command: true,
+            ..yes
+        };
+        assert_eq!(scripted(&options, &bare_env(declined.path(), &url, GOOD)).unwrap(), 0);
+        assert_eq!(command_link(declined.path()), None);
+
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(
+            scripted(&options_test(), &bare_env(plain.path(), &url, GOOD)).unwrap(),
+            0
+        );
+        assert_eq!(
+            command_link(plain.path()),
+            None,
+            "plain scripted setup leaves the command alone"
+        );
+    }
+
+    fn options_test() -> SetupOptions {
+        SetupOptions {
+            test: true,
+            ..SetupOptions::default()
+        }
+    }
+
+    #[test]
+    fn the_authorization_file_and_flags_win_over_the_environment() {
+        let (hook, dir, _) = fixture();
+        let url = format!("{}/hook", hook.base);
+        let file = dir.path().join("header");
+        fs::write(&file, format!("  Authorization: {GOOD}\n")).unwrap();
+        let options = SetupOptions {
+            url: Some(url.clone()),
+            authorization_file: Some(file.to_str().unwrap().to_owned()),
+            ..options_test()
+        };
+        let env = bare_env(dir.path(), "https://wrong.example/hook", "Bearer env-token-0123456789");
+        assert_eq!(scripted(&options, &env).unwrap(), 0);
+        assert_eq!(saved(dir.path()), (url, GOOD.to_owned()));
+
+        let both = SetupOptions {
+            authorization: Some(GOOD.into()),
+            ..options
+        };
+        assert!(matches!(scripted(&both, &env), Err(Error::Usage(_))));
+        let missing = SetupOptions {
+            authorization_file: Some(dir.path().join("nope").to_str().unwrap().to_owned()),
+            ..options_test()
+        };
+        let message = setup_error(scripted(&missing, &env));
+        assert!(message.contains("can't read --authorization-file"), "{message}");
     }
 }

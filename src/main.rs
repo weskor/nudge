@@ -27,8 +27,9 @@ use crate::setup::{SetupOptions, setup};
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE: &str = "Usage:
-  nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE] [--description TEXT]
-               [--signing-secret VALUE] [--default] [--no-test]
+  nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE | --authorization-file PATH]
+               [--description TEXT] [--signing-secret VALUE] [--default] [--no-test]
+               [--yes] [--no-auto-notify] [--no-install-command]
   nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
   nudge test   [--webhook NAME] [--agent NAME]
   nudge doctor [--ping]
@@ -36,11 +37,14 @@ const USAGE: &str = "Usage:
   nudge list   [--json]
   nudge mcp
 
-  setup    Connect a webhook: copy its Webhook URL and Authorization header from
-           its settings when asked (clipboard, or paste/type). The header is never
-           shown. nudge test-pings the webhook before saving and asks again if it's
-           rejected, then offers the herdr plugin's auto-notify and the nudge command.
-           Without a terminal: values from flags or stdin (URL, then Authorization).
+  setup    Connect a webhook, step by step: its Webhook URL and Authorization
+           header (from the clipboard, pasted or typed; the header is never shown),
+           a name, what to do after saving, then a test ping before saving.
+           --yes (or no terminal): no screen; values from flags, the file,
+           $NUDGE_WEBHOOK_URL / $NUDGE_WEBHOOK_AUTHORIZATION, or stdin (URL, then
+           Authorization). --yes also turns on auto-notify and installs the nudge
+           command, unless --no-auto-notify / --no-install-command.
+           --authorization-file - reads the header from stdin.
            --signing-secret makes nudge sign every request (x-nudge-signature).
   notify   Send {id, sent_at, from_agent, cwd, repo, branch, status, message,
            reply_hint} to the webhook. Message \"-\" reads stdin. --status
@@ -72,10 +76,14 @@ struct Args {
     agent: Option<String>,
     url: Option<String>,
     authorization: Option<String>,
+    authorization_file: Option<String>,
     description: Option<String>,
     signing_secret: Option<String>,
     make_default: bool,
     no_test: bool,
+    yes: bool,
+    no_auto_notify: bool,
+    no_install_command: bool,
     ping: bool,
     pane: bool,
     json: bool,
@@ -108,10 +116,14 @@ fn parse_args(argv: Vec<String>) -> Result<Args> {
             Long("agent") => parsed.agent = Some(utf8(parser.value()?)?),
             Long("url") => parsed.url = Some(utf8(parser.value()?)?),
             Long("authorization") => parsed.authorization = Some(utf8(parser.value()?)?),
+            Long("authorization-file") => parsed.authorization_file = Some(utf8(parser.value()?)?),
             Long("description") => parsed.description = Some(utf8(parser.value()?)?),
             Long("signing-secret") => parsed.signing_secret = Some(utf8(parser.value()?)?),
             Long("default") => parsed.make_default = true,
             Long("no-test") => parsed.no_test = true,
+            Long("yes") | Short('y') => parsed.yes = true,
+            Long("no-auto-notify") => parsed.no_auto_notify = true,
+            Long("no-install-command") => parsed.no_install_command = true,
             Long("ping") => parsed.ping = true,
             Long("pane") => parsed.pane = true,
             Long("json") => parsed.json = true,
@@ -184,6 +196,46 @@ fn list(json: bool, env: &Env) -> Result<()> {
     Ok(())
 }
 
+/// `nudge notify <message...|->`.
+fn notify(rest: &[String], args: &Args, env: &Env) -> Result<u8> {
+    if rest.is_empty() {
+        return Err(Error::Usage(
+            "usage: nudge notify [--webhook NAME] [--status STATUS] <message...|->".into(),
+        ));
+    }
+    let status_name = args.status.as_deref().unwrap_or("done");
+    let Some(status) = NotifyStatus::parse(status_name) else {
+        let all: Vec<&str> = NotifyStatus::ALL.into_iter().map(NotifyStatus::as_str).collect();
+        return Err(Error::Usage(format!("--status must be one of: {}", all.join(", "))));
+    };
+    let message = if rest == ["-"] {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+        input
+    } else {
+        rest.join(" ")
+    };
+    let config = load_config(&default_config_path(env))?;
+    let cwd = current_dir()?;
+    let origin = Origin {
+        env,
+        cwd: &cwd,
+        run: &System,
+    };
+    report_sent(
+        "Notified",
+        &notify_webhook(
+            &config,
+            args.webhook.as_deref(),
+            status,
+            &message,
+            args.agent.clone(),
+            origin,
+        )?,
+    );
+    Ok(0)
+}
+
 fn run(words: Vec<String>, env: &Env) -> Result<u8> {
     // herdr plugin entrypoints parse their own arguments.
     if let Some((first, rest)) = words.split_first()
@@ -211,45 +263,19 @@ fn run(words: Vec<String>, env: &Env) -> Result<u8> {
                 webhook: args.webhook,
                 url: args.url,
                 authorization: args.authorization,
+                authorization_file: args.authorization_file,
                 description: args.description,
                 signing_secret: args.signing_secret,
                 make_default: args.make_default,
                 test: !args.no_test,
+                yes: args.yes,
+                no_auto_notify: args.no_auto_notify,
+                no_install_command: args.no_install_command,
                 pane: args.pane,
             };
             setup(&options, env)
         }
-        "notify" => {
-            if rest.is_empty() {
-                return Err(Error::Usage(
-                    "usage: nudge notify [--webhook NAME] [--status STATUS] <message...|->".into(),
-                ));
-            }
-            let status_name = args.status.as_deref().unwrap_or("done");
-            let Some(status) = NotifyStatus::parse(status_name) else {
-                let all: Vec<&str> = NotifyStatus::ALL.into_iter().map(NotifyStatus::as_str).collect();
-                return Err(Error::Usage(format!("--status must be one of: {}", all.join(", "))));
-            };
-            let message = if rest == ["-"] {
-                let mut input = String::new();
-                std::io::stdin().read_to_string(&mut input)?;
-                input
-            } else {
-                rest.join(" ")
-            };
-            let config = load_config(&default_config_path(env))?;
-            let cwd = current_dir()?;
-            let origin = Origin {
-                env,
-                cwd: &cwd,
-                run: &System,
-            };
-            report_sent(
-                "Notified",
-                &notify_webhook(&config, args.webhook.as_deref(), status, &message, args.agent, origin)?,
-            );
-            Ok(0)
-        }
+        "notify" => notify(rest, &args, env),
         "test" => {
             no_args(rest, "test")?;
             let config = load_config(&default_config_path(env))?;
