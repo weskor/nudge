@@ -1543,10 +1543,17 @@ def keys(text):
 SETTINGS_HELP = "↑↓ move  space pick  ←→ change  t test  s save  q quit"
 SETTINGS_UNSAVED = "Unsaved changes: press q again to discard them, or s to save."
 SETTINGS_NOTHING_TICKED = "Tick at least one workspace or agent, or choose Every agent."
-SETUP_HELP = "↑↓ move  enter paste/next  space tick  ctrl-s test & save  esc quit"
-SETUP_HELP_NO_TEST = "↑↓ move  enter paste/next  space tick  ctrl-s save  esc quit"
+SETUP_HELP_CONNECT = "enter next  tab field  esc leave  ctrl-c quit"
+SETUP_HELP_NAME = "enter next  tab field  shift+tab/esc back  ctrl-c quit"
+SETUP_HELP_OPTIONS = "enter accept  e change  shift+tab/esc back  q quit"
+SETUP_HELP_FAILED = "↑↓ choose  enter go  shift+tab/esc back  q quit"
 UP, DOWN, LEFT, RIGHT, ESC, CTRL_C = "\\e[A", "\\e[B", "\\e[D", "\\e[C", "\\e", "\\x03"
-CTRL_S, CTRL_U = "\\x13", "\\x15"
+CTRL_U, BACKTAB, PASTE_START, PASTE_END = "\\x15", "\\e[Z", "\\e[200~", "\\e[201~"
+
+
+def step_screen(number, *parts, cursor=None):
+    """A setup wizard screen on step `number` (1-4): its title, then `parts` in order."""
+    return on_screen(f"Setup · Step {number} of 4", *parts, cursor=cursor)
 
 
 
@@ -1661,85 +1668,166 @@ def scenarios():
     add("setup-missing-values", cmd(["setup"], stdin="", expect=1), cmd(["setup", "--url", URL], stdin="", expect=1))
     add("setup-existing-bad-toml", raw_config(BAD_TOML), cmd(["setup", "--url", URL, "--authorization", GOOD], expect=1))
 
-    # ---- setup, interactive (PTY): a full-screen form. Cursor stops: Webhook URL, Authorization, Name, Description,
-    # then (when offered) Make it the default webhook, Turn on auto-notify, Install the nudge command, then the button.
-    done = "Done. Check everything any time with nudge doctor."
+    # ---- setup, interactive (PTY): the wizard. Step 1 Connect webhook (Webhook URL, Authorization; the clipboard
+    # is read once at start), 2 Name (Name, Description), 3 Options (summary; `e` for checkboxes), 4 Test and save.
+    # Enter on a checked field goes on; the screens are 96 columns wide with the step list on the left.
+    next_steps = "What happens next"
     add("setup-tty-clipboard", herdr(PRESETS["running"]), clip(URL),
         pty(["setup"], [
-            on_screen("nudge setup", "Your webhook is where nudge sends agent events: an AI routine, a", "1  Where to send",
-                      "Webhook URL    press Enter to paste, or type", "Authorization  not set", "2  This webhook",
-                      "Name           main  will be added", "Description    optional", "3  After saving",
-                      "[x] Turn on auto-notify        herdr plugin enabled", "[x] Install the nudge command  into ~/.local/bin",
-                      "[ Test and save ]", "Copy the Webhook URL", SETUP_HELP, cursor="Webhook URL"),
-            keys("\\r"), on_screen("/hook  ✓", cursor="Authorization  press Enter to paste"),
-            ["clip", GOOD], keys("\\r"), on_screen("Authorization  Bearer ••••••••cdef  (34 characters)  ✓", cursor="Name"),
-            keys(CTRL_S)], expect=0, sends=1, state_auto=True,
+            step_screen(1, "▸ Connect webhook", "Where should nudge send agent events?", "○ Name", "○ Options",
+                        "○ Test and save", "Webhook URL    http://127.0.0.1:", "/hook  ✓", "from the clipboard",
+                        "Authorization  press Enter to paste, or type", SETUP_HELP_CONNECT, cursor="Authorization"),
+            ["clip", GOOD], keys("\\r"),
+            step_screen(1, "Bearer ••••••••cdef  (34 characters)  ✓", "from the clipboard", cursor="Authorization"),
+            keys("\\r"), step_screen(2, "✓ Connect webhook", "What should nudge call this webhook?", "▸ Name",
+                                     "Name           main", "Description    optional", SETUP_HELP_NAME, cursor="Name"),
+            keys("\\r"), step_screen(3, "After saving, nudge will:", "✓ Name", "▸ Options",
+                                     "✓ Turn on auto-notify  herdr plugin enabled",
+                                     "✓ Install the nudge command into ~/.local/bin", "Enter accepts these. e changes them.",
+                                     SETUP_HELP_OPTIONS),
+            keys("\\r")], expect=0, sends=1, state_auto=True,
             has=["✓ Test ping: HTTP 200, the webhook received it", '✓ Saved "main" as the default webhook', "✓ auto-notify on",
-                 "✓ nudge command ", done]))
-    add("setup-tty-paste-typed-and-401",
+                 "✓ nudge command ~/.local/bin/nudge", next_steps,
+                 "• When an agent is blocked, or done after 2 minutes while you're not watching, your webhook gets an event."]))
+    add("setup-tty-paste-and-401",
         pty(["setup", "--webhook", "manual"], [
-            on_screen("!  herdr isn't running        run nudge setup in herdr for auto-notify", cursor="Webhook URL"),
-            keys("\\r"), on_screen("No clipboard text found. Type or paste the Webhook URL here.", cursor="Webhook URL"),
-            keys("\\e[200~" + URL + "\\e[201~\\r"), on_screen("/hook  ✓", cursor="Authorization"),  # bracketed paste
-            keys(WRONG), on_screen("Authorization  ••••••••••", cursor="Authorization"),  # typed: dots only
-            keys(CTRL_S), on_screen("✗ the webhook rejected the Authorization header", cursor="Authorization"),
-            keys("  Authorization: " + GOOD), keys(DOWN * 3 + " "), on_screen(cursor="[ ] Install the nudge command"),
-            keys(CTRL_S)], expect=0, sends=2,
-            has=["✓ Test ping: HTTP 200", '✓ Saved "manual" as the default webhook', "herdr isn't running", done],
+            step_screen(1, cursor="Webhook URL"),
+            keys("\\r"), step_screen(1, "No clipboard text found. Type or paste the Webhook URL here.", cursor="Webhook URL"),
+            keys(PASTE_START + "curl -X POST -H 'Authorization: " + WRONG + "' " + URL + PASTE_END),  # one combined paste
+            step_screen(1, "/hook  ✓", "pasted", "Bearer ••••••••cdef  (35 characters)  ✓", "pasted",
+                        "Found the URL and the Authorization header in what you pasted.", cursor="Webhook URL"),
+            keys("\\r"), step_screen(2, "Name           manual", cursor="Name"),
+            keys("\\r"), step_screen(3, "✓ Install the nudge command into ~/.local/bin",
+                                     "! herdr isn't running: for auto-notify, run nudge setup in herdr"),
+            keys("e"), step_screen(3, cursor="[x] Install the nudge command"),
+            keys(" "), step_screen(3, cursor="[ ] Install the nudge command"),
+            keys("\\r"), step_screen(3, "○ Not install the nudge command"),
+            keys("\\r"), step_screen(4, "The test ping failed. What now?", "Try again", "Save anyway",
+                                     "✗ the webhook rejected the Authorization header", SETUP_HELP_FAILED,
+                                     cursor="(•) Back to step 1 (fix the header)"),
+            keys("\\r"), step_screen(1, "▸ Connect webhook", "✓ Name", cursor="Authorization"),
+            keys(GOOD), step_screen(1, "Authorization  ••••••••••", cursor="Authorization"),  # typed: dots only
+            keys("\\r"), step_screen(2, cursor="Name"),
+            keys("\\r"), step_screen(3, "○ Not install the nudge command"),
+            keys("\\r")], expect=0, sends=2,
+            has=["✓ Test ping: HTTP 200", '✓ Saved "manual" as the default webhook', "herdr isn't running", next_steps],
             lacks=["✓ nudge command"]))
     add("setup-tty-url-retry",
         pty(["setup"], [
-            on_screen(cursor="Webhook URL"),
-            keys("http://example.com/hook\\r"), on_screen("https URL", cursor="Webhook URL"),  # Enter stays on a bad value
-            keys(CTRL_U + "http://127.0.0.1:{PORT}/nope\\r"), on_screen(cursor="Authorization"),
-            keys(GOOD + CTRL_S), on_screen("✗ there's no webhook at that URL", cursor="Webhook URL"),
-            keys(CTRL_U + "http://127.0.0.1:{PORT}/hoo\\x7fok" + CTRL_S)], expect=0, sends=2, has=[done]))
-    add("setup-tty-500-save-anyway-no",
+            step_screen(1, cursor="Webhook URL"),
+            keys("http://example.com/hook\\r"), step_screen(1, "https URL", cursor="Webhook URL"),  # Enter stays on a bad value
+            keys(CTRL_U + "http://127.0.0.1:{PORT}/nope\\r"), step_screen(1, cursor="Authorization"),
+            keys(GOOD + "\\r"), step_screen(2, cursor="Name"),
+            keys("\\r"), step_screen(3, "After saving, nudge will:"),
+            keys("\\r"), step_screen(4, "✗ there's no webhook at that URL", cursor="(•) Back to step 1 (fix the URL)"),
+            keys("\\r"), step_screen(1, cursor="Webhook URL"),
+            keys(CTRL_U + "http://127.0.0.1:{PORT}/hoo\\x7fok\\r"), step_screen(2, cursor="Name"),
+            keys("\\r"), step_screen(3, "After saving, nudge will:"),
+            keys("\\r")], expect=0, sends=2, has=[next_steps]))
+    add("setup-tty-500-retry-then-quit",
         pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], [
-            on_screen("[ Test and save ]", cursor="Webhook URL"),
-            keys(CTRL_S), on_screen("webhook exploded. Press Enter to save it anyway.", cursor="[ Save anyway ]"),
-            keys(ESC)], expect=1, sends=1, has="Cancelled; nothing saved."))
-    add("setup-tty-500-save-anyway-yes",
+            step_screen(1, "from the command line", "Bearer ••••••••cdef", "from the command line", cursor="Webhook URL"),
+            keys("\\r"), step_screen(2, cursor="Name"),
+            keys("\\r"), step_screen(3, "After saving, nudge will:"),
+            keys("\\r"), step_screen(4, "webhook exploded", cursor="(•) Try again"),
+            keys("\\r"), step_screen(4, "webhook exploded", cursor="(•) Try again"),  # retried: a second request
+            keys("q")], expect=1, sends=2, has="Cancelled; nothing saved."))
+    add("setup-tty-500-save-anyway",
         pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD, "--no-test"], [
-            on_screen("[ Save ]", SETUP_HELP_NO_TEST, cursor="Webhook URL"), keys(CTRL_S)], expect=0, sends=0, has=[done],
-            lacks=["Test ping"]),
+            step_screen(1, cursor="Webhook URL"), keys("\\r"), step_screen(2, cursor="Name"),
+            keys("\\r"), step_screen(3, "After saving, nudge will:"), keys("\\r")],
+            expect=0, sends=0, has=['✓ Saved "main"', next_steps], lacks=["Test ping"]),
         pty(["setup", "--url", "http://127.0.0.1:{PORT}/fail", "--authorization", GOOD], [
-            on_screen(cursor="Webhook URL"), keys(CTRL_S), on_screen(cursor="[ Save anyway ]"),
-            keys("\\r")], expect=0, sends=1, has=["! Saved without a successful test ping", done]))
-    add("setup-tty-ctrl-c",
-        pty(["setup"], [on_screen(cursor="Webhook URL"), keys(CTRL_C)], expect=1, has="Cancelled; nothing saved."),
-        pty(["setup", "--url", URL], [on_screen(cursor="Webhook URL"), keys(DOWN + "Bearer typed" + CTRL_C)],
+            step_screen(1, cursor="Webhook URL"), keys("\\r"), step_screen(2, cursor="Name"),
+            keys("\\r"), step_screen(3, "After saving, nudge will:"),
+            keys("\\r"), step_screen(4, cursor="(•) Try again"),
+            keys(DOWN + DOWN), step_screen(4, cursor="(•) Save anyway"),
+            keys("\\r")], expect=0, sends=1, has=["! Saved without a successful test ping", '✓ Saved "main"']))
+    add("setup-tty-leave",
+        pty(["setup"], [step_screen(1, cursor="Webhook URL"), keys(CTRL_C)], expect=1, has="Cancelled; nothing saved."),
+        # With the URL given, the wizard opens on the empty header.
+        pty(["setup", "--url", URL], [step_screen(1, cursor="Authorization"), keys("Bearer typed" + CTRL_C)],
             expect=1, has="Cancelled; nothing saved."),
-        pty(["setup"], [on_screen(cursor="Webhook URL"), keys("h"), on_screen(cursor="Webhook URL    h"),
-                        keys(ESC), on_screen("Press Esc again to leave without saving."), keys(ESC)],
-            expect=1, has="Cancelled; nothing saved."))
+        pty(["setup"], [step_screen(1, cursor="Webhook URL"), keys("h"), step_screen(1, cursor="Webhook URL    h"),
+                        keys(ESC), step_screen(1, "Press Esc again to leave without saving."), keys(ESC)],
+            expect=1, has="Cancelled; nothing saved."),
+        pty(["setup", "--url", URL, "--authorization", GOOD], [
+            step_screen(1, cursor="Webhook URL"), keys("\\r"), step_screen(2, cursor="Name"),
+            keys("q"), step_screen(2, cursor="Name           mainq"),  # q is text on steps 1 and 2
+            keys("\\x7f\\r"), step_screen(3, "After saving, nudge will:"),
+            keys("q"), step_screen(3, "Press q again to leave without saving."), keys("q")],
+            expect=1, sends=0, has="Cancelled; nothing saved."))
     add("setup-tty-update-keep", config(), herdr(fixture(HERDR_VERSION, plugin_list(), NO_AGENTS)),
         pty(["setup"], [
-            on_screen("/hook  ✓", "Bearer ••••••••cdef  (34 characters)  ✓", "Name           main  already saved: saving updates it",
-                      "Description    Main webhook", "herdr plugin not installed  herdr plugin install weskor/nudge", cursor="Webhook URL"),
-            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "main" as the default webhook', "! The herdr plugin isn't installed", done]))
+            step_screen(1, "/hook  ✓", "saved", "Bearer ••••••••cdef  (34 characters)  ✓", "saved", cursor="Webhook URL"),
+            keys("\\r"), step_screen(2, "Name           main  saved: saving updates it", "Description    Main webhook",
+                                     cursor="Name"),
+            keys("\\r"), step_screen(3, "! herdr plugin not installed: herdr plugin install weskor/nudge"),
+            keys("\\r")], expect=0, sends=1,
+            has=['✓ Saved "main" as the default webhook', "! The herdr plugin isn't installed", next_steps]))
     add("setup-tty-make-default", config(),
         pty(["setup", "--webhook", "research"], [
-            on_screen("Name           research  already saved: saving updates it", "[ ] Make it the default webhook",
-                      cursor="Webhook URL"),
-            keys(DOWN * 4 + " "), on_screen(cursor="[x] Make it the default webhook"),
-            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "research" as the default webhook', done],
+            step_screen(1, cursor="Webhook URL"), keys("\\r"),
+            step_screen(2, "Name           research  saved: saving updates it", cursor="Name"),
+            keys("\\r"), step_screen(3, '○ Keep "main" as the default webhook'),
+            keys("e" + DOWN + " "), step_screen(3, cursor='[x] Make "research" the default webhook'),
+            keys("\\r"), step_screen(3, '✓ Make "research" the default webhook'),
+            keys("\\r")], expect=0, sends=1, has=['✓ Saved "research" as the default webhook', next_steps],
             config_keys={"default_webhook": "research"}))
-    add("setup-tty-rename", config(),
+    add("setup-tty-duplicate-name", config(),
         pty(["setup"], [
-            on_screen("Name           main  already saved: saving updates it", cursor="Webhook URL"),
-            keys(DOWN * 2 + CTRL_U + "research"), on_screen(cursor="research  replaces the saved webhook with this name"),
-            keys(CTRL_U + "my laptop" + CTRL_S), on_screen('may only contain letters, digits, "-" and "_"', cursor="Name"),
-            keys(CTRL_U + "laptop"), on_screen("[ ] Make it the default webhook", cursor="laptop  will be added"),
-            keys(CTRL_S)], expect=0, sends=1, has=['✓ Saved "laptop" (', done], config_keys={"default_webhook": "main"}))
+            step_screen(1, cursor="Webhook URL"), keys("\\r"), step_screen(2, cursor="Name           main"),
+            keys(CTRL_U + "research\\r"), step_screen(2, '"research" is already a webhook; pick another name', cursor="Name"),
+            keys(CTRL_U + "my laptop\\r"), step_screen(2, 'may only contain letters, digits, "-" and "_"', cursor="Name"),
+            keys(CTRL_U + "laptop\\r"), step_screen(3, '○ Keep "main" as the default webhook'),
+            keys("\\r")], expect=0, sends=1, has=['✓ Saved "laptop" (', next_steps], config_keys={"default_webhook": "main"}))
+    add("setup-tty-back-keeps-answers", herdr(PRESETS["running"]),
+        pty(["setup"], [
+            step_screen(1, cursor="Webhook URL"),
+            keys(URL + "\\t" + GOOD + "\\r"), step_screen(2, cursor="Name"),
+            keys("\\tMain hook\\r"), step_screen(3, "✓ Turn on auto-notify"),
+            keys("e "), step_screen(3, cursor="[ ] Turn on auto-notify"),
+            keys("\\r"), step_screen(3, "○ Leave auto-notify off"),
+            keys(BACKTAB), step_screen(2, "Description    Main hook", cursor="Name"),
+            keys(ESC), step_screen(1, "✓ Name", "/hook  ✓", "Bearer ••••••••cdef  (34 characters)  ✓", cursor="Webhook URL"),
+            keys("\\r"), step_screen(2, "Description    Main hook", cursor="Name"),
+            keys("\\r"), step_screen(3, "○ Leave auto-notify off"),
+            keys("\\r")], expect=0, sends=1, state_auto=False, has=['✓ Saved "main"', "! auto-notify off"]))
     add("setup-tty-plugin-decline-auto", herdr(fixture(HERDR_VERSION, plugin_list(plugin(enabled=False)))), link("/opt/old/bin/nudge"),
         pty(["setup", "--url", URL, "--authorization", GOOD], [
-            on_screen("[x] Turn on auto-notify        herdr plugin disabled", "nudge command installed    ~/.local/bin/nudge",
-                      cursor="Webhook URL"),
-            keys(DOWN * 4 + " "), on_screen(cursor="[ ] Turn on auto-notify"),
-            keys(CTRL_S)], expect=0, sends=1, state_auto=False, has=["! auto-notify off", "✓ nudge command ~/.local/bin/nudge", done]))
+            step_screen(1, cursor="Webhook URL"), keys("\\r"), step_screen(2, cursor="Name"),
+            keys("\\r"), step_screen(3, "✓ Turn on auto-notify  herdr plugin disabled", "✓ nudge command installed  ~/.local/bin/nudge"),
+            keys("e "), step_screen(3, cursor="[ ] Turn on auto-notify"),
+            keys("\\r\\r")], expect=0, sends=1, state_auto=False, has=["! auto-notify off", "✓ nudge command ~/.local/bin/nudge"]))
     add("setup-tty-pane-wait", pty(["setup", "--pane"], [
-        on_screen(cursor="Webhook URL"), keys(CTRL_C), ["expect", "Press any key to close"], ["send", "x"]], expect=1))
+        step_screen(1, cursor="Webhook URL"), keys(CTRL_C), ["expect", "Press any key to close"], ["send", "x"]], expect=1))
+
+    # ---- setup without a screen: --yes, --authorization-file, the environment
+    add("setup-yes-environment", herdr(PRESETS["running"]),
+        cmd(["setup", "--yes"], env={"NUDGE_WEBHOOK_URL": URL, "NUDGE_WEBHOOK_AUTHORIZATION": GOOD}, expect=0, sends=1,
+            state_auto=True, has=["✓ Test ping: HTTP 200", '✓ Saved "main" as the default webhook', "✓ auto-notify on",
+                                  "✓ nudge command ~/.local/bin/nudge", next_steps]))
+    add("setup-yes-declines", herdr(PRESETS["running"]),
+        cmd(["setup", "-y", "--url", URL, "--authorization", GOOD, "--no-auto-notify", "--no-install-command"], expect=0,
+            sends=1, state_auto=False, has=["! auto-notify off"], lacks=["nudge command"]))
+    add("setup-yes-missing",
+        cmd(["setup", "--yes", "--url", URL], stdin="", expect=1, sends=0,
+            has="setup --yes needs the Authorization header: --authorization, --authorization-file or NUDGE_WEBHOOK_AUTHORIZATION"),
+        cmd(["setup", "--yes"], env={"NUDGE_WEBHOOK_AUTHORIZATION": GOOD}, stdin="", expect=1, sends=0,
+            has="setup --yes needs the webhook URL: --url or NUDGE_WEBHOOK_URL"))
+    add("setup-authorization-file", write("header", "  Authorization: " + GOOD + "\n"),
+        cmd(["setup", "--url", URL, "--authorization-file", "{RUN}/header"], expect=0, sends=1, has='Saved webhook "main"'),
+        cmd(["setup", "--webhook", "piped", "--url", URL, "--authorization-file", "-"], stdin=GOOD + "\n", expect=0, sends=1,
+            has='Saved webhook "piped"'),
+        cmd(["setup", "--url", URL, "--authorization", GOOD, "--authorization-file", "{RUN}/header"], expect=2, sends=0),
+        cmd(["setup", "--url", URL, "--authorization-file", "{RUN}/missing"], expect=1, sends=0,
+            has="can't read --authorization-file"))
+    add("setup-environment-scripted",
+        cmd(["setup"], env={"NUDGE_WEBHOOK_URL": URL, "NUDGE_WEBHOOK_AUTHORIZATION": GOOD}, stdin="", expect=0, sends=1,
+            has='Saved webhook "main" (default)', lacks=["auto-notify", "nudge command"]),
+        # The environment beats stdin: the offline URL from it is pinged (and refused), not the good one piped in.
+        cmd(["setup", "--authorization", GOOD], env={"NUDGE_WEBHOOK_URL": "http://127.0.0.1:{OFFLINE_PORT}/hook"},
+            stdin=URL + "\n", expect=1, sends=0, has="could not reach webhook"))
 
     # ---- doctor
     add("doctor-no-config", cmd(["doctor"], expect=1))

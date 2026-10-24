@@ -1,6 +1,6 @@
 # Design: `nudge setup` as a step-by-step wizard
 
-Status: **proposal, awaiting Wes's OK.** No code, branch or commit yet.
+Status: **approved and built** on branch `setup-wizard`.
 Baseline: nudge 0.9.0 (`main` at `250d83e`), where `nudge setup` in a terminal is one full-screen form
 (`src/setup.rs`, `Form`), drawn with the shared box in `src/ui.rs`.
 
@@ -72,7 +72,7 @@ document follow their intent by hand: restate the ask, then design.
 
 The frame is the existing rounded box from `ui.rs`. It gains a left step column and a step counter in the
 title. The footer has three parts: a rule, a note (the status, or a hint for the focused element) and the key
-help. Width is min(screen, 84). Below 64 columns the step column collapses and the title alone carries
+help. Width is min(screen, 96), and the step column is 22 columns. Below 64 columns the step column collapses and the title alone carries
 "Step N of 4: Name".
 
 ### Step 1: Connect webhook (clipboard held the URL; the header was pasted)
@@ -426,10 +426,10 @@ The spinner frames (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) live in `view.rs`, not `ui
 1. Branch `setup-wizard` from `main`.
 2. Commits:
    1. Split `setup.rs` into the module, with no behavior change. Parity identical.
-   2. Add `ui.rs` step column support.
-   3. Wizard state machine and view, with unit tests.
-   4. Non-interactive flags, env vars and `--yes`.
-   5. Harness and features docs, README, CHANGELOG and `assets/setup.svg`.
+   2. Add `ui.rs` step column support, together with the wizard state machine and view, with unit tests. These
+      landed as one commit: clippy denies the step column code as unused on its own.
+   3. Non-interactive flags, env vars and `--yes`.
+   4. Harness and features docs, README, CHANGELOG and `assets/setup.svg`.
 3. AGENTS.md checks plus a parity diff against `main`. Only `setup-tty-*` and the new scenarios may differ.
 4. Ask before merging and releasing (0.10.0).
 

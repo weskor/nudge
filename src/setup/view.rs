@@ -378,8 +378,12 @@ pub(super) fn run(terminal: &mut DefaultTerminal, wizard: &mut Wizard, env: &Env
         wizard.prefill(read_clipboard(&System, env, &runtime_dir(env)).as_deref());
     }
     let mut pending: Option<mpsc::Receiver<Result<Result<u16, WebhookError>>>> = None;
+    let mut redraw = true;
     loop {
-        draw(terminal, wizard)?;
+        // Draw only after a change: a screen that keeps redrawing never looks settled.
+        if std::mem::take(&mut redraw) {
+            draw(terminal, wizard)?;
+        }
         if let Some(receiver) = &pending {
             match receiver.try_recv() {
                 Ok(result) => {
@@ -387,6 +391,7 @@ pub(super) fn run(terminal: &mut DefaultTerminal, wizard: &mut Wizard, env: &Env
                     if let Outcome::Save { tested } = wizard.tested(result?) {
                         return Ok(tested);
                     }
+                    redraw = true;
                     continue;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -396,10 +401,16 @@ pub(super) fn run(terminal: &mut DefaultTerminal, wizard: &mut Wizard, env: &Env
             }
         }
         if !event::poll(TICK)? {
-            wizard.tick();
+            // Only the spinner moves on its own.
+            if pending.is_some() {
+                wizard.tick();
+                redraw = true;
+            }
             continue;
         }
-        let Some(key) = key(event::read()?) else {
+        let event = event::read()?;
+        redraw = true;
+        let Some(key) = key(event) else {
             continue;
         };
         match wizard.handle(key) {

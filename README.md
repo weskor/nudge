@@ -46,10 +46,10 @@ The install step downloads the prebuilt `nudge` binary for your platform (about 
 herdr plugin action invoke weskor.nudge.setup
 ```
 
-Setup is a form in three steps. **1 Where to send**: copy the webhook URL from the webhook's settings and press Enter on its field to paste it, then do the same for the Authorization header (typing or pasting works too); nudge never shows the header, only a masked preview. **2 This webhook**: a name (`main` is fine if you only have one) and an optional description. **3 After saving**: tick whether to turn on auto-notify and to install the `nudge` command into `~/.local/bin`. Then press **Test and save** (or Ctrl-S): nudge test-pings the webhook and saves only if it answers. If the webhook rejects the header or the URL, the cursor goes back to that field.
+Setup is a wizard in four steps, with the step list on the left. **1 Connect webhook**: copy the webhook URL and the Authorization header from your webhook's settings; if the clipboard already holds a valid one it's filled in, otherwise press Enter on a field to paste, or type (pasting both at once works too). nudge never shows the header, only a masked preview like `Bearer ••••••••cdef  (34 characters)`. **2 Name**: `main` is fine if you only have one, plus an optional description; a name that's already a webhook is refused. **3 Options**: after saving, nudge turns on auto-notify (when the herdr plugin is installed), installs the `nudge` command into `~/.local/bin` and makes the webhook the default; Enter accepts these, `e` changes them. **4 Test and save**: nudge test-pings the webhook and saves only if it answers. If the ping fails, choose **Try again**, **Back to step 1** to fix the header or URL, or **Save anyway**. Shift+Tab or Esc goes back a step and keeps your answers.
 
 <p align="center">
-  <img src="assets/setup.svg" width="860" alt="The nudge setup form in three numbered steps: the webhook URL is filled in and checked, the Authorization header is shown masked and was rejected by the test ping (HTTP 401) so the cursor is back on it; the webhook is named main; auto-notify and the command install are ticked; a Test and save button.">
+  <img src="assets/setup.svg" width="860" alt="Step 1 of 4 of the nudge setup wizard: the step list on the left shows Connect webhook as current, then Name, Options and Test and save; the webhook URL came from the clipboard and is checked, the Authorization header is shown masked as Bearer and its last four characters, pasted and checked.">
 </p>
 
 **2. Tell your webhook's automation what to do with events.** Paste [docs/webhook-instructions.md](docs/webhook-instructions.md) into its instructions. The template covers when to reply, when to escalate to you, and how to avoid reply loops.
@@ -287,8 +287,9 @@ agents = ["reviewer"]    # herdr agent names (or pane ids)
 <summary>Command reference</summary>
 
 ```text
-nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE] [--description TEXT]
-             [--signing-secret VALUE] [--default] [--no-test]
+nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE | --authorization-file PATH]
+             [--description TEXT] [--signing-secret VALUE] [--default] [--no-test]
+             [--yes] [--no-auto-notify] [--no-install-command]
 nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
 nudge test   [--webhook NAME] [--agent NAME]
 nudge doctor [--ping]
@@ -298,7 +299,8 @@ nudge mcp
 ```
 
 - `notify -` reads the message from stdin.
-- Without a terminal, `setup` takes the URL and header from flags or stdin, one per line: `printf '%s\n%s\n' "$URL" "Bearer $TOKEN" | nudge setup`. It still tests before saving; `--no-test` skips that.
+- Without a terminal, `setup` takes the URL and header from flags, `--authorization-file PATH` (`-` reads stdin), the `NUDGE_WEBHOOK_URL` and `NUDGE_WEBHOOK_AUTHORIZATION` environment variables, or stdin, one per line: `printf '%s\n%s\n' "$URL" "Bearer $TOKEN" | nudge setup`. Flags win over the file, the file over the environment, and all of them over stdin and the saved webhook. It still tests before saving; `--no-test` skips that. Plain scripted setup never touches auto-notify or the command link.
+- `setup --yes` (`-y`) skips the screen even in a terminal and applies step 3's defaults: auto-notify on if the herdr plugin is installed, and `~/.local/bin/nudge` linked. `--no-auto-notify` and `--no-install-command` turn those off. It needs the URL and header from flags, the file or the environment.
 - Exit codes: 0 ok, 1 error, 2 usage.
 
 </details>
