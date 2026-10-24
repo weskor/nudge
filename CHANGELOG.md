@@ -2,7 +2,7 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 0.10.0
 
 - **Setup is a step-by-step wizard.** `nudge setup` in a terminal (and the `weskor.nudge.setup` overlay) now walks through four steps with a step list on the left: connect webhook (URL and Authorization header), name (and an optional description), options, and test and save. Shift+Tab or Esc goes back a step and keeps your answers. The clipboard prefills the URL or header only when it holds a value that checks out, and is never shown otherwise. Pasting the URL and the header together fills both fields. A name that's already a webhook is refused, with a pointer to `nudge setup --webhook NAME` to change it. Step 3 lists what saving will do (auto-notify, the `nudge` command in `~/.local/bin`, the default webhook); Enter accepts, `e` changes them. Step 4 shows a spinner while it test-pings; if the ping fails you can try again, go back to step 1 to fix the header or URL, or save anyway. After saving, setup says what happens next.
 - **Setup without a screen.** `--authorization-file PATH` (`-` for stdin) and the `NUDGE_WEBHOOK_URL` and `NUDGE_WEBHOOK_AUTHORIZATION` environment variables supply the values. `--yes` (`-y`) saves without the wizard and applies step 3's defaults (auto-notify on if the herdr plugin is installed, `~/.local/bin/nudge` linked); `--no-auto-notify` and `--no-install-command` turn those off. Plain scripted setup (no terminal, no `--yes`) is unchanged.
