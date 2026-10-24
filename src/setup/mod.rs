@@ -1,18 +1,27 @@
 //! `nudge setup`: connect a webhook, test it before saving, then turn on the herdr plugin's auto-notify and put the
-//! `nudge` command on PATH. In a terminal it is a full-screen form (clipboard-first, see `form`); otherwise it reads
-//! flags and stdin.
-mod form;
+//! `nudge` command on PATH. In a terminal it is a step-by-step wizard (`wizard` holds its state, `view` draws and
+//! runs it); otherwise it reads flags and stdin.
+mod paste;
+mod view;
+mod wizard;
 
 use std::io::{IsTerminal as _, Read as _};
 use std::path::Path;
 
+use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use ratatui::crossterm::execute;
+
+use self::wizard::{Source, Start, Wizard};
 use crate::config::{
-    Config, Webhook, default_config_path, read_config, upsert_webhook, validate_webhook, write_config,
+    Auto, Config, Webhook, check_authorization, check_webhook_url, default_config_path, read_config, seconds_in_words,
+    upsert_webhook, validate_webhook, write_config,
 };
 use crate::context::{Env, System};
 use crate::error::{Blame, Error, Result, WebhookError};
+use crate::install::{Plugin, command_link, link_command, nudge_root, plugin};
 use crate::notify::{Origin, current_dir, ping_webhook};
-use crate::tty::{Style, wait_for_key};
+use crate::state::{current_state, update_state};
+use crate::tty::{Mark, Style, wait_for_key};
 
 #[derive(Debug, Default)]
 pub(crate) struct SetupOptions {
@@ -27,6 +36,179 @@ pub(crate) struct SetupOptions {
     pub(crate) test: bool,
     /// Running inside a herdr plugin pane: wait for a key before exiting.
     pub(crate) pane: bool,
+}
+
+/// What to do after saving (the wizard's step 3): what's offered and what's chosen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Choices {
+    plugin: Plugin,
+    /// Whether to turn on auto-notify; `None` when the herdr plugin isn't installed, so there's nothing to turn on.
+    auto_notify: Option<bool>,
+    /// Where `nudge` already is, as shown; `None` offers to link it.
+    command: Option<String>,
+    link_command: bool,
+    make_default: bool,
+}
+
+/// `path` with the home directory shown as `~`.
+fn tilde(path: &Path, home: &Path) -> String {
+    path.strip_prefix(home)
+        .map_or_else(|_| path.display().to_string(), |rest| format!("~/{}", rest.display()))
+}
+
+/// What setup starts from on this machine: herdr's plugin, the command on PATH, the auto-notify state.
+fn choices(make_default: bool, first_setup: bool, env: &Env) -> Choices {
+    let plugin = plugin(env, &System);
+    let link = command_link(env);
+    Choices {
+        // A first setup suggests auto-notify; a rerun keeps what's on.
+        auto_notify: matches!(plugin, Plugin::Installed(_)).then(|| first_setup || current_state(env).auto),
+        plugin,
+        // Plugin panes get herdr's server PATH, which usually lacks ~/.local/bin, so also accept the link itself.
+        command: env
+            .which("nudge")
+            .or_else(|| link.exists.then_some(link.path))
+            .map(|path| tilde(&path, &env.home())),
+        link_command: true,
+        make_default,
+    }
+}
+
+/// Do what the choices ask for, and say so.
+fn apply_choices(choices: &Choices, env: &Env) -> Result<()> {
+    match (&choices.plugin, choices.auto_notify) {
+        (Plugin::Installed(_), Some(auto)) => {
+            update_state(env, |state| state.auto = auto)?;
+            let mark = if auto { Mark::Ok } else { Mark::Warn };
+            eprintln!("{mark} auto-notify {}", if auto { "on" } else { "off" });
+        }
+        (Plugin::Installed(_), None) | (Plugin::HerdrUnavailable, _) => eprintln!(
+            "{} herdr isn't running, so auto-notify wasn't turned on. Run {} again inside herdr.",
+            Mark::Warn,
+            Style::Bold.paint("nudge setup")
+        ),
+        (Plugin::NotInstalled, _) => eprintln!(
+            "{} The herdr plugin isn't installed: {}",
+            Mark::Warn,
+            Style::Bold.paint("herdr plugin install weskor/nudge")
+        ),
+    }
+    match &choices.command {
+        Some(shown) => eprintln!("{} nudge command {shown}", Mark::Ok),
+        None if choices.link_command => match link_command(&nudge_root(env), env) {
+            Ok(path) => eprintln!("{} nudge command {}", Mark::Ok, tilde(&path, &env.home())),
+            Err(error) => eprintln!("{} {error}", Mark::Fail),
+        },
+        None => {}
+    }
+    Ok(())
+}
+
+/// Save the tested webhook, do what the choices ask for, and say what happens next.
+fn finish(
+    tested: Option<u16>,
+    test: bool,
+    webhook: Webhook,
+    choices: &Choices,
+    min_turn: &str,
+    env: &Env,
+) -> Result<u8> {
+    match tested {
+        Some(status) => eprintln!("{} Test ping: HTTP {status}, the webhook received it", Mark::Ok),
+        None if test => eprintln!("{} Saved without a successful test ping", Mark::Warn),
+        None => {}
+    }
+    let path = default_config_path(env);
+    let name = webhook.name.clone();
+    let config = save(&path, read_config(&path)?, webhook, choices.make_default)?;
+    let as_default = if config.default_webhook.as_deref() == Some(name.as_str()) {
+        " as the default webhook"
+    } else {
+        ""
+    };
+    let location = Style::Dim.paint(format!("({}, mode 600)", path.display()));
+    eprintln!("{} Saved \"{name}\"{as_default} {location}", Mark::Ok);
+    apply_choices(choices, env)?;
+    eprintln!();
+    eprintln!("{}", Style::Bold.paint("What happens next"));
+    if choices.auto_notify == Some(true) {
+        eprintln!(
+            "  • When an agent is blocked, or done after {min_turn} while you're not watching, your webhook gets an event."
+        );
+    } else {
+        eprintln!("  • Turn on auto-notify in nudge settings to hear when an agent is blocked or done.");
+    }
+    eprintln!("  • Agents can send their own: nudge notify \"…\" (or the MCP tool notify_webhook).");
+    eprintln!("  • Check everything with nudge doctor; change options with nudge settings.");
+    Ok(0)
+}
+
+/// The setup wizard in a terminal; returns the exit code.
+fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
+    let existing = read_config(&default_config_path(env))?;
+    let name = options.webhook.clone().unwrap_or_else(|| "main".into());
+    let current = existing
+        .as_ref()
+        .and_then(|config| config.webhook.iter().find(|webhook| webhook.name == name))
+        .cloned();
+    let flag = |value: &Option<String>| value.clone().filter(|value| !value.is_empty());
+    let url = flag(&options.url)
+        .map(|url| check_webhook_url(&url).map(|url| (url, Source::Flag)))
+        .transpose()?
+        .or_else(|| current.as_ref().map(|webhook| (webhook.url.clone(), Source::Saved)));
+    let authorization = flag(&options.authorization)
+        .map(|value| check_authorization(&value).map(|value| (value, Source::Flag)))
+        .transpose()?
+        .or_else(|| {
+            current
+                .as_ref()
+                .map(|webhook| (webhook.authorization.clone(), Source::Saved))
+        });
+    let min_turn = seconds_in_words(
+        existing
+            .as_ref()
+            .map_or_else(Auto::default, |config| config.auto)
+            .min_turn_seconds,
+    );
+    let mut wizard = Wizard::new(Start {
+        name,
+        loaded: current.as_ref().map(|webhook| webhook.name.clone()),
+        url,
+        authorization,
+        description: options
+            .description
+            .clone()
+            .or_else(|| current.as_ref().and_then(|webhook| webhook.description.clone())),
+        saved: existing
+            .as_ref()
+            .map(|config| config.webhook.iter().map(|webhook| webhook.name.clone()).collect())
+            .unwrap_or_default(),
+        default_webhook: existing.as_ref().and_then(|config| config.default_webhook.clone()),
+        choices: choices(options.make_default, existing.is_none(), env),
+        min_turn: min_turn.clone(),
+        signing_secret: options
+            .signing_secret
+            .clone()
+            .or_else(|| current.and_then(|webhook| webhook.signing_secret)),
+        test: options.test,
+    });
+
+    let mut terminal = ratatui::try_init()?;
+    let ran = execute!(std::io::stdout(), EnableBracketedPaste)
+        .map_err(Error::from)
+        .and_then(|()| view::run(&mut terminal, &mut wizard, env));
+    let unpasted = execute!(std::io::stdout(), DisableBracketedPaste);
+    ratatui::restore();
+    unpasted?;
+    let tested = ran?;
+    finish(
+        tested,
+        options.test,
+        wizard.webhook()?,
+        &wizard.final_choices(options.make_default),
+        &min_turn,
+        env,
+    )
 }
 
 /// Plain-language reason for a failed test ping.
@@ -144,7 +326,7 @@ pub(crate) fn setup(options: &SetupOptions, env: &Env) -> Result<u8> {
     if !std::io::stdin().is_terminal() {
         return scripted(options, env);
     }
-    let result = match form::interactive(options, env) {
+    let result = match interactive(options, env) {
         Err(Error::Cancelled) => {
             eprintln!("{}", Style::Dim.paint("Cancelled; nothing saved."));
             Ok(1)

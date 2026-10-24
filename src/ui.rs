@@ -90,15 +90,40 @@ pub(crate) fn note(status: Option<&str>, hint: &str) -> Line<'static> {
     Line::styled(status.to_owned(), Style::new().fg(color).add_modifier(Modifier::BOLD))
 }
 
+/// Where a step stands, for the step list beside a wizard's content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StepMark {
+    Done,
+    Current,
+    Pending,
+}
+
+/// Columns the step list takes, its rule included; the content starts two columns after it.
+const STEP_COLUMN: u16 = 22;
+/// Below this inner width the step list is left out (the title still says which step this is).
+const STEPS_MIN_WIDTH: u16 = 58;
+
+/// Columns left for a wizard's content in a box `width` wide, beside the step list when it fits.
+pub(crate) const fn content_width(width: u16) -> u16 {
+    let inner = width.saturating_sub(FRAME_WIDTH);
+    if inner >= STEPS_MIN_WIDTH {
+        inner.saturating_sub(STEP_COLUMN + 2)
+    } else {
+        inner
+    }
+}
+
 /// One frame of an editor.
 #[derive(Debug)]
 pub(crate) struct View<'a> {
     pub(crate) title: &'a str,
     /// Show `● unsaved` at the top right.
     pub(crate) unsaved: bool,
+    /// A wizard's steps, listed left of the content.
+    pub(crate) steps: Option<&'a [(&'a str, StepMark)]>,
     pub(crate) lines: Vec<Line<'static>>,
-    /// The line the cursor is on.
-    pub(crate) selected: usize,
+    /// The line the cursor is on, if any.
+    pub(crate) selected: Option<usize>,
     /// Where on that line to show the terminal's text cursor, for typing; `None` hides it.
     pub(crate) caret: Option<u16>,
     pub(crate) note: Line<'static>,
@@ -108,10 +133,23 @@ pub(crate) struct View<'a> {
     pub(crate) width: Option<u16>,
 }
 
+/// The step list: done steps ticked, the current one marked, the rest dim.
+fn step_lines(steps: &[(&str, StepMark)]) -> Vec<Line<'static>> {
+    steps
+        .iter()
+        .map(|(title, mark)| match mark {
+            StepMark::Done => Line::from(vec![Span::styled("✓ ", GOOD), Span::raw((*title).to_owned())]),
+            StepMark::Current => Line::styled(format!("▸ {title}"), HEADER),
+            StepMark::Pending => Line::styled(format!("○ {title}"), DIM),
+        })
+        .collect()
+}
+
 pub(crate) fn draw(terminal: &mut DefaultTerminal, view: View<'_>) -> Result<()> {
     let View {
         title,
         unsaved,
+        steps,
         lines,
         selected,
         caret,
@@ -143,8 +181,9 @@ pub(crate) fn draw(terminal: &mut DefaultTerminal, view: View<'_>) -> Result<()>
         // The note keeps two rows so the box doesn't jump as the cursor moves, and wraps to up to four so long
         // errors and their fixes stay readable in narrow overlays.
         let note_rows = note.line_count(width.saturating_sub(FRAME_WIDTH)).clamp(2, 4);
-        // Borders and top padding (3), the list, the rule, the note and the help line.
-        let height = u16::try_from(lines.len() + note_rows + 5)
+        // Borders and top padding (3), the list (or the step list, if longer), the rule, the note and the help line.
+        let rows = lines.len().max(steps.map_or(0, <[_]>::len));
+        let height = u16::try_from(rows + note_rows + 5)
             .unwrap_or(u16::MAX)
             .min(screen.height);
         let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
@@ -165,15 +204,30 @@ pub(crate) fn draw(terminal: &mut DefaultTerminal, view: View<'_>) -> Result<()>
             Constraint::Length(1),
         ])
         .areas(inner);
+        let content = match steps {
+            Some(steps) if body.width >= STEPS_MIN_WIDTH => {
+                let [list_area, _, content] = Layout::horizontal([
+                    Constraint::Length(STEP_COLUMN),
+                    Constraint::Length(2),
+                    Constraint::Min(1),
+                ])
+                .areas(body);
+                let list =
+                    Paragraph::new(step_lines(steps)).block(Block::new().borders(Borders::RIGHT).border_style(BORDER));
+                frame.render_widget(list, list_area);
+                content
+            }
+            Some(_) | None => body,
+        };
         let list = List::new(lines.into_iter().map(ListItem::new)).highlight_style(CURSOR);
-        let mut state = ListState::default().with_selected(Some(selected));
-        frame.render_stateful_widget(list, body, &mut state);
-        let row = selected.saturating_sub(state.offset());
-        if let (Some(column), Ok(row)) = (caret, u16::try_from(row))
-            && row < body.height
-            && column < body.width
+        let mut state = ListState::default().with_selected(selected);
+        frame.render_stateful_widget(list, content, &mut state);
+        if let (Some(column), Some(selected)) = (caret, selected)
+            && let Ok(row) = u16::try_from(selected.saturating_sub(state.offset()))
+            && row < content.height
+            && column < content.width
         {
-            frame.set_cursor_position((body.x + column, body.y + row));
+            frame.set_cursor_position((content.x + column, content.y + row));
         }
         frame.render_widget(Block::new().borders(Borders::TOP).border_style(BORDER), rule);
         frame.render_widget(note, note_area);

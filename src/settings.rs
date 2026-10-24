@@ -541,8 +541,9 @@ fn draw(terminal: &mut DefaultTerminal, settings: &Settings) -> Result<()> {
         View {
             title: "nudge settings",
             unsaved: settings.edits != Edits::None,
+            steps: None,
             lines,
-            selected,
+            selected: Some(selected),
             caret: None,
             note: ui::note(settings.status.as_deref(), settings.current().map_or("", describe)),
             help: &HELP,
