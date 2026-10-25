@@ -2,6 +2,10 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## 0.10.4
+
+- **0.10.3, released.** 0.10.3 was tagged but never released: its clipboard tests assumed the Linux clipboard tools and failed on macOS. 0.10.4 has every 0.10.3 change below, with tests that check the Linux and macOS clipboard paths on any platform, and CI now tests on macOS on every push.
+
 ## 0.10.3
 
 - **Private keys no longer slip past redaction.** Pane output is now redacted as a whole before it's cut to the last lines, so a key whose `-----BEGIN` line scrolled above the cut is still recognized. The base64 lines before a lone `-----END … PRIVATE KEY-----` are redacted too.

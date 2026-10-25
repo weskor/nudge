@@ -24,3 +24,15 @@ jobs:
         run: |
           cargo build --release --locked
           NUDGE_BIN="$PWD/target/release/nudge" .cursor/skills/verify-nudge/bin/verify-nudge parity "$RUNNER_TEMP/parity.json"
+
+  # The release builds macOS binaries; test there on every push so platform-specific code (pbpaste) is covered.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
