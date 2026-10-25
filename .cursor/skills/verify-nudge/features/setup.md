@@ -40,7 +40,10 @@ auto-notify, the `~/.local/bin/nudge` link and making the webhook the default.
   to paste, or type`; empty unfocused: `not set`. Checked values end with `  ✓`; the header shows only `Bearer
   ••••••••cdef  (34 characters)`. Help `enter next  tab field  esc leave  ctrl-c quit`.
 - `setup-tty-clipboard` on opening, the clipboard (wl-paste, xclip, `env DISPLAY=:0 xclip`) prefills the URL or header only
-  if it holds a value that checks out; otherwise it is never shown. Enter on an empty field pastes the clipboard.
+  if it holds a value that checks out; otherwise it is never shown. Enter on an empty field pastes the clipboard (note
+  `Reading the clipboard…` meanwhile). Reads run in the background, so a slow tool never holds up the screen and
+  never overwrites what was typed meanwhile (`setup-tty-slow-clipboard`: `clipboard-delay` in the sandbox makes the
+  fake tools sleep).
 - `setup-tty-paste` typed characters and bracketed pastes go into the focused field; Backspace, Ctrl-U empties it. A
   paste holding both the URL and the Authorization header fills both from any step: `✓ Found the URL and the
   Authorization header in what you pasted.` (on step 2: `…; step 1 has them now.`). The header never lands in a visible
@@ -61,7 +64,10 @@ auto-notify, the `~/.local/bin/nudge` link and making the webhook the default.
 - `setup-tty-test` step 4: spinner `⠹ Sending a test ping to "main"…` (help `ctrl-c stop`). On failure: `The test ping
   failed. What now?` with `Try again` / `Back to step 1 (fix the header)` (or `(fix the URL)`) / `Save anyway`; the red
   reason in the note, e.g. `✗ the webhook rejected the Authorization header (returned HTTP 401: Invalid API key)`; help
-  `↑↓ choose  enter go  shift+tab/esc back  q quit`. `--no-test` skips the ping.
+  `↑↓ choose  enter go  shift+tab/esc back  q quit`. `--no-test` skips the ping. Saving happens with the screen up:
+  if it fails, step 4 says `Your answers are kept. Fix what's in the way, then press Enter to try saving again.`, the
+  note `✗ Not saved: <reason>`, help `enter try again  shift+tab/esc back  q quit` (`setup-tty-save-fails`, using
+  the pty step `["config-dir", "readonly"|"writable"]`).
 - `setup-tty-finish` after saving, the normal screen shows `✓ Test ping: HTTP 200, the webhook received it`, `✓ Saved
   "main" as the default webhook (~/.config/nudge/config.toml, mode 600)`, `✓ auto-notify on`, `✓ nudge command
   ~/.local/bin/nudge`, a blank line, `What happens next` and three bullets (`  • When an agent is blocked, or done after 2

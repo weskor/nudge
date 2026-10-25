@@ -2,6 +2,12 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## 0.10.2
+
+- **The setup wizard never freezes on the clipboard.** Clipboard reads (when the wizard opens, and Enter on an empty field) run in the background, so a slow clipboard tool no longer holds up the first screen or the keyboard. A read that finishes after you've typed fills only fields that are still empty.
+- **A failed save keeps your answers.** Setup now saves while the wizard is still on screen. If the config can't be written, step 4 says why (`✗ Not saved: …`) and keeps every answer; Enter tries again once the problem is fixed, and Shift+Tab goes back to change something. It used to exit with an error and lose everything you'd entered.
+- **Internal:** the wizard's per-step state (focus, the options cursor, the test and save state) is now separate from your answers, so moving between steps can't drop an answer.
+
 ## 0.10.1
 
 - **The Authorization header can no longer end up on screen while pasting.** In the setup wizard, a header (or anything that isn't the start of a URL) pasted into the Webhook URL field now goes into the Authorization field, where it's never shown. A header pasted into the name or description is refused, and a URL and header pasted together on step 2 fill step 1 instead of the name.

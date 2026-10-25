@@ -1,6 +1,6 @@
 id = "weskor.nudge"
 name = "Nudge"
-version = "0.10.1"
+version = "0.10.2"
 min_herdr_version = "0.9.0"
 description = "Tell your webhook (an AI routine or automation) when an agent finishes or is blocked; it replies with herdr agent prompt."
 platforms = ["linux", "macos"]

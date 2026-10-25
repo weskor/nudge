@@ -1,6 +1,6 @@
 [package]
 name = "nudge"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 rust-version = "1.88"
 description = "herdr plugin and CLI: tell your webhook (an AI routine or automation) when a coding agent is done, blocked or has a question."

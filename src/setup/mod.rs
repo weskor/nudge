@@ -12,7 +12,7 @@ use std::path::Path;
 use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use ratatui::crossterm::execute;
 
-use self::wizard::{Source, Sourced, Start, Wizard};
+use self::wizard::{Field, Source, Sourced, Start, Wizard};
 use crate::config::{
     Auto, Config, Webhook, check_authorization, check_webhook_url, default_config_path, read_config, seconds_in_words,
     upsert_webhook, validate_webhook, write_config,
@@ -170,11 +170,13 @@ fn apply_choices(choices: &Choices, env: &Env) -> Result<()> {
     Ok(())
 }
 
-/// Save the tested webhook, do what the choices ask for, and say what happens next.
+/// Say how the test ping went and what was saved, do what the choices ask for, and say what happens next. The
+/// webhook `name` is already saved in `config`.
 fn finish(
     tested: Option<u16>,
     test: bool,
-    webhook: Webhook,
+    config: &Config,
+    name: &str,
     choices: &Choices,
     min_turn: &str,
     env: &Env,
@@ -185,9 +187,7 @@ fn finish(
         None => {}
     }
     let path = default_config_path(env);
-    let name = webhook.name.clone();
-    let config = save(&path, read_config(&path)?, webhook, choices.make_default)?;
-    let as_default = if config.default_webhook.as_deref() == Some(name.as_str()) {
+    let as_default = if config.default_webhook.as_deref() == Some(name) {
         " as the default webhook"
     } else {
         ""
@@ -260,19 +260,27 @@ fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
         test: options.test,
     });
 
+    let path = default_config_path(env);
+    let flag_default = options.make_default;
+    // The file is read again when saving: something else may have changed it while the wizard was open.
+    let save_now = |wizard: &Wizard| {
+        let make_default = wizard.final_choices(flag_default).make_default;
+        save(&path, read_config(&path)?, wizard.webhook()?, make_default)
+    };
     let mut terminal = ratatui::try_init()?;
     let ran = execute!(std::io::stdout(), EnableBracketedPaste)
         .map_err(Error::from)
-        .and_then(|()| view::run(&mut terminal, &mut wizard, env));
+        .and_then(|()| view::run(&mut terminal, &mut wizard, env, save_now));
     let unpasted = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     unpasted?;
-    let tested = ran?;
+    let (tested, config) = ran?;
     finish(
         tested,
         options.test,
-        wizard.webhook()?,
-        &wizard.final_choices(options.make_default),
+        &config,
+        &wizard.entry(Field::Name).value,
+        &wizard.final_choices(flag_default),
         &min_turn,
         env,
     )
@@ -397,14 +405,9 @@ fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
     };
     if options.yes {
         let choices = choices(options, existing.is_none(), env);
-        return finish(
-            tested,
-            options.test,
-            webhook,
-            &choices,
-            &min_turn(existing.as_ref()),
-            env,
-        );
+        let min_turn = min_turn(existing.as_ref());
+        let config = save(&path, existing, webhook, choices.make_default)?;
+        return finish(tested, options.test, &config, name, &choices, &min_turn, env);
     }
     if let Some(status) = tested {
         println!("Test ping to \"{name}\": HTTP {status}.");

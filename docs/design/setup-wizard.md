@@ -268,36 +268,43 @@ the post-save summary printing. Code deleted with no replacement: the 0.9.0 sing
 enum Step { Connect, Name, Options, Save }            // order = Step::ALL; index shown as "Step N of 4"
 
 struct Wizard {
-    step: Step,
+    at: At,                       // where the wizard is, with the state only that step has
     reached: Step,                // furthest step validated; drives ✓ / ▸ / ○ in the step list
-    connect: Connect,             // url: Entry, authorization: Entry, focus: ConnectField, sources
-    name: NameStep,               // name: Entry, description: Entry, focus, loaded: Option<String>, saved: Vec<String>
-    options: Options,             // auto_notify: Option<bool>, link_command: Option<bool>, make_default: Option<bool>,
-                                  // editing: bool, cursor, plugin: Plugin, command: Option<String>
-    save: SaveState,
-    ping: Ping,                   // Test | Skip (--no-test)
-    edits: Edits,                 // None | Unsaved | LeaveOnNextQuit (as in 0.9.0)
+    answers: Answers,             // url, authorization, name, description: Entry; choices: Choices
+    loaded: Option<String>, saved: Vec<String>, default_webhook: Option<String>,
+    test: bool,                   // false with --no-test
+    edits: Edits,                 // None | Unsaved | LeaveOnNextPress
     status: Option<String>,
 }
 
+enum At {                         // no answers here: moving between steps can't lose one
+    Connect { focus: Field },
+    Name { focus: Field },
+    Options { editing: Option<usize> },   // the checkbox cursor while `e` has them open
+    Save(SaveState),
+}
+
 enum SaveState {
-    Ready,                        // before the first ping
-    Testing { frame: usize },     // spinner frame; ping running on the worker
-    Failed { reason: String, blame: Option<Blame>, choice: FailChoice },
+    Testing { frame: usize },     // spinner frame; ping running on a worker thread
+    Saving { tested: Option<u16> },
+    Failed { blame: Option<Blame>, choice: FailChoice },
+    NotSaved { tested: Option<u16> },     // saving failed; Enter tries again
 }
 enum FailChoice { Retry, Back, SaveAnyway }
 
 enum Outcome {
     Continue,
-    ReadClipboard,                // fill the focused Connect field (or both, via split_paste)
+    ReadClipboard,                // read on a worker; fills the focused Connect field (or both, via split_paste)
     Test(Webhook),                // start the worker ping; the loop reports back with tested()
-    Save { tested: Option<u16> }, // leave the screen, save, apply options, outro
+    Save { tested: Option<u16> }, // save with the screen up; on failure the loop calls not_saved()
     Quit,
 }
 ```
 
-`Option<bool>` in `Options` means "this option isn't offered here". It replaces 0.9.0's `offers_default()`
-recomputation, and step 3 decides once, from the final name.
+The loop in `view.rs` runs both clipboard reads (on opening, and Enter on an empty field) and the test ping on
+worker threads that send their result back on one channel, so a slow clipboard tool or webhook never freezes the
+screen. A read that finishes after the user typed or moved on fills only fields that are still empty, and only on
+step 1. Saving runs on the loop thread while the screen is up; the outro is printed after the screen closes.
 
 ```mermaid
 stateDiagram-v2
@@ -310,20 +317,22 @@ stateDiagram-v2
     Options --> Save: Enter
     Options --> Name: Shift+Tab / Esc
     Save --> Testing: enter step (ping on) / Retry
-    Testing --> Saved: HTTP 2xx
+    Testing --> Saving: HTTP 2xx
     Testing --> Failed: error
     Failed --> Testing: Retry
     Failed --> Connect: Back (cursor to the blamed field)
-    Failed --> Saved: Save anyway
-    Save --> Saved: enter step with --no-test
-    Saved --> [*]: outro
+    Failed --> Saving: Save anyway
+    Save --> Saving: enter step with --no-test
+    Saving --> NotSaved: write fails (answers kept)
+    NotSaved --> Saving: Enter
+    Saving --> [*]: saved; outro
 ```
 
 **Invariants**
 - Going back never clears an `Entry`. Going forward only validates and normalizes (trims, strips the
   `Authorization:` prefix).
-- `reached` only grows when a step validates. A later edit to step 1 resets `SaveState` to `Ready` (as 0.9.0's
-  `changed()` re-arms the test), but keeps the answers to steps 2 and 3.
+- `reached` only grows when a step validates. Leaving step 4 drops its `SaveState` (it lives in `At::Save`), so
+  coming back always sends a new test ping, and the answers to every step are kept.
 - The header value lives only in `Entry.value` and in the `Webhook` handed to `Test`/`Save`. `view.rs` gets it
   only through `mask_secret`, or as dots while it's being typed.
 - Clipboard and pasted text that fails its check is never stored in an `Entry`.
@@ -376,7 +385,7 @@ The spinner frames (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) live in `view.rs`, not `ui
 - **Step 1 stays put when invalid:** Enter with a bad URL keeps `step == Connect`, focuses the URL field and shows
   the problem; the same for a missing header.
 - **Back keeps everything:** fill all steps, go back to `Connect`, edit nothing, go forward: every answer is
-  intact. Editing step 1 resets `SaveState` but keeps the name and options.
+  intact, and step 4 sends a new test ping.
 - **Clipboard prefill:**
   - Only valid values land.
   - A clipboard holding a secret-looking non-URL leaves the URL empty, and the screen text (via `view`) doesn't

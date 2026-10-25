@@ -6,7 +6,7 @@ use std::fmt;
 use super::paste::{check_header, prefill, split_paste};
 use super::{Choices, explain};
 use crate::config::{Webhook, check_webhook_name, check_webhook_url, validate_webhook};
-use crate::error::{Blame, Result, WebhookError};
+use crate::error::{Blame, Error, Result, WebhookError};
 use crate::tty::Redacted;
 
 /// A step of the wizard, in order.
@@ -167,16 +167,70 @@ pub(super) enum Choice {
 /// Where step 4 stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum SaveState {
-    /// Not tested yet (or an earlier answer changed since).
-    Ready,
     /// The test ping is running; `frame` turns the spinner.
     Testing {
         frame: usize,
+    },
+    /// Saving, with the test ping's HTTP status if one passed.
+    Saving {
+        tested: Option<u16>,
     },
     Failed {
         blame: Option<Blame>,
         choice: FailChoice,
     },
+    /// Saving failed; Enter tries again with the same answers.
+    NotSaved {
+        tested: Option<u16>,
+    },
+}
+
+/// Where the wizard is, with the state only that step has. Answers live elsewhere ([`Answers`]), so moving between
+/// steps can't lose one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum At {
+    Connect {
+        focus: Field,
+    },
+    Name {
+        focus: Field,
+    },
+    /// `editing`: the checkbox under the cursor, while `e` has the checkboxes open.
+    Options {
+        editing: Option<usize>,
+    },
+    Save(SaveState),
+}
+
+impl At {
+    const fn step(&self) -> Step {
+        match self {
+            Self::Connect { .. } => Step::Connect,
+            Self::Name { .. } => Step::Name,
+            Self::Options { .. } => Step::Options,
+            Self::Save(_) => Step::Save,
+        }
+    }
+
+    /// Where a step starts.
+    const fn start(step: Step) -> Self {
+        match step {
+            Step::Connect => Self::Connect { focus: Field::Url },
+            Step::Name => Self::Name { focus: Field::Name },
+            Step::Options => Self::Options { editing: None },
+            Step::Save => Self::Save(SaveState::Saving { tested: None }),
+        }
+    }
+}
+
+/// Every answer given so far. Only the wizard's answer-changing methods write it; no step change touches it.
+#[derive(Debug)]
+struct Answers {
+    url: Entry,
+    authorization: Entry,
+    name: Entry,
+    description: Entry,
+    choices: Choices,
 }
 
 /// What to do after a failed test ping.
@@ -282,43 +336,29 @@ impl fmt::Debug for Start {
     }
 }
 
-/// The wizard: every answer so far, the step on screen, and what step 4 is doing.
+/// The wizard: every answer so far ([`Answers`]), where it is ([`At`]), and what it knows about this machine.
 /// `Debug` shows where the wizard is, with every value redacted (the header and signing secret are among them).
 pub(super) struct Wizard {
-    pub(super) step: Step,
+    at: At,
     /// The furthest step reached; the steps before it are done.
     reached: Step,
-    pub(super) url: Entry,
-    pub(super) authorization: Entry,
-    pub(super) name: Entry,
-    pub(super) description: Entry,
-    pub(super) focus: Field,
+    answers: Answers,
     pub(super) loaded: Option<String>,
     saved: Vec<String>,
     pub(super) default_webhook: Option<String>,
-    pub(super) choices: Choices,
-    /// Step 3 shows checkboxes instead of the summary.
-    pub(super) editing: bool,
-    pub(super) option_cursor: usize,
-    pub(super) min_turn: String,
+    min_turn: String,
     signing_secret: Option<String>,
-    pub(super) test: bool,
-    pub(super) save: SaveState,
+    test: bool,
     edits: Edits,
-    pub(super) status: Option<String>,
+    status: Option<String>,
 }
 
 impl fmt::Debug for Wizard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Wizard")
-            .field("step", &self.step)
-            .field("focus", &self.focus)
-            .field("url", &self.url)
-            .field("authorization", &self.authorization)
-            .field("name", &self.name)
-            .field("description", &self.description)
+            .field("at", &self.at)
+            .field("answers", &self.answers)
             .field("signing_secret", &self.signing_secret.as_deref().map(Redacted))
-            .field("save", &self.save)
             .finish_non_exhaustive()
     }
 }
@@ -326,68 +366,107 @@ impl fmt::Debug for Wizard {
 impl Wizard {
     pub(super) fn new(start: Start) -> Self {
         Self {
-            step: Step::Connect,
+            at: At::start(Step::Connect),
             reached: Step::Connect,
-            url: Entry::given(start.url),
-            authorization: Entry::given(start.authorization),
-            // Not checked yet: `--webhook` is checked when the step is left, with the duplicate check.
-            name: Entry {
-                value: start.name,
-                ..Entry::default()
+            answers: Answers {
+                url: Entry::given(start.url),
+                authorization: Entry::given(start.authorization),
+                // Not checked yet: `--webhook` is checked when the step is left, with the duplicate check.
+                name: Entry {
+                    value: start.name,
+                    ..Entry::default()
+                },
+                description: Entry::given(start.description.map(|text| (text, Source::Flag))),
+                choices: start.choices,
             },
-            description: Entry::given(start.description.map(|text| (text, Source::Flag))),
-            focus: Field::Url,
             loaded: start.loaded,
             saved: start.saved,
             default_webhook: start.default_webhook,
-            choices: start.choices,
-            editing: false,
-            option_cursor: 0,
             min_turn: start.min_turn,
             signing_secret: start.signing_secret,
             test: start.test,
-            save: SaveState::Ready,
             edits: Edits::None,
             status: None,
         }
     }
 
+    pub(super) const fn step(&self) -> Step {
+        self.at.step()
+    }
+
+    /// The focused text field, on steps 1 and 2.
+    pub(super) const fn focus(&self) -> Option<Field> {
+        match self.at {
+            At::Connect { focus } | At::Name { focus } => Some(focus),
+            At::Options { .. } | At::Save(_) => None,
+        }
+    }
+
+    /// The checkbox under the cursor, while step 3 shows checkboxes.
+    pub(super) const fn editing(&self) -> Option<usize> {
+        match self.at {
+            At::Options { editing } => editing,
+            At::Connect { .. } | At::Name { .. } | At::Save(_) => None,
+        }
+    }
+
+    /// Where step 4 stands, on step 4.
+    pub(super) const fn save(&self) -> Option<&SaveState> {
+        match &self.at {
+            At::Save(save) => Some(save),
+            At::Connect { .. } | At::Name { .. } | At::Options { .. } => None,
+        }
+    }
+
+    pub(super) const fn choices(&self) -> &Choices {
+        &self.answers.choices
+    }
+
     /// Where each step stands, for the step list.
     pub(super) fn done(&self, step: Step) -> bool {
-        step != self.step && step.number() < self.reached.number()
+        step != self.step() && step.number() < self.reached.number()
     }
 
     pub(super) const fn entry(&self, field: Field) -> &Entry {
         match field {
-            Field::Url => &self.url,
-            Field::Authorization => &self.authorization,
-            Field::Name => &self.name,
-            Field::Description => &self.description,
+            Field::Url => &self.answers.url,
+            Field::Authorization => &self.answers.authorization,
+            Field::Name => &self.answers.name,
+            Field::Description => &self.answers.description,
         }
     }
 
     const fn entry_mut(&mut self, field: Field) -> &mut Entry {
         match field {
-            Field::Url => &mut self.url,
-            Field::Authorization => &mut self.authorization,
-            Field::Name => &mut self.name,
-            Field::Description => &mut self.description,
+            Field::Url => &mut self.answers.url,
+            Field::Authorization => &mut self.answers.authorization,
+            Field::Name => &mut self.answers.name,
+            Field::Description => &mut self.answers.description,
+        }
+    }
+
+    /// Move the focus to `field`, on steps 1 and 2.
+    const fn set_focus(&mut self, field: Field) {
+        match &mut self.at {
+            At::Connect { focus } | At::Name { focus } => *focus = field,
+            At::Options { .. } | At::Save(_) => {}
         }
     }
 
     /// Whether there's a default to choose: other webhooks are saved and this one isn't the default already.
     pub(super) fn offers_default(&self) -> bool {
-        let name = self.name.value.as_str();
+        let name = self.answers.name.value.as_str();
         self.saved.iter().any(|saved| saved != name) && self.default_webhook.as_deref() != Some(name)
     }
 
     /// The options step 3 offers, in order.
     pub(super) fn offered(&self) -> Vec<Choice> {
+        let choices = &self.answers.choices;
         let mut offered = Vec::new();
-        if self.choices.auto_notify.is_some() {
+        if choices.auto_notify.is_some() {
             offered.push(Choice::AutoNotify);
         }
-        if self.choices.command.is_none() {
+        if choices.command.is_none() {
             offered.push(Choice::Command);
         }
         if self.offers_default() {
@@ -400,20 +479,21 @@ impl Wizard {
     pub(super) fn final_choices(&self, flag_default: bool) -> Choices {
         Choices {
             make_default: if self.offers_default() {
-                self.choices.make_default
+                self.answers.choices.make_default
             } else {
                 flag_default
             },
-            ..self.choices.clone()
+            ..self.answers.choices.clone()
         }
     }
 
     pub(super) fn webhook(&self) -> Result<Webhook> {
-        let description = Some(self.description.value.as_str()).filter(|text| !text.is_empty());
+        let answers = &self.answers;
+        let description = Some(answers.description.value.as_str()).filter(|text| !text.is_empty());
         validate_webhook(
-            &self.name.value,
-            &self.url.value,
-            &self.authorization.value,
+            &answers.name.value,
+            &answers.url.value,
+            &answers.authorization.value,
             description,
             self.signing_secret.as_deref(),
         )
@@ -422,16 +502,13 @@ impl Wizard {
     fn changed(&mut self) {
         self.edits = Edits::Unsaved;
         self.status = None;
-        // A new answer needs a new test ping.
-        self.save = SaveState::Ready;
     }
 
     /// Check `field` unless it's empty or already checked. A name another saved webhook uses is refused, except the
     /// one this run updates.
     fn check_field(&mut self, field: Field) {
-        let taken = field == Field::Name
-            && self.loaded.as_ref() != Some(&self.name.value)
-            && self.saved.contains(&self.name.value);
+        let name = &self.answers.name.value;
+        let taken = field == Field::Name && self.loaded.as_ref() != Some(name) && self.saved.contains(name);
         let entry = self.entry_mut(field);
         if entry.checked || entry.value.is_empty() {
             return;
@@ -480,25 +557,33 @@ impl Wizard {
         }
     }
 
-    /// Prefill empty step-1 fields from the clipboard, once, when the wizard opens: only values that pass their
-    /// check, and a header only if it says it's one. Anything else is ignored and never shown.
+    /// Prefill empty step-1 fields from the clipboard read when the wizard opened: only values that pass their check,
+    /// and a header only if it says it's one. Anything else is ignored and never shown. The read runs in the
+    /// background, so the user may have typed meanwhile: typed fields, the focus and the "anything to lose?" state
+    /// are kept.
     pub(super) fn prefill(&mut self, clipboard: Option<&str>) {
+        let untouched = self.edits == Edits::None;
         let found = clipboard.map(prefill).unwrap_or_default();
-        let url = found.url.filter(|_| self.url.value.is_empty());
-        let authorization = found.authorization.filter(|_| self.authorization.value.is_empty());
+        let url = found.url.filter(|_| self.answers.url.value.is_empty());
+        let authorization = found
+            .authorization
+            .filter(|_| self.answers.authorization.value.is_empty());
         self.fill(url, authorization, Source::Clipboard);
-        // Nothing typed yet: leaving doesn't need a second press.
-        self.edits = Edits::None;
-        self.focus = if self.url.checked && !self.authorization.checked {
-            Field::Authorization
-        } else {
-            Field::Url
-        };
+        if untouched {
+            // Nothing typed yet: leaving doesn't need a second press.
+            self.edits = Edits::None;
+            if self.answers.url.checked && !self.answers.authorization.checked {
+                self.set_focus(Field::Authorization);
+            }
+        }
     }
 
     /// Fill the focused step-1 field from the clipboard (`None`: it's empty), or both from a combined copy.
     pub(super) fn fill_from_clipboard(&mut self, text: Option<String>) {
-        let field = self.focus;
+        let At::Connect { focus: field } = self.at else {
+            // The read finished after the user moved on; it fills nothing there.
+            return;
+        };
         let label = field.label();
         let Some(text) = text else {
             self.status = Some(format!("No clipboard text found. Type or paste the {label} here."));
@@ -518,7 +603,9 @@ impl Wizard {
             Ok(value) => {
                 *self.entry_mut(field) = Entry::given(Some((value, Source::Clipboard)));
                 self.changed();
-                self.next_field_or_stay();
+                if field == Field::Url && self.answers.authorization.value.is_empty() {
+                    self.set_focus(Field::Authorization);
+                }
             }
             // The clipboard may hold anything, a secret included, so a value that fails its check isn't shown.
             Err(error) => {
@@ -530,13 +617,6 @@ impl Wizard {
         }
     }
 
-    /// After filling the URL, go on to an empty header.
-    fn next_field_or_stay(&mut self) {
-        if self.focus == Field::Url && self.authorization.value.is_empty() {
-            self.focus = Field::Authorization;
-        }
-    }
-
     /// A bracketed paste into `field`. The header must never land in a visible field: a paste holding both values
     /// fills step 1 from any step, a header (or anything that isn't the start of a URL) pasted into the URL field
     /// goes to the Authorization field, and a header pasted into the name or description is refused.
@@ -544,7 +624,7 @@ impl Wizard {
         let found = split_paste(text);
         if found.both() {
             self.fill(found.url, found.authorization, Source::Pasted);
-            self.status = Some(if self.step == Step::Connect {
+            self.status = Some(if self.step() == Step::Connect {
                 "✓ Found the URL and the Authorization header in what you pasted.".into()
             } else {
                 "✓ Found the URL and the Authorization header in what you pasted; step 1 has them now.".into()
@@ -554,12 +634,12 @@ impl Wizard {
         let header_shaped = found.authorization.is_some();
         let push = |value: &mut String| value.push_str(text);
         match field {
-            Field::Url if header_shaped || (self.url.value.is_empty() && !text.starts_with("http")) => {
+            Field::Url if header_shaped || (self.answers.url.value.is_empty() && !text.starts_with("http")) => {
                 self.edit(Field::Authorization, |value| {
                     value.clear();
                     value.push_str(text);
                 });
-                self.focus = Field::Authorization;
+                self.set_focus(Field::Authorization);
                 self.status =
                     Some("That isn't a URL, so it went into the Authorization field, where it's never shown.".into());
             }
@@ -574,36 +654,37 @@ impl Wizard {
 
     /// Move the focus within the step's fields (wrapping), checking the field left.
     fn move_focus(&mut self, forward: bool) {
-        let fields = self.step.fields();
-        let Some(index) = fields.iter().position(|field| *field == self.focus) else {
+        let fields = self.step().fields();
+        let Some(current) = self.focus() else { return };
+        let Some(index) = fields.iter().position(|field| *field == current) else {
             return;
         };
-        self.check_field(self.focus);
+        self.check_field(current);
         let next = if forward {
             (index + 1) % fields.len()
         } else {
             (index + fields.len() - 1) % fields.len()
         };
         if let Some(field) = fields.get(next) {
-            self.focus = *field;
+            self.set_focus(*field);
         }
     }
 
     /// Check the step and go on to the next one; a field that needs fixing gets the focus instead.
     fn advance(&mut self) -> Outcome {
-        for &field in self.step.fields() {
+        for &field in self.step().fields() {
             self.check_field(field);
             let entry = self.entry_mut(field);
             if entry.value.is_empty() {
                 entry.problem = field.missing();
             }
             if entry.problem.is_some() {
-                self.focus = field;
+                self.set_focus(field);
                 return Outcome::Continue;
             }
         }
         self.status = None;
-        match self.step {
+        match self.step() {
             Step::Connect => self.go(Step::Name),
             Step::Name => self.go(Step::Options),
             Step::Options => return self.enter_save(),
@@ -612,20 +693,17 @@ impl Wizard {
         Outcome::Continue
     }
 
+    /// Show `step` from its start. Answers are untouched.
     fn go(&mut self, step: Step) {
-        self.step = step;
         if step.number() > self.reached.number() {
             self.reached = step;
         }
-        self.focus = step.fields().first().copied().unwrap_or(self.focus);
-        self.editing = false;
-        self.option_cursor = 0;
+        self.at = At::start(step);
     }
 
     fn back(&mut self) {
-        if let Some(previous) = self.step.previous() {
+        if let Some(previous) = self.step().previous() {
             self.status = None;
-            self.save = SaveState::Ready;
             self.go(previous);
         }
     }
@@ -636,10 +714,10 @@ impl Wizard {
             Ok(webhook) => {
                 self.go(Step::Save);
                 if self.test {
-                    self.save = SaveState::Testing { frame: 0 };
+                    self.at = At::Save(SaveState::Testing { frame: 0 });
                     Outcome::Test(webhook)
                 } else {
-                    Outcome::Save { tested: None }
+                    self.saving(None)
                 }
             }
             Err(error) => {
@@ -649,10 +727,16 @@ impl Wizard {
         }
     }
 
+    fn saving(&mut self, tested: Option<u16>) -> Outcome {
+        self.status = None;
+        self.at = At::Save(SaveState::Saving { tested });
+        Outcome::Save { tested }
+    }
+
     /// The test ping's result: save on a pass; otherwise offer the way out the failure points to.
     pub(super) fn tested(&mut self, result: Result<u16, WebhookError>) -> Outcome {
         match result {
-            Ok(status) => Outcome::Save { tested: Some(status) },
+            Ok(status) => self.saving(Some(status)),
             Err(error) => {
                 let blame = error.blames();
                 self.status = Some(format!("✗ {}", explain(&error)));
@@ -663,22 +747,32 @@ impl Wizard {
                     };
                     self.entry_mut(field).problem = Some(explain(&error));
                 }
-                self.save = SaveState::Failed {
-                    blame,
-                    choice: if blame.is_some() {
-                        FailChoice::Back
-                    } else {
-                        FailChoice::Retry
-                    },
+                let choice = if blame.is_some() {
+                    FailChoice::Back
+                } else {
+                    FailChoice::Retry
                 };
+                self.at = At::Save(SaveState::Failed { blame, choice });
                 Outcome::Continue
             }
         }
     }
 
+    /// Saving failed: stay on step 4 with every answer, and let Enter try again.
+    pub(super) fn not_saved(&mut self, error: &Error) {
+        let tested = match self.save() {
+            Some(SaveState::Saving { tested } | SaveState::NotSaved { tested }) => *tested,
+            Some(SaveState::Testing { .. } | SaveState::Failed { .. }) | None => None,
+        };
+        let reason = error.to_string();
+        let reason = reason.lines().next().unwrap_or_default();
+        self.status = Some(format!("✗ Not saved: {reason}"));
+        self.at = At::Save(SaveState::NotSaved { tested });
+    }
+
     /// Turn the spinner while the test ping runs.
     pub(super) const fn tick(&mut self) {
-        if let SaveState::Testing { frame } = &mut self.save {
+        if let At::Save(SaveState::Testing { frame }) = &mut self.at {
             *frame = frame.wrapping_add(1);
         }
     }
@@ -697,16 +791,17 @@ impl Wizard {
         if key == Key::Cancel {
             return Outcome::Quit;
         }
+        let step = self.step();
         if self.edits == Edits::LeaveOnNextPress {
-            let again = matches!((&key, self.step), (Key::Esc | Key::BackTab, Step::Connect))
-                || (key == Key::Char('q') && matches!(self.step, Step::Options | Step::Save));
+            let again = matches!((&key, step), (Key::Esc | Key::BackTab, Step::Connect))
+                || (key == Key::Char('q') && matches!(step, Step::Options | Step::Save));
             if again {
                 return Outcome::Quit;
             }
             self.edits = Edits::Unsaved;
             self.status = None;
         }
-        match self.step {
+        match step {
             Step::Connect | Step::Name => self.handle_text(key),
             Step::Options => self.handle_options(&key),
             Step::Save => self.handle_save(&key),
@@ -715,16 +810,20 @@ impl Wizard {
 
     /// Steps 1 and 2: typing goes into the focused field.
     fn handle_text(&mut self, key: Key) -> Outcome {
-        let field = self.focus;
+        let Some(field) = self.focus() else {
+            return Outcome::Continue;
+        };
+        let connect = self.step() == Step::Connect;
         match key {
-            Key::Enter if self.step == Step::Connect && self.entry(field).value.is_empty() => {
+            Key::Enter if connect && self.entry(field).value.is_empty() => {
+                self.status = Some("Reading the clipboard…".into());
                 return Outcome::ReadClipboard;
             }
             Key::Enter if field == Field::Url => {
                 self.check_field(field);
-                if self.url.problem.is_none() && self.authorization.value.is_empty() {
-                    self.focus = Field::Authorization;
-                } else if self.url.problem.is_none() {
+                if self.answers.url.problem.is_none() && self.answers.authorization.value.is_empty() {
+                    self.set_focus(Field::Authorization);
+                } else if self.answers.url.problem.is_none() {
                     return self.advance();
                 }
             }
@@ -736,7 +835,7 @@ impl Wizard {
             }
             Key::Tab | Key::Down => self.move_focus(true),
             Key::Up => self.move_focus(false),
-            Key::Esc | Key::BackTab if self.step == Step::Connect => return self.leave("Esc"),
+            Key::Esc | Key::BackTab if connect => return self.leave("Esc"),
             Key::Esc | Key::BackTab => self.back(),
             Key::Paste(text) => self.paste(field, text.trim()),
             Key::Char(typed) => self.edit(field, |value| value.push(typed)),
@@ -752,56 +851,90 @@ impl Wizard {
     /// Step 3: a summary that Enter accepts, or checkboxes after `e`.
     fn handle_options(&mut self, key: &Key) -> Outcome {
         let offered = self.offered();
-        match key {
-            Key::Char('q') => return self.leave("q"),
-            Key::Enter | Key::Esc | Key::BackTab if self.editing => self.editing = false,
-            Key::Enter => return self.advance(),
-            Key::Char('e') if !self.editing && !offered.is_empty() => self.editing = true,
-            Key::Esc | Key::BackTab => self.back(),
-            Key::Up if self.editing => self.option_cursor = self.option_cursor.saturating_sub(1),
-            Key::Down | Key::Tab if self.editing => {
-                self.option_cursor = (self.option_cursor + 1).min(offered.len().saturating_sub(1));
+        let last = offered.len().saturating_sub(1);
+        match (key, self.editing()) {
+            (Key::Char('q'), Some(_) | None) => return self.leave("q"),
+            (Key::Enter | Key::Esc | Key::BackTab, Some(_)) => self.at = At::Options { editing: None },
+            (Key::Enter, None) => return self.advance(),
+            (Key::Char('e'), None) if !offered.is_empty() => self.at = At::Options { editing: Some(0) },
+            (Key::Esc | Key::BackTab, None) => self.back(),
+            (Key::Up, Some(cursor)) => {
+                self.at = At::Options {
+                    editing: Some(cursor.saturating_sub(1)),
+                };
             }
-            Key::Char(' ') if self.editing => {
-                if let Some(choice) = offered.get(self.option_cursor) {
+            (Key::Down | Key::Tab, Some(cursor)) => {
+                self.at = At::Options {
+                    editing: Some((cursor + 1).min(last)),
+                };
+            }
+            (Key::Char(' '), Some(cursor)) => {
+                let choices = &mut self.answers.choices;
+                if let Some(choice) = offered.get(cursor) {
                     match choice {
-                        Choice::AutoNotify => self.choices.auto_notify = self.choices.auto_notify.map(|on| !on),
-                        Choice::Command => self.choices.link_command = !self.choices.link_command,
-                        Choice::Default => self.choices.make_default = !self.choices.make_default,
+                        Choice::AutoNotify => choices.auto_notify = choices.auto_notify.map(|on| !on),
+                        Choice::Command => choices.link_command = !choices.link_command,
+                        Choice::Default => choices.make_default = !choices.make_default,
                     }
                     self.edits = Edits::Unsaved;
                 }
             }
-            Key::Up
-            | Key::Down
-            | Key::Tab
-            | Key::Char(_)
-            | Key::Backspace
-            | Key::Clear
-            | Key::Paste(_)
-            | Key::Cancel => {}
+            (
+                Key::Up
+                | Key::Down
+                | Key::Tab
+                | Key::Char(_)
+                | Key::Backspace
+                | Key::Clear
+                | Key::Paste(_)
+                | Key::Cancel,
+                Some(_) | None,
+            ) => {}
         }
         Outcome::Continue
     }
 
-    /// Step 4: wait for the test ping, then pick what to do about a failure.
+    /// Step 4: wait for the test ping or the save, then pick what to do about a failure.
     fn handle_save(&mut self, key: &Key) -> Outcome {
-        let SaveState::Failed { blame, choice } = &mut self.save else {
-            // While the ping runs (or before it starts), only Ctrl-C does anything.
+        let Some(save) = self.save().cloned() else {
             return Outcome::Continue;
         };
+        match save {
+            // While the ping or the save runs, only Ctrl-C does anything.
+            SaveState::Testing { .. } | SaveState::Saving { .. } => Outcome::Continue,
+            SaveState::NotSaved { tested } => match key {
+                Key::Enter => self.saving(tested),
+                Key::Char('q') => self.leave("q"),
+                Key::Esc | Key::BackTab => {
+                    self.back();
+                    Outcome::Continue
+                }
+                Key::Up
+                | Key::Down
+                | Key::Tab
+                | Key::Char(_)
+                | Key::Backspace
+                | Key::Clear
+                | Key::Paste(_)
+                | Key::Cancel => Outcome::Continue,
+            },
+            SaveState::Failed { blame, choice } => self.handle_failed(key, blame, choice),
+        }
+    }
+
+    /// Step 4 after a failed test ping: Try again, Back to step 1, or Save anyway.
+    fn handle_failed(&mut self, key: &Key, blame: Option<Blame>, choice: FailChoice) -> Outcome {
         let index = FailChoice::ALL
             .iter()
-            .position(|candidate| candidate == choice)
+            .position(|candidate| *candidate == choice)
             .unwrap_or(0);
+        let pick = |choice: FailChoice| At::Save(SaveState::Failed { blame, choice });
         match key {
-            Key::Up => {
-                *choice = FailChoice::ALL.get(index.saturating_sub(1)).copied().unwrap_or(*choice);
-            }
-            Key::Down | Key::Tab => *choice = FailChoice::ALL.get(index + 1).copied().unwrap_or(*choice),
+            Key::Up => self.at = pick(FailChoice::ALL.get(index.saturating_sub(1)).copied().unwrap_or(choice)),
+            Key::Down | Key::Tab => self.at = pick(FailChoice::ALL.get(index + 1).copied().unwrap_or(choice)),
             Key::Char('q') => return self.leave("q"),
             Key::Esc | Key::BackTab => self.back(),
-            Key::Enter => match *choice {
+            Key::Enter => match choice {
                 FailChoice::Retry => {
                     self.status = None;
                     return self.enter_save();
@@ -811,55 +944,52 @@ impl Wizard {
                         Some(Blame::Authorization) => Field::Authorization,
                         Some(Blame::Url) | None => Field::Url,
                     };
-                    self.back_to_connect(field);
+                    self.go(Step::Connect);
+                    self.set_focus(field);
+                    // The reason stays on the field (and in the note while it has the focus).
+                    self.status = None;
                 }
-                FailChoice::SaveAnyway => return Outcome::Save { tested: None },
+                FailChoice::SaveAnyway => return self.saving(None),
             },
             Key::Char(_) | Key::Backspace | Key::Clear | Key::Paste(_) | Key::Cancel => {}
         }
         Outcome::Continue
     }
 
-    fn back_to_connect(&mut self, field: Field) {
-        self.save = SaveState::Ready;
-        self.go(Step::Connect);
-        self.focus = field;
-        // The reason stays on the field (and in the note while it has the focus).
-        self.status = None;
-    }
-
     /// The status, or the problem with the focused field.
     pub(super) fn status(&self) -> Option<String> {
-        self.status.clone().or_else(|| match self.step {
-            Step::Connect | Step::Name => self
-                .entry(self.focus)
-                .problem
-                .as_ref()
-                .map(|problem| format!("✗ {problem}")),
-            Step::Options | Step::Save => None,
+        self.status.clone().or_else(|| {
+            self.focus()
+                .and_then(|field| self.entry(field).problem.as_ref())
+                .map(|problem| format!("✗ {problem}"))
         })
     }
 
     /// What the focused element does.
     pub(super) fn hint(&self) -> Cow<'static, str> {
-        match (self.step, self.focus) {
-            (Step::Connect, Field::Url) if self.url.value.is_empty() => {
+        let answers = &self.answers;
+        match &self.at {
+            At::Connect { focus: Field::Url } if answers.url.value.is_empty() => {
                 "Copy the webhook URL from your webhook's settings, then press Enter here to paste it, or type it."
                     .into()
             }
-            (Step::Connect, Field::Authorization) if self.authorization.value.is_empty() => {
+            At::Connect {
+                focus: Field::Authorization,
+            } if answers.authorization.value.is_empty() => {
                 "Copy the Authorization header from the same page, then press Enter here to paste it. It's never shown."
                     .into()
             }
-            (Step::Connect, Field::Authorization) if self.authorization.checked => {
+            At::Connect {
+                focus: Field::Authorization,
+            } if answers.authorization.checked => {
                 "Never shown. To replace it, paste or type a new one; Ctrl-U empties the field.".into()
             }
-            (Step::Connect, _) => "Paste or type to change it; Ctrl-U empties the field. Enter goes on.".into(),
-            (Step::Name, Field::Description) => {
-                "Optional. Shown by nudge list and to agents choosing a webhook.".into()
-            }
-            (Step::Name, _) => "Letters, digits, - and _. Enter goes on; Tab moves to the description.".into(),
-            (Step::Options, _) if self.editing => match self.offered().get(self.option_cursor) {
+            At::Connect { .. } => "Paste or type to change it; Ctrl-U empties the field. Enter goes on.".into(),
+            At::Name {
+                focus: Field::Description,
+            } => "Optional. Shown by nudge list and to agents choosing a webhook.".into(),
+            At::Name { .. } => "Letters, digits, - and _. Enter goes on; Tab moves to the description.".into(),
+            At::Options { editing: Some(cursor) } => match self.offered().get(*cursor) {
                 Some(Choice::AutoNotify) => format!(
                     "Sends an agent's last terminal lines (secrets redacted) to the webhook when it's blocked, or \
                      finishes a turn longer than {} while you're not watching it.",
@@ -870,16 +1000,20 @@ impl Wizard {
                 Some(Choice::Default) => "Notifications go to the default webhook unless they name another one.".into(),
                 None => "".into(),
             },
-            (Step::Options, _) if self.offered().is_empty() => "Nothing to choose here. Enter goes on.".into(),
-            (Step::Options, _) => "Enter accepts these. e changes them.".into(),
-            (Step::Save, _) => match &self.save {
-                SaveState::Failed { choice, .. } => match choice {
-                    FailChoice::Retry => "Sends the test ping again.".into(),
-                    FailChoice::Back => "Goes back to step 1 to fix the URL or the header.".into(),
-                    FailChoice::SaveAnyway => "Saves without a working test ping.".into(),
-                },
-                SaveState::Ready | SaveState::Testing { .. } => "Ctrl-C stops waiting; nothing is saved.".into(),
+            At::Options { editing: None } if self.offered().is_empty() => {
+                "Nothing to choose here. Enter goes on.".into()
+            }
+            At::Options { editing: None } => "Enter accepts these. e changes them.".into(),
+            At::Save(SaveState::Failed { choice, .. }) => match choice {
+                FailChoice::Retry => "Sends the test ping again.".into(),
+                FailChoice::Back => "Goes back to step 1 to fix the URL or the header.".into(),
+                FailChoice::SaveAnyway => "Saves without a working test ping.".into(),
             },
+            At::Save(SaveState::NotSaved { .. }) => {
+                "Enter tries saving again. Your answers are kept; Shift+Tab goes back to change them.".into()
+            }
+            At::Save(SaveState::Testing { .. }) => "Ctrl-C stops waiting; nothing is saved.".into(),
+            At::Save(SaveState::Saving { .. }) => "Saving…".into(),
         }
     }
 }
@@ -887,7 +1021,7 @@ impl Wizard {
 #[cfg(test)]
 mod tests {
     use super::{Choice, FailChoice, Field, Key, Outcome, SaveState, Source, Start, Step, Wizard};
-    use crate::error::{Blame, WebhookError};
+    use crate::error::{Blame, Error, WebhookError};
     use crate::install::{Plugin, PluginInfo};
     use crate::setup::Choices;
 
@@ -935,6 +1069,10 @@ mod tests {
         wizard
     }
 
+    fn value(wizard: &Wizard, field: Field) -> &str {
+        &wizard.entry(field).value
+    }
+
     fn failure(status: u16) -> WebhookError {
         WebhookError {
             message: format!("webhook \"main\" returned HTTP {status}: nope"),
@@ -947,14 +1085,14 @@ mod tests {
         let mut wizard = Wizard::new(start(&[], None));
         type_text(&mut wizard, "http://example.com/hook");
         wizard.handle(Key::Enter);
-        assert_eq!((wizard.step, wizard.focus), (Step::Connect, Field::Url));
+        assert_eq!((wizard.step(), wizard.focus()), (Step::Connect, Some(Field::Url)));
         assert!(wizard.status().unwrap().contains("https URL"));
         wizard.handle(Key::Clear);
         type_text(&mut wizard, URL);
         wizard.handle(Key::Enter);
         assert_eq!(
-            (wizard.step, wizard.focus),
-            (Step::Connect, Field::Authorization),
+            (wizard.step(), wizard.focus()),
+            (Step::Connect, Some(Field::Authorization)),
             "a valid URL moves on to the empty header, not the next step"
         );
         assert_eq!(
@@ -964,7 +1102,7 @@ mod tests {
         );
         type_text(&mut wizard, HEADER);
         wizard.handle(Key::Enter);
-        assert_eq!(wizard.step, Step::Name);
+        assert_eq!(wizard.step(), Step::Name);
     }
 
     #[test]
@@ -974,11 +1112,11 @@ mod tests {
         wizard.handle(Key::Tab);
         type_text(&mut wizard, "Main webhook");
         wizard.handle(Key::Enter);
-        assert_eq!(wizard.step, Step::Options);
+        assert_eq!(wizard.step(), Step::Options);
         wizard.handle(Key::Char('e'));
         wizard.handle(Key::Char(' '));
         wizard.handle(Key::Enter);
-        assert_eq!(wizard.choices.auto_notify, Some(false));
+        assert_eq!(wizard.choices().auto_notify, Some(false));
         let Outcome::Test(first) = wizard.handle(Key::Enter) else {
             panic!("expected a test ping");
         };
@@ -986,8 +1124,8 @@ mod tests {
         for _ in 0..3 {
             wizard.handle(Key::BackTab);
         }
-        assert_eq!(wizard.step, Step::Connect);
-        assert_eq!(wizard.save, SaveState::Ready);
+        assert_eq!(wizard.step(), Step::Connect);
+        assert_eq!(wizard.save(), None, "step 4's state went with it");
         for _ in 0..2 {
             wizard.handle(Key::Enter);
         }
@@ -995,7 +1133,7 @@ mod tests {
             panic!("expected a test ping");
         };
         assert_eq!(again, first, "nothing was lost on the way back");
-        assert_eq!(wizard.choices.auto_notify, Some(false));
+        assert_eq!(wizard.choices().auto_notify, Some(false));
         assert!(wizard.done(Step::Connect) && wizard.done(Step::Options) && !wizard.done(Step::Save));
     }
 
@@ -1003,22 +1141,26 @@ mod tests {
     fn the_clipboard_prefills_only_what_checks_out_and_a_combined_paste_fills_both() {
         let mut wizard = Wizard::new(start(&[], None));
         wizard.prefill(Some("my password is hunter2-0123456789"));
-        assert!(wizard.url.value.is_empty() && wizard.authorization.value.is_empty());
+        assert!(value(&wizard, Field::Url).is_empty() && value(&wizard, Field::Authorization).is_empty());
         wizard.prefill(Some(URL));
         assert_eq!(
-            (wizard.url.value.as_str(), wizard.url.source, wizard.focus),
-            (URL, Some(Source::Clipboard), Field::Authorization)
+            (
+                value(&wizard, Field::Url),
+                wizard.entry(Field::Url).source,
+                wizard.focus()
+            ),
+            (URL, Some(Source::Clipboard), Some(Field::Authorization))
         );
         let mut wizard = Wizard::new(start(&[], None));
         wizard.handle(Key::Paste(format!("curl -H 'Authorization: {HEADER}' {URL}")));
         assert_eq!(
-            (wizard.url.value.as_str(), wizard.authorization.value.as_str()),
+            (value(&wizard, Field::Url), value(&wizard, Field::Authorization)),
             (URL, HEADER)
         );
-        assert_eq!(wizard.authorization.source, Some(Source::Pasted));
+        assert_eq!(wizard.entry(Field::Authorization).source, Some(Source::Pasted));
         let mut wizard = Wizard::new(start(&[], None));
         wizard.fill_from_clipboard(Some("Bearer not-a-url-0123456789".into()));
-        assert!(wizard.url.value.is_empty());
+        assert!(value(&wizard, Field::Url).is_empty());
         assert!(
             wizard
                 .status()
@@ -1036,16 +1178,16 @@ mod tests {
         assert!(wizard.status().unwrap().contains("Give this webhook a name."));
         type_text(&mut wizard, "research");
         wizard.handle(Key::Enter);
-        assert_eq!(wizard.step, Step::Name);
+        assert_eq!(wizard.step(), Step::Name);
         assert!(wizard.status().unwrap().contains("\"research\" is already a webhook"));
         wizard.handle(Key::Clear);
         type_text(&mut wizard, "my laptop");
         wizard.handle(Key::Enter);
-        assert_eq!(wizard.step, Step::Name);
+        assert_eq!(wizard.step(), Step::Name);
         wizard.handle(Key::Clear);
         type_text(&mut wizard, "laptop");
         wizard.handle(Key::Enter);
-        assert_eq!(wizard.step, Step::Options);
+        assert_eq!(wizard.step(), Step::Options);
         assert_eq!(wizard.offered(), [Choice::AutoNotify, Choice::Command, Choice::Default]);
 
         let mut update = Wizard::new(start(&["main", "research"], Some("research")));
@@ -1054,7 +1196,7 @@ mod tests {
         type_text(&mut update, HEADER);
         update.handle(Key::Enter);
         update.handle(Key::Enter);
-        assert_eq!(update.step, Step::Options, "the webhook being updated keeps its name");
+        assert_eq!(update.step(), Step::Options, "the webhook being updated keeps its name");
     }
 
     #[test]
@@ -1066,39 +1208,42 @@ mod tests {
         assert!(matches!(wizard.handle(Key::Enter), Outcome::Test(_)));
         wizard.tested(Err(failure(401)));
         assert!(matches!(
-            wizard.save,
-            SaveState::Failed {
+            wizard.save(),
+            Some(SaveState::Failed {
                 blame: Some(Blame::Authorization),
                 choice: FailChoice::Back
-            }
+            })
         ));
         wizard.handle(Key::Enter);
-        assert_eq!((wizard.step, wizard.focus), (Step::Connect, Field::Authorization));
+        assert_eq!(
+            (wizard.step(), wizard.focus()),
+            (Step::Connect, Some(Field::Authorization))
+        );
         assert!(wizard.status().unwrap().contains("rejected the Authorization header"));
         assert_eq!(
             wizard.handle(Key::Enter),
             Outcome::Continue,
             "the rejected header isn't sent again"
         );
-        assert_eq!(wizard.step, Step::Connect);
+        assert_eq!(wizard.step(), Step::Connect);
         type_text(&mut wizard, "Bearer other-0123456789abcdef");
         wizard.handle(Key::Enter);
         wizard.handle(Key::Enter);
         assert!(matches!(wizard.handle(Key::Enter), Outcome::Test(_)));
         wizard.tested(Err(failure(500)));
         assert!(matches!(
-            wizard.save,
-            SaveState::Failed {
+            wizard.save(),
+            Some(SaveState::Failed {
                 choice: FailChoice::Retry,
                 ..
-            }
+            })
         ));
         assert!(matches!(wizard.handle(Key::Enter), Outcome::Test(_)), "retry");
         wizard.tested(Err(failure(503)));
         wizard.handle(Key::Down);
         wizard.handle(Key::Down);
         assert_eq!(wizard.handle(Key::Enter), Outcome::Save { tested: None });
-        assert_eq!(wizard.tested(Ok(200)), Outcome::Save { tested: Some(200) });
+        assert_eq!(wizard.save(), Some(&SaveState::Saving { tested: None }));
     }
 
     #[test]
@@ -1112,7 +1257,7 @@ mod tests {
         let mut wizard = connected(&[]);
         wizard.handle(Key::Enter);
         wizard.handle(Key::Char('q'));
-        assert_eq!(wizard.name.value, "mainq", "q is text on step 2");
+        assert_eq!(value(&wizard, Field::Name), "mainq", "q is text on step 2");
         wizard.handle(Key::Backspace);
         wizard.handle(Key::Enter);
         assert_eq!(wizard.handle(Key::Char('q')), Outcome::Continue);
@@ -1125,34 +1270,104 @@ mod tests {
     fn a_pasted_header_never_lands_in_a_visible_field() {
         let mut wizard = Wizard::new(start(&[], None));
         wizard.handle(Key::Paste(format!("  {HEADER}\n")));
-        assert!(wizard.url.value.is_empty(), "the URL field never holds the header");
+        assert!(
+            value(&wizard, Field::Url).is_empty(),
+            "the URL field never holds the header"
+        );
         assert_eq!(
-            (wizard.authorization.value.as_str(), wizard.focus),
-            (HEADER, Field::Authorization)
+            (value(&wizard, Field::Authorization), wizard.focus()),
+            (HEADER, Some(Field::Authorization))
         );
         let mut wizard = Wizard::new(start(&[], None));
         wizard.handle(Key::Paste("sk-live-0123456789abcdef".into()));
         assert!(
-            wizard.url.value.is_empty(),
+            value(&wizard, Field::Url).is_empty(),
             "text that isn't a URL goes to the hidden field"
         );
 
         let mut wizard = connected(&[]);
         wizard.handle(Key::Enter);
-        assert_eq!(wizard.step, Step::Name);
+        assert_eq!(wizard.step(), Step::Name);
         wizard.handle(Key::Paste(format!("Authorization: {HEADER}")));
-        assert_eq!(wizard.name.value, "main", "a header pasted into the name is refused");
+        assert_eq!(
+            value(&wizard, Field::Name),
+            "main",
+            "a header pasted into the name is refused"
+        );
         assert!(wizard.status().unwrap().contains("looks like an Authorization header"));
         wizard.handle(Key::Tab);
         let other = "Bearer other-0123456789abcdef";
         wizard.handle(Key::Paste(format!("https://other.example/h\n{other}")));
         assert!(
-            wizard.description.value.is_empty(),
+            value(&wizard, Field::Description).is_empty(),
             "a URL and header pasted on step 2 go to step 1"
         );
         assert_eq!(
-            (wizard.url.value.as_str(), wizard.authorization.value.as_str()),
+            (value(&wizard, Field::Url), value(&wizard, Field::Authorization)),
             ("https://other.example/h", other)
+        );
+    }
+
+    #[test]
+    fn a_failed_save_keeps_every_answer_and_enter_tries_again() {
+        let mut wizard = connected(&[]);
+        for _ in 0..2 {
+            wizard.handle(Key::Enter);
+        }
+        let Outcome::Test(tested) = wizard.handle(Key::Enter) else {
+            panic!("expected a test ping");
+        };
+        assert_eq!(wizard.tested(Ok(200)), Outcome::Save { tested: Some(200) });
+        wizard.not_saved(&Error::Other("config.toml: Permission denied (os error 13)".into()));
+        assert_eq!(wizard.step(), Step::Save);
+        assert_eq!(wizard.save(), Some(&SaveState::NotSaved { tested: Some(200) }));
+        assert!(
+            wizard
+                .status()
+                .unwrap()
+                .starts_with("✗ Not saved: config.toml: Permission denied")
+        );
+        assert_eq!(
+            wizard.handle(Key::Enter),
+            Outcome::Save { tested: Some(200) },
+            "the retry keeps the passed test ping"
+        );
+        wizard.not_saved(&Error::Other("still read-only".into()));
+        wizard.handle(Key::BackTab);
+        assert_eq!(wizard.step(), Step::Options);
+        assert_eq!(wizard.webhook().unwrap(), tested, "every answer is still there");
+    }
+
+    #[test]
+    fn a_slow_clipboard_read_never_overwrites_what_was_typed() {
+        let mut wizard = Wizard::new(start(&[], None));
+        type_text(&mut wizard, "https://typed.example/h");
+        wizard.prefill(Some(&format!("https://clipboard.example/h\n{HEADER}")));
+        assert_eq!(value(&wizard, Field::Url), "https://typed.example/h");
+        assert_eq!(
+            value(&wizard, Field::Authorization),
+            HEADER,
+            "the empty header is filled"
+        );
+        assert_eq!(wizard.focus(), Some(Field::Url), "the focus stays where the user is");
+        assert_eq!(
+            wizard.handle(Key::Esc),
+            Outcome::Continue,
+            "what was typed still asks before leaving"
+        );
+
+        let mut wizard = connected(&[]);
+        wizard.handle(Key::Clear);
+        assert_eq!(wizard.handle(Key::Enter), Outcome::ReadClipboard);
+        assert_eq!(wizard.status().as_deref(), Some("Reading the clipboard…"));
+        type_text(&mut wizard, HEADER);
+        wizard.handle(Key::Enter);
+        assert_eq!(wizard.step(), Step::Name);
+        wizard.fill_from_clipboard(Some("https://late.example/h".into()));
+        assert_eq!(
+            value(&wizard, Field::Url),
+            URL,
+            "a read that finishes after leaving step 1 fills nothing"
         );
     }
 

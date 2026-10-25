@@ -1,5 +1,5 @@
-//! The wizard on screen: its lines for each step, and the terminal loop that reads keys and the clipboard and runs
-//! the test ping on a worker thread so the spinner turns.
+//! The wizard on screen: its lines for each step, and the terminal loop that reads keys, runs the clipboard reads
+//! and the test ping on worker threads (so the screen never freezes) and saves while the screen is still up.
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use super::ping;
 use super::wizard::{Choice, FailChoice, Field, Key, Outcome, SaveState, Step, Wizard};
 use crate::clipboard::{read_clipboard, runtime_dir};
+use crate::config::Config;
 use crate::context::{Env, System};
 use crate::error::{Blame, Error, Result, WebhookError};
 use crate::install::Plugin;
@@ -51,6 +52,7 @@ const HELP_FAILED: [(&str, &str); 4] = [
     ("q", "quit"),
 ];
 const HELP_TESTING: [(&str, &str); 1] = [("ctrl-c", "stop")];
+const HELP_NOT_SAVED: [(&str, &str); 3] = [("enter", "try again"), ("shift+tab/esc", "back"), ("q", "quit")];
 
 fn key(event: Event) -> Option<Key> {
     let pressed = match event {
@@ -92,7 +94,7 @@ fn fit(text: &str, room: usize, typing: bool) -> String {
 /// focused; values get `room` columns.
 fn field_lines(wizard: &Wizard, field: Field, room: usize) -> (Vec<Line<'static>>, Option<usize>) {
     let entry = wizard.entry(field);
-    let focused = wizard.focus == field;
+    let focused = wizard.focus() == Some(field);
     // A header shows only its masked preview once checked; while it's typed, only dots.
     let shown = match field {
         Field::Authorization if entry.checked => format!(
@@ -150,7 +152,7 @@ impl Content {
     fn fields(&mut self, wizard: &Wizard, fields: [Field; 2], room: usize) {
         for field in fields {
             let (lines, caret) = field_lines(wizard, field, room);
-            if wizard.focus == field {
+            if wizard.focus() == Some(field) {
                 self.selected = Some(self.lines.len());
                 self.caret = caret;
             }
@@ -169,15 +171,15 @@ impl Content {
 
 /// Step 3's lines: what nudge will do (or checkboxes to change it), and what isn't a choice.
 fn options(wizard: &Wizard, content: &mut Content, room: usize) {
-    let name = &wizard.name.value;
-    let choices = &wizard.choices;
+    let name = &wizard.entry(Field::Name).value;
+    let choices = wizard.choices();
     let offered = wizard.offered();
     let plugin_state = match &choices.plugin {
         Plugin::Installed(info) if info.enabled => Span::styled("  herdr plugin enabled", DIM),
         Plugin::Installed(_) => Span::styled("  herdr plugin disabled", WARN),
         Plugin::HerdrUnavailable | Plugin::NotInstalled => Span::raw(""),
     };
-    if wizard.editing {
+    if let Some(cursor) = wizard.editing() {
         content.text(&["Change what nudge will do after saving:"]);
         for (index, choice) in offered.iter().enumerate() {
             let (on, label, detail) = match choice {
@@ -203,7 +205,7 @@ fn options(wizard: &Wizard, content: &mut Content, room: usize) {
                 Span::raw(format!(" {label:<32}")),
                 detail,
             ]);
-            content.stop(line, index == wizard.option_cursor);
+            content.stop(line, index == cursor);
         }
     } else {
         content.text(&["After saving, nudge will:"]);
@@ -274,8 +276,8 @@ fn options(wizard: &Wizard, content: &mut Content, room: usize) {
 /// The content for the step on screen.
 fn content(wizard: &Wizard, room: usize) -> Content {
     let mut content = Content::default();
-    let name = &wizard.name.value;
-    match wizard.step {
+    let name = &wizard.entry(Field::Name).value;
+    match wizard.step() {
         Step::Connect => {
             content.text(&[
                 "Where should nudge send agent events? Copy the URL and the",
@@ -292,15 +294,15 @@ fn content(wizard: &Wizard, room: usize) -> Content {
             content.fields(wizard, [Field::Name, Field::Description], room);
         }
         Step::Options => options(wizard, &mut content, room),
-        Step::Save => match &wizard.save {
-            SaveState::Testing { frame } => {
+        Step::Save => match wizard.save() {
+            Some(SaveState::Testing { frame }) => {
                 let spinner = SPINNER.get(frame % SPINNER.len()).copied().unwrap_or_default();
                 content.lines.push(Line::from(vec![
                     Span::styled(format!("{spinner} "), HEADER),
                     Span::raw(format!("Sending a test ping to \"{name}\"…")),
                 ]));
             }
-            SaveState::Failed { blame, choice } => {
+            Some(SaveState::Failed { blame, choice }) => {
                 content.text(&["The test ping failed. What now?"]);
                 let fix = match blame {
                     Some(Blame::Authorization) => "Back to step 1 (fix the header)",
@@ -321,7 +323,12 @@ fn content(wizard: &Wizard, room: usize) -> Content {
                     content.stop(line, option == *choice);
                 }
             }
-            SaveState::Ready => {}
+            Some(SaveState::Saving { .. }) => content.lines.push(Line::raw(format!("Saving \"{name}\"…"))),
+            Some(SaveState::NotSaved { .. }) => content.text(&[
+                "Your answers are kept. Fix what's in the way, then press Enter to",
+                "try saving again.",
+            ]),
+            None => {}
         },
     }
     content
@@ -335,7 +342,7 @@ fn draw(terminal: &mut DefaultTerminal, wizard: &Wizard) -> Result<()> {
     let steps: Vec<(&str, StepMark)> = Step::ALL
         .iter()
         .map(|step| {
-            let mark = if *step == wizard.step {
+            let mark = if *step == wizard.step() {
                 StepMark::Current
             } else if wizard.done(*step) {
                 StepMark::Done
@@ -345,15 +352,16 @@ fn draw(terminal: &mut DefaultTerminal, wizard: &Wizard) -> Result<()> {
             (step.title(), mark)
         })
         .collect();
-    let help: &[(&str, &str)] = match (wizard.step, &wizard.save) {
+    let help: &[(&str, &str)] = match (wizard.step(), wizard.save()) {
         (Step::Connect, _) => &HELP_CONNECT,
         (Step::Name, _) => &HELP_NAME,
-        (Step::Options, _) if wizard.editing => &HELP_EDITING,
+        (Step::Options, _) if wizard.editing().is_some() => &HELP_EDITING,
         (Step::Options, _) => &HELP_OPTIONS,
-        (Step::Save, SaveState::Failed { .. }) => &HELP_FAILED,
-        (Step::Save, SaveState::Ready | SaveState::Testing { .. }) => &HELP_TESTING,
+        (Step::Save, Some(SaveState::Failed { .. })) => &HELP_FAILED,
+        (Step::Save, Some(SaveState::NotSaved { .. })) => &HELP_NOT_SAVED,
+        (Step::Save, Some(SaveState::Testing { .. } | SaveState::Saving { .. }) | None) => &HELP_TESTING,
     };
-    let title = format!("Setup · Step {} of {}", wizard.step.number(), Step::ALL.len());
+    let title = format!("Setup · Step {} of {}", wizard.step().number(), Step::ALL.len());
     let status = wizard.status();
     ui::draw(
         terminal,
@@ -371,62 +379,79 @@ fn draw(terminal: &mut DefaultTerminal, wizard: &Wizard) -> Result<()> {
     )
 }
 
-/// Run the wizard until it's time to save (with the test ping's HTTP status, if one passed) or the user leaves
-/// ([`Error::Cancelled`]).
-pub(super) fn run(terminal: &mut DefaultTerminal, wizard: &mut Wizard, env: &Env) -> Result<Option<u16>> {
-    if wizard.url.value.is_empty() || wizard.authorization.value.is_empty() {
-        wizard.prefill(read_clipboard(&System, env, &runtime_dir(env)).as_deref());
+/// What a worker thread finished.
+enum Done {
+    /// The clipboard read when the wizard opened.
+    Prefill(Option<String>),
+    /// The clipboard read when Enter was pressed on an empty field.
+    Clipboard(Option<String>),
+    Pinged(Result<Result<u16, WebhookError>>),
+}
+
+/// Read the clipboard on a worker thread (each tool may take seconds), sending the text back as `done`.
+fn read_clipboard_later(env: &Env, sender: &mpsc::Sender<Done>, done: fn(Option<String>) -> Done) {
+    let (env, sender, dir) = (env.clone(), sender.clone(), runtime_dir(env));
+    // Not joined: it writes nothing, and a result that arrives after the user left is never read.
+    thread::spawn(move || {
+        sender.send(done(read_clipboard(&System, &env, &dir))).ok();
+    });
+}
+
+/// Run the wizard until `save` succeeds (returning the test ping's HTTP status, if one passed, and the saved config)
+/// or the user leaves ([`Error::Cancelled`]). Saving runs with the screen up: when it fails, the wizard stays on step 4
+/// with every answer and offers to try again.
+pub(super) fn run(
+    terminal: &mut DefaultTerminal,
+    wizard: &mut Wizard,
+    env: &Env,
+    mut save: impl FnMut(&Wizard) -> Result<Config>,
+) -> Result<(Option<u16>, Config)> {
+    let (sender, receiver) = mpsc::channel();
+    if wizard.entry(Field::Url).value.is_empty() || wizard.entry(Field::Authorization).value.is_empty() {
+        read_clipboard_later(env, &sender, Done::Prefill);
     }
-    let mut pending: Option<mpsc::Receiver<Result<Result<u16, WebhookError>>>> = None;
     let mut redraw = true;
     loop {
         // Draw only after a change: a screen that keeps redrawing never looks settled.
         if std::mem::take(&mut redraw) {
             draw(terminal, wizard)?;
         }
-        if let Some(receiver) = &pending {
-            match receiver.try_recv() {
-                Ok(result) => {
-                    pending = None;
-                    if let Outcome::Save { tested } = wizard.tested(result?) {
-                        return Ok(tested);
-                    }
-                    redraw = true;
-                    continue;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(Error::Other("the test ping stopped before it finished".into()));
-                }
+        let mut outcome = Outcome::Continue;
+        if let Ok(done) = receiver.try_recv() {
+            match done {
+                Done::Prefill(text) => wizard.prefill(text.as_deref()),
+                Done::Clipboard(text) => wizard.fill_from_clipboard(text),
+                Done::Pinged(result) => outcome = wizard.tested(result?),
             }
-        }
-        if !event::poll(TICK)? {
+            redraw = true;
+        } else if event::poll(TICK)? {
+            redraw = true;
+            if let Some(key) = key(event::read()?) {
+                outcome = wizard.handle(key);
+            }
+        } else if matches!(wizard.save(), Some(SaveState::Testing { .. })) {
             // Only the spinner moves on its own.
-            if pending.is_some() {
-                wizard.tick();
-                redraw = true;
-            }
-            continue;
+            wizard.tick();
+            redraw = true;
         }
-        let event = event::read()?;
-        redraw = true;
-        let Some(key) = key(event) else {
-            continue;
-        };
-        match wizard.handle(key) {
+        match outcome {
             Outcome::Continue => {}
             Outcome::Quit => return Err(Error::Cancelled),
-            Outcome::ReadClipboard => wizard.fill_from_clipboard(read_clipboard(&System, env, &runtime_dir(env))),
+            Outcome::ReadClipboard => read_clipboard_later(env, &sender, Done::Clipboard),
             Outcome::Test(webhook) => {
-                let (sender, receiver) = mpsc::channel();
-                let env = env.clone();
+                let (env, sender) = (env.clone(), sender.clone());
                 // Not joined: on Ctrl-C the loop leaves and the ping ends with the process (nothing is saved yet).
                 thread::spawn(move || {
-                    sender.send(ping(&webhook, &env)).ok();
+                    sender.send(Done::Pinged(ping(&webhook, &env))).ok();
                 });
-                pending = Some(receiver);
             }
-            Outcome::Save { tested } => return Ok(tested),
+            Outcome::Save { tested } => {
+                draw(terminal, wizard)?;
+                match save(wizard) {
+                    Ok(config) => return Ok((tested, config)),
+                    Err(error) => wizard.not_saved(&error),
+                }
+            }
         }
     }
 }

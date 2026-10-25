@@ -4,16 +4,24 @@
 Installed as <RUN>/fakebin/wl-paste and <RUN>/fakebin/xclip (sh wrappers that run this file and set
 VERIFY_NUDGE_FAKE to the wrapper's path, which locates <RUN> and the tool name).
 Prints <RUN>/clipboard.txt verbatim when it exists and is non-empty (exit 0), else exits 1
-like an empty clipboard. Every call is appended to <RUN>/clipboard-calls.jsonl as
+like an empty clipboard. When <RUN>/clipboard-delay holds a number, it first sleeps that many seconds (a slow
+clipboard tool). Every call is appended to <RUN>/clipboard-calls.jsonl as
 {"tool": "wl-paste", "argv": [...], "env": {"DISPLAY": ..., "WAYLAND_DISPLAY": ..., "XDG_RUNTIME_DIR": ...}, "exit": N}.
 """
 import json
 import os
 import sys
+import time
 
 invoked = os.path.abspath(os.environ.get("VERIFY_NUDGE_FAKE") or sys.argv[0])
 run = os.path.dirname(os.path.dirname(invoked))
 tool = os.path.basename(invoked)
+
+try:
+    with open(os.path.join(run, "clipboard-delay"), encoding="utf-8") as f:
+        time.sleep(float(f.read().strip() or 0))
+except FileNotFoundError:
+    pass
 
 try:
     with open(os.path.join(run, "clipboard.txt"), encoding="utf-8") as f:

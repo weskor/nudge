@@ -687,7 +687,8 @@ class Sandbox:
 
     def run_pty(self, args, script, env=None, cwd=None, timeout=15):
         """Steps: ["expect", RE] (raw output after the previous match), ["screen", RE] (the rendered screen, see
-        Screen; multiline mode), ["send", TEXT], ["clip", TEXT]. With any "screen" step the record keeps the screens
+        Screen; multiline mode), ["send", TEXT], ["clip", TEXT], ["config-dir", "readonly"|"writable"] (chmod the
+        config's folder so saving fails, or works again). With any "screen" step the record keeps the screens
         it matched (`screens`) and the text left on the normal screen (`output`) instead of the raw bytes."""
         import fcntl
         import termios
@@ -773,6 +774,10 @@ class Sandbox:
                     failures.append(f"send {arg!r}: terminal already closed")
             elif op == "clip":
                 self.clip(arg)
+            elif op == "config-dir":
+                folder = os.path.dirname(self.config)
+                os.makedirs(folder, exist_ok=True)
+                os.chmod(folder, 0o500 if arg == "readonly" else 0o700)
         deadline = time.time() + timeout
         while not eof and time.time() < deadline:
             pump(0.05)
@@ -1353,7 +1358,8 @@ def cmd(args, stdin=None, env=None, cwd=None, expect=None, **asserts):
 
 
 def pty(args, script, env=None, expect=None, **asserts):
-    """`script` steps: ["expect"|"screen", RE], ["send", TEXT], ["clip", TEXT] (see Sandbox.run_pty); asserts as cmd."""
+    """`script` steps: ["expect"|"screen", RE], ["send", TEXT], ["clip", TEXT], ["config-dir", "readonly"|"writable"]
+    (see Sandbox.run_pty); asserts as cmd."""
     return {"do": "pty", "argv": args, "script": script, "env": env, "expect": expect, **asserts}
 
 
@@ -1816,6 +1822,20 @@ def scenarios():
             keys(CTRL_C)], expect=1, sends=0))
     add("setup-tty-authorization-file-terminal",
         pty(["setup", "--authorization-file", "-"], [["expect", "stdin is a terminal"]], expect=2, sends=0))
+    # A slow clipboard tool never holds up the screen: step 1 shows at once, and the URL arrives when the read ends.
+    add("setup-tty-slow-clipboard", write("clipboard-delay", "2"), clip(URL),
+        pty(["setup"], [
+            step_screen(1, "Webhook URL    press Enter to paste, or type", cursor="Webhook URL"),
+            step_screen(1, "/hook  ✓", "from the clipboard", cursor="Authorization"),
+            keys(CTRL_C)], expect=1, sends=0))
+    # Saving runs with the screen up: when it fails, step 4 keeps every answer and Enter tries again.
+    add("setup-tty-save-fails",
+        pty(["setup", "--url", URL, "--authorization", GOOD], [
+            step_screen(1, cursor="Webhook URL"), ["config-dir", "readonly"], keys("\\r"),
+            step_screen(2, cursor="Name"), keys("\\r"), step_screen(3, "After saving, nudge will:"), keys("\\r"),
+            step_screen(4, "Your answers are kept", "✗ Not saved: Permission denied", "enter try again"),
+            ["config-dir", "writable"], keys("\\r")],
+            expect=0, sends=1, has=['✓ Test ping: HTTP 200', '✓ Saved "main"']))
 
     # ---- setup without a screen: --yes, --authorization-file, the environment
     add("setup-yes-environment", herdr(PRESETS["running"]),
