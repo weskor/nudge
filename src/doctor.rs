@@ -1,7 +1,7 @@
 //! `nudge doctor`: check every piece and say how to fix what's broken.
 use std::path::Path;
 
-use crate::clipboard::CLIPBOARD_TOOLS;
+use crate::clipboard::Desktop;
 use crate::config::{Auto, default_config_path, default_webhook_name, read_config, seconds_in_words};
 use crate::context::{Env, Run as _, System};
 use crate::error::{Blame, Error, Result};
@@ -261,14 +261,17 @@ fn check_command(env: &Env) -> Check {
 }
 
 fn check_clipboard(env: &Env) -> Check {
-    let found: Vec<&str> = CLIPBOARD_TOOLS
-        .into_iter()
+    let desktop = Desktop::CURRENT;
+    let found: Vec<&str> = desktop
+        .clipboard_tools()
+        .iter()
+        .copied()
         .filter(|tool| env.which(tool).is_some())
         .collect();
     if found.is_empty() {
         Check::new(Level::Warn, "No clipboard tool")
             .detail("nudge setup falls back to typing values")
-            .fix("install wl-clipboard or xclip")
+            .fix(desktop.clipboard_fix())
     } else {
         Check::new(Level::Ok, format!("Clipboard: {}", found.join(", "))).detail("used by nudge setup")
     }

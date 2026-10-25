@@ -21,7 +21,7 @@ auto-notify and away mode, recent plugin log lines, the `nudge` command and clip
 - `doctor-logs` shows the last 5 non-empty plugin log runs sorted by time, last stderr line, local time.
 - `doctor-command` reports `nudge` on PATH, the `~/.local/bin/nudge` link (ok inside a plugin pane when
   `HERDR_PLUGIN_ID` is set), or a warning.
-- `doctor-clipboard` lists available `wl-paste`/`xclip`.
+- `doctor-clipboard` lists available `wl-paste`/`xclip` (on macOS: `pbpaste`).
 - `doctor-pane` (`--pane`) waits for a key before exiting (herdr status overlay).
 
 ## How to get to it (user POV)

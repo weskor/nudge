@@ -215,9 +215,11 @@ pub(crate) fn post_to_webhook(webhook: &Webhook, payload: &Notification) -> Resu
         http_status: None,
     };
     let body = serde_json::to_string(payload).map_err(|error| unreachable(&error))?;
+    // A redirect would turn the POST into a body-less GET (and drop the headers), so it's reported, not followed.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(WEBHOOK_TIMEOUT))
         .http_status_as_error(false)
+        .max_redirects(0)
         .build()
         .into();
     let mut request = agent
@@ -236,7 +238,12 @@ pub(crate) fn post_to_webhook(webhook: &Webhook, payload: &Notification) -> Resu
     if response.status().is_success() {
         return Ok(status);
     }
-    let text = response.into_body().read_to_string().unwrap_or_default();
+    let moved = response.status().is_redirection().then(|| {
+        let location = response.headers().get("location").and_then(|value| value.to_str().ok());
+        let location = shown(location.unwrap_or_default(), webhook);
+        format!(" (a redirect: nudge doesn't follow redirects; set the webhook URL to where it points: {location})")
+    });
+    let text = shown(&response.into_body().read_to_string().unwrap_or_default(), webhook);
     let text = text.trim();
     let detail = if text.chars().count() > ERROR_BODY_MAX_CHARS {
         format!(": {}…", text.chars().take(ERROR_BODY_MAX_CHARS).collect::<String>())
@@ -246,9 +253,29 @@ pub(crate) fn post_to_webhook(webhook: &Webhook, payload: &Notification) -> Resu
         format!(": {text}")
     };
     Err(WebhookError {
-        message: format!("webhook \"{}\" returned HTTP {status}{detail}", webhook.name),
+        message: format!(
+            "webhook \"{}\" returned HTTP {status}{}{detail}",
+            webhook.name,
+            moved.unwrap_or_default()
+        ),
         http_status: Some(status),
     })
+}
+
+/// Text from the webhook's response, safe to print and log: control characters (terminal escapes) become spaces,
+/// and the webhook's own secrets (an endpoint may echo the request back) become `[REDACTED]`.
+fn shown(text: &str, webhook: &Webhook) -> String {
+    let mut text: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let token = webhook.authorization.split_once(' ').map(|(_, token)| token.trim());
+    let secrets = [
+        Some(webhook.authorization.as_str()),
+        token,
+        webhook.signing_secret.as_deref(),
+    ];
+    for secret in secrets.into_iter().flatten().filter(|secret| secret.len() >= 4) {
+        text = text.replace(secret, "[REDACTED]");
+    }
+    text
 }
 
 /// A notification the webhook accepted.
@@ -718,6 +745,58 @@ pub(crate) mod tests {
             origin,
         ));
         assert_eq!(message, "webhook \"bridge\" returned HTTP 403: bad auth");
+    }
+
+    #[test]
+    fn an_echoed_header_and_terminal_escapes_never_reach_the_error() {
+        let hook = FakeWebhook::start(|request| {
+            let sent = request.headers.iter().find(|(key, _)| key == "authorization").unwrap();
+            (400, format!("\x1b[31mbad\x1b[0m you sent {}", sent.1))
+        });
+        let state = tempfile::tempdir().unwrap();
+        let (env, run) = (env(&state, true), herdr_and_git());
+        let origin = Origin {
+            env: &env,
+            cwd: "/home/user/src/api",
+            run: &run,
+        };
+        let message = webhook_error(notify_webhook(
+            &config(&hook.base),
+            None,
+            NotifyStatus::Done,
+            "x",
+            None,
+            origin,
+        ));
+        assert_eq!(
+            message,
+            "webhook \"bridge\" returned HTTP 400: [31mbad [0m you sent [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn a_redirect_is_reported_not_followed() {
+        let hook = FakeWebhook::start(|_| (302, String::new()));
+        let state = tempfile::tempdir().unwrap();
+        let (env, run) = (env(&state, true), herdr_and_git());
+        let origin = Origin {
+            env: &env,
+            cwd: "/home/user/src/api",
+            run: &run,
+        };
+        let message = webhook_error(notify_webhook(
+            &config(&hook.base),
+            None,
+            NotifyStatus::Done,
+            "x",
+            None,
+            origin,
+        ));
+        assert!(
+            message.starts_with("webhook \"bridge\" returned HTTP 302 (a redirect: nudge doesn't follow redirects"),
+            "{message}"
+        );
+        assert_eq!(hook.requests().len(), 1, "one POST, no follow-up request");
     }
 
     #[test]

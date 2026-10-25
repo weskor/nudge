@@ -12,7 +12,7 @@ Session commands (one long-lived sandbox + fake webhook; evidence in <repo>/.ver
   verify-nudge herdr PRESET|FILE           fake herdr fixture: none | running | agent-pane | workspaces | FILE.json
   verify-nudge clip TEXT | --clear         fake clipboard contents (wl-paste/xclip)
   verify-nudge git-repo NAME BRANCH [ORIGIN]   create <sandbox>/NAME as a git repo (use with run --cwd NAME)
-  verify-nudge link TARGET | --file | --remove  set <sandbox>/home/.local/bin/nudge ({NUDGE_ROOT} expands)
+  verify-nudge link TARGET | --file | --remove  set <sandbox>/home/.local/bin/nudge ({NUDGE_ROOT}, {NUDGE_SIBLING} expand)
   verify-nudge run [--stdin TEXT] [--stdin-file F] [--env K=V]... [--cwd DIR] [--expect N] -- ARGS...
   verify-nudge pty [--env K=V]... [--cwd DIR] [--expect-exit N] (--expect RE | --screen RE | --send TEXT | --clip TEXT)... -- ARGS...
                                            --screen matches the rendered screen (full-screen UIs like `settings`)
@@ -876,6 +876,11 @@ class Sandbox:
 # --------------------------------------------------------------------------------------------- normalization
 
 
+def sibling_install(root):
+    """Where herdr would have put an older install of the plugin: a directory next to `root`."""
+    return os.path.join(os.path.dirname(root.rstrip("/")), "nudge-older-install")
+
+
 class Normalizer:
     def __init__(self, sandbox, root, t0):
         self.sb = sandbox
@@ -883,6 +888,7 @@ class Normalizer:
         pairs = [(sandbox.run, "<RUN>"), (os.path.realpath(sandbox.run), "<RUN>")]
         if len(root) > 1:
             pairs.append((root, "<NUDGE_ROOT>"))
+            pairs.append((sibling_install(root), "<NUDGE_SIBLING>"))
         pairs += [(f"127.0.0.1:{sandbox.port}", "127.0.0.1:<PORT>"), (f"127.0.0.1:{sandbox.offline_port}", "127.0.0.1:<OFFLINE_PORT>")]
         self.pairs = sorted(set(pairs), key=lambda p: -len(p[0]))
 
@@ -1274,7 +1280,8 @@ def cmd_link(argv):
         with open(sb.link, "w") as f:
             f.write("#!/bin/sh\n")
     elif argv[0] != "--remove":
-        os.symlink(argv[0].replace("{NUDGE_ROOT}", s["nudge_root"]), sb.link)
+        target = argv[0].replace("{NUDGE_SIBLING}", sibling_install(s["nudge_root"])).replace("{NUDGE_ROOT}", s["nudge_root"])
+        os.symlink(target, sb.link)
     print(f"{sb.link}: {argv[0]}")
 
 
@@ -1631,6 +1638,16 @@ def scenarios():
     add("notify-401", config(), cmd(["notify", "--webhook", "badauth", "hi"], expect=1))
     add("notify-404", config(), cmd(["notify", "--webhook", "nohook", "hi"], expect=1))
     add("notify-500", config(), cmd(["notify", "--webhook", "broken", "hi"], expect=1))
+    # A webhook that redirects is reported, not followed (following turns the POST into a body-less GET).
+    add("notify-redirect", raw_config(
+        'default_webhook = "moved"\n\n[[webhook]]\nname = "moved"\nurl = "http://127.0.0.1:{PORT}/moved"\n'
+        'authorization = "' + GOOD + '"\n'),
+        cmd(["notify", "hi"], expect=1, sends=1, has='returned HTTP 302 (a redirect: nudge doesn\'t follow redirects'))
+    # A webhook that echoes the request back: its body is shown without the header and without terminal escapes.
+    add("notify-echoed-header", raw_config(
+        'default_webhook = "echo"\n\n[[webhook]]\nname = "echo"\nurl = "http://127.0.0.1:{PORT}/echo"\n'
+        'authorization = "' + GOOD + '"\n'),
+        cmd(["notify", "hi"], expect=1, sends=1, has="you sent authorization: [REDACTED]", lacks=["\x1b["]))
     add("notify-unreachable", config(), cmd(["notify", "--webhook", "offline", "hi"], expect=1))
     add("notify-no-config", cmd(["notify", "hi"], expect=1))
     add("notify-several-webhooks-no-default", raw_config(TWO_WEBHOOKS_NO_DEFAULT), cmd(["notify", "hi"], expect=1),
@@ -1787,6 +1804,19 @@ def scenarios():
             keys(CTRL_U + "my laptop\\r"), step_screen(2, 'may only contain letters, digits, "-" and "_"', cursor="Name"),
             keys(CTRL_U + "laptop\\r"), step_screen(3, '○ Keep "main" as the default webhook'),
             keys("\\r")], expect=0, sends=1, has=['✓ Saved "laptop" (', next_steps], config_keys={"default_webhook": "main"}))
+    # The taken-name check uses the name as it will be saved: "research " is "research".
+    add("setup-tty-name-with-spaces", config(),
+        pty(["setup"], [
+            step_screen(1, cursor="Webhook URL"), keys("\\r"), step_screen(2, cursor="Name           main"),
+            keys(CTRL_U + "research \\r"), step_screen(2, '"research" is already a webhook; pick another name', cursor="Name"),
+            keys(CTRL_C)], expect=1, sends=0))
+    # A copied curl header line pasted into step 1 stores only the header in it (34 characters, the masked preview).
+    add("setup-tty-paste-curl-header",
+        pty(["setup"], [
+            step_screen(1, cursor="Webhook URL"),
+            keys(PASTE_START + '-H "Authorization: ' + GOOD + '"' + PASTE_END),
+            step_screen(1, "Authorization  Bearer ••••••••cdef  (34 characters)  ✓", cursor="Authorization"),
+            keys(CTRL_C)], expect=1, sends=0))
     add("setup-tty-back-keeps-answers", herdr(PRESETS["running"]),
         pty(["setup"], [
             step_screen(1, cursor="Webhook URL"),
@@ -1812,8 +1842,8 @@ def scenarios():
         pty(["setup"], [
             step_screen(1, cursor="Webhook URL"),
             keys(PASTE_START + GOOD + PASTE_END),  # a header pasted into the URL field
-            step_screen(1, "Webhook URL    not set", "Authorization  ••••", "went into the Authorization field",
-                        cursor="Authorization"),
+            step_screen(1, "Webhook URL    not set", "Authorization  Bearer ••••••••cdef  (34 characters)  ✓",
+                        "went into the Authorization field", cursor="Authorization"),
             keys(CTRL_C)], expect=1, sends=0),
         pty(["setup", "--url", URL, "--authorization", GOOD], [
             step_screen(1, cursor="Webhook URL"), keys("\\r"), step_screen(2, cursor="Name           main"),
@@ -1911,6 +1941,9 @@ def scenarios():
         cmd(["plugin", "event"], env={"HERDR_PLUGIN_EVENT_JSON": '{"data":{"pane_id":"p_1","agent_status":"sleeping"}}'}, cwd="home", expect=0))
     add("event-unknown-agent-empty-pane", config(), herdr(fixture(NOTIFICATION_OK, pane_read("p_7", "\n\n────\n"))), state({"auto": True}), event("blocked", pane="p_7"))
     add("event-webhook-fails", config("broken"), herdr(PANE_HERDR), state({"auto": True}), event("blocked", expect=1))
+    # A failed send doesn't use up the pane's cooldown: the next blocked event still notifies.
+    add("event-cooldown-after-failure", config("broken"), herdr(PANE_HERDR), state({"auto": True}),
+        event("blocked", expect=1), config(), event("blocked", sends=1))
     add("event-no-config", herdr(PANE_HERDR), state({"auto": True}), event("blocked", expect=1))
 
     # ---- plugin: actions
@@ -1928,7 +1961,9 @@ def scenarios():
     add("plugin-usage", cmd(["plugin"], cwd="home", expect=1), cmd(["plugin", "bogus"], cwd="home", expect=1), cmd(["plugin", "action"], cwd="home", expect=1))
 
     # ---- plugin: startup
-    add("startup-repoint", link("/opt/old-nudge/bin/nudge"), cmd(["plugin", "startup"], cwd="home", expect=0))
+    add("startup-repoint", link("{NUDGE_SIBLING}/bin/nudge"), cmd(["plugin", "startup"], cwd="home", expect=0))
+    # A link into some other nudge (cargo install, /usr/local, a checkout) isn't the plugin's to repoint.
+    add("startup-other-nudge-link", link("/opt/old-nudge/bin/nudge"), cmd(["plugin", "startup"], cwd="home", expect=0))
     add("startup-current", link("{NUDGE_ROOT}/bin/nudge"), cmd(["plugin", "startup"], cwd="home", expect=0))
     add("startup-foreign-link", link("/usr/bin/true"), cmd(["plugin", "startup"], cwd="home", expect=0))
     add("startup-regular-file", link(regular=True), cmd(["plugin", "startup"], cwd="home", expect=0))
@@ -2251,6 +2286,17 @@ def scenarios():
             keys("t"), on_screen('✗ webhook "nohook" returned HTTP 404: no such hook;', "Webhook URL again with nudge setup"),
             keys("k" * 17 + "t"), on_screen("Move to a webhook to test it.", cursor="[ ] Auto-notify"),
             keys("q")], expect=0, sends=3, has=unchanged, config_unchanged=True))
+    # A slow webhook doesn't freeze settings: the cursor moves while "Testing…" is still up, and the result lands later.
+    add("settings-slow-test-ping", raw_config(
+        'default_webhook = "slow"\n\n[[webhook]]\nname = "slow"\nurl = "http://127.0.0.1:{PORT}/slow"\n'
+        'authorization = "' + GOOD + '"\n'), set_herdr,
+        pty(["settings"], [
+            on_screen(SETTINGS_HELP),
+            keys("j" * 20), on_screen(cursor="(•) slow"),
+            keys("t"), drawn('Testing "slow"…'),
+            keys("k"), on_screen('Testing "slow"…', cursor="( ) Only these…"),
+            on_screen('✓ "slow" received a test ping (HTTP 200)'),
+            keys("q")], expect=0, sends=1, has=unchanged, config_unchanged=True))
     add("settings-pane", config(), set_herdr,
         pty(["settings", "--pane"], [
             on_screen(cursor="[ ] Auto-notify"), keys(" "), on_screen(cursor="[x] Auto-notify"), keys("s")],
@@ -2306,7 +2352,7 @@ def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
     sb = Sandbox(run, binary, port, offline_port, os.path.join(scratch, "requests.jsonl")).create()
     sb.mark()
     t0 = now_ms()
-    subst = lambda v: v.replace("{PORT}", str(port)).replace("{OFFLINE_PORT}", str(offline_port)).replace("{NUDGE_ROOT}", root).replace("{RUN}", run) if isinstance(v, str) else v
+    subst = lambda v: v.replace("{PORT}", str(port)).replace("{OFFLINE_PORT}", str(offline_port)).replace("{NUDGE_SIBLING}", sibling_install(root)).replace("{NUDGE_ROOT}", root).replace("{RUN}", run) if isinstance(v, str) else v
     steps, setup_log, checks = [], [], []
     for op in ops:
         do = op["do"]

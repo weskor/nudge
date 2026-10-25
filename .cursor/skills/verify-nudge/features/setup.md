@@ -39,22 +39,26 @@ auto-notify, the `~/.local/bin/nudge` link and making the webhook the default.
   `saved`, `from the command line`, `from --authorization-file`, `from the environment`. Empty focused field: `press Enter
   to paste, or type`; empty unfocused: `not set`. Checked values end with `  ✓`; the header shows only `Bearer
   ••••••••cdef  (34 characters)`. Help `enter next  tab field  esc leave  ctrl-c quit`.
-- `setup-tty-clipboard` on opening, the clipboard (wl-paste, xclip, `env DISPLAY=:0 xclip`) prefills the URL or header only
-  if it holds a value that checks out; otherwise it is never shown. Enter on an empty field pastes the clipboard (note
-  `Reading the clipboard…` meanwhile). Reads run in the background, so a slow tool never holds up the screen and
-  never overwrites what was typed meanwhile (`setup-tty-slow-clipboard`: `clipboard-delay` in the sandbox makes the
-  fake tools sleep).
+- `setup-tty-clipboard` on opening, the clipboard (macOS: `pbpaste`; elsewhere wl-paste, xclip, `env DISPLAY=:0
+  xclip`) prefills the URL or header only if it holds a value that checks out; otherwise it is never shown. Enter on an
+  empty field pastes the clipboard (note `Reading the clipboard…` meanwhile). Reads run in the background, so a slow
+  tool never holds up the screen, and a read fills only fields that are still empty, never what was typed meanwhile,
+  and nothing once step 1 is left (`setup-tty-slow-clipboard`: `clipboard-delay` in the sandbox makes the fake tools
+  sleep).
 - `setup-tty-paste` typed characters and bracketed pastes go into the focused field; Backspace, Ctrl-U empties it. A
   paste holding both the URL and the Authorization header fills both from any step: `✓ Found the URL and the
   Authorization header in what you pasted.` (on step 2: `…; step 1 has them now.`). The header never lands in a visible
   field: a header, or anything not starting with `http`, pasted into an empty URL field goes to Authorization (`That
   isn't a URL, so it went into the Authorization field, where it's never shown.`); a header pasted into Name or
   Description is refused (`✗ That looks like an Authorization header, so it wasn't pasted here. It belongs in step
-  1.`). Parity: `setup-tty-paste-routing`, `setup-tty-authorization-file-terminal`.
+  1.`). A header pasted into either step-1 field (or read from the clipboard) is stored as the header found in it, not
+  the text around it: `-H "Authorization: Bearer …"` saves `Bearer …`. Parity: `setup-tty-paste-routing`,
+  `setup-tty-authorization-file-terminal`, `setup-tty-paste-curl-header`.
 - `setup-tty-name` step 2: intro `What should nudge call this webhook? You'll use the name with` / `--webhook and in nudge
   list. With one webhook, main is fine.`; `Name` (prefilled `main` or `--webhook`), `Description` (`optional`). Names
-  are checked like `--webhook`; an existing one is refused: `✗ "research" is already a webhook; pick another name, or run
-  nudge setup --webhook research to change it`. Help `enter next  tab field  shift+tab/esc back  ctrl-c quit`.
+  are checked like `--webhook`; an existing one is refused (spaces around the name don't count: `research ` is
+  `research`): `✗ "research" is already a webhook; pick another name, or run nudge setup --webhook research to change
+  it`. Help `enter next  tab field  shift+tab/esc back  ctrl-c quit`. Parity: `setup-tty-name-with-spaces`.
 - `setup-tty-options` step 3: `After saving, nudge will:` then `✓ Turn on auto-notify  herdr plugin enabled`, `✓ Install
   the nudge command into ~/.local/bin`, `✓ Make "main" the default webhook` (off: `○ Leave auto-notify off`, `○ Not install
   the nudge command`, `○ Keep "X" as the default webhook`). Not choices: `! herdr isn't running: for auto-notify, run nudge

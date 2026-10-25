@@ -3,6 +3,9 @@
 use std::ffi::OsStr;
 use std::io::IsTerminal as _;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -19,6 +22,8 @@ use crate::ui::{self, DIM, GOOD, HEADER, VALUE, View, WARN, aligned, check, radi
 const TURN_STEPS: [u32; 9] = [0, 30, 60, 120, 180, 300, 600, 900, 1800];
 const COOLDOWN_STEPS: [u32; 8] = [0, 60, 120, 300, 600, 900, 1800, 3600];
 const TAIL_STEPS: [u32; 6] = [10, 20, 40, 80, 120, 200];
+/// How often the editor checks for a finished test ping while waiting for a key.
+const TICK: Duration = Duration::from_millis(100);
 
 const HELP: [(&str, &str); 6] = [
     ("↑↓", "move"),
@@ -553,14 +558,17 @@ fn draw(terminal: &mut DefaultTerminal, settings: &Settings) -> Result<()> {
 }
 
 /// Test-ping `webhook` and describe the result for the status line.
-fn test_webhook(config: &Config, webhook: &str, env: &Env) -> Result<String> {
-    let cwd = current_dir()?;
+fn test_webhook(config: &Config, webhook: &str, env: &Env) -> String {
+    let cwd = match current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => return format!("✗ couldn't test \"{webhook}\": {error}"),
+    };
     let origin = Origin {
         env,
         cwd: &cwd,
         run: &System,
     };
-    Ok(match ping_webhook(config, Some(webhook), None, origin) {
+    match ping_webhook(config, Some(webhook), None, origin) {
         Ok(sent) => format!("✓ \"{webhook}\" received a test ping (HTTP {})", sent.http_status),
         Err(Error::Webhook(error)) => {
             let hint = match error.blames() {
@@ -570,8 +578,11 @@ fn test_webhook(config: &Config, webhook: &str, env: &Env) -> Result<String> {
             };
             format!("✗ {}{hint}", error.message)
         }
-        Err(other) => return Err(other),
-    })
+        Err(other) => format!(
+            "✗ couldn't test \"{webhook}\": {}",
+            other.to_string().replace('\n', " ")
+        ),
+    }
 }
 
 /// Save: re-read the config so webhooks edited meanwhile are kept, apply the edits, write it and the toggle.
@@ -584,10 +595,24 @@ fn save(settings: &Settings, env: &Env) -> Result<()> {
     Ok(())
 }
 
-/// Run the UI until saved (`true`) or quit (`false`).
+/// Run the UI until saved (`true`) or quit (`false`). A test ping runs on a worker thread so the screen keeps
+/// answering (and Ctrl-C works) while the webhook takes its time.
 fn run_ui(terminal: &mut DefaultTerminal, settings: &mut Settings, config: &Config, env: &Env) -> Result<bool> {
+    let (sender, receiver) = mpsc::channel();
+    let mut redraw = true;
     loop {
-        draw(terminal, settings)?;
+        if std::mem::take(&mut redraw) {
+            draw(terminal, settings)?;
+        }
+        if let Ok(result) = receiver.try_recv() {
+            settings.status = Some(result);
+            redraw = true;
+            continue;
+        }
+        if !event::poll(TICK)? {
+            continue;
+        }
+        redraw = true;
         let Event::Key(pressed) = event::read()? else { continue };
         if pressed.kind != KeyEventKind::Press {
             continue;
@@ -604,8 +629,11 @@ fn run_ui(terminal: &mut DefaultTerminal, settings: &mut Settings, config: &Conf
             },
             Outcome::Test(webhook) => {
                 settings.status = Some(format!("Testing \"{webhook}\"…"));
-                draw(terminal, settings)?;
-                settings.status = Some(test_webhook(config, &webhook, env)?);
+                let (config, env, sender) = (config.clone(), env.clone(), sender.clone());
+                // Not joined: it writes nothing; a result that arrives after the editor closed is never read.
+                thread::spawn(move || {
+                    sender.send(test_webhook(&config, &webhook, &env)).ok();
+                });
             }
         }
     }

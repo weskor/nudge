@@ -7,6 +7,10 @@ usage: fake-webhook --dir DIR --id SESSION_ID [--port 0] [--secret LABEL=SECRET]
   POST /signed   like /hook, but also needs a valid x-nudge-signature (HMAC-SHA256 with one of the --secret
                  values over "<x-nudge-timestamp>.<raw body>"); otherwise 401 {"message":"Invalid signature"}
   POST /fail     500 "webhook exploded"
+  POST /moved    302 with Location: /landing (a webhook URL that moved)
+  GET /landing   200 "ok" (where /moved points: a client that follows the redirect lands here with a GET)
+  POST /echo     400 with a body that repeats the request's Authorization header, wrapped in ANSI escapes
+  POST /slow     200 "ok" after 3 seconds (a slow webhook)
   anything else (any method) 404 "no such hook"
   GET /__verify  200 SESSION_ID  (health/ownership probe for `verify-nudge doctor`; not recorded)
 
@@ -70,11 +74,13 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length") or 0)
         return self.rfile.read(length) if length else b""
 
-    def reply(self, code, body, content_type="text/plain"):
+    def reply(self, code, body, content_type="text/plain", headers=()):
         data = body.encode()
         self.send_response(code)
         self.send_header("content-type", content_type)
         self.send_header("content-length", str(len(data)))
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -103,6 +109,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, "ok")
         if self.path == "/fail":
             return self.reply(500, "webhook exploded")
+        if self.path == "/moved":
+            return self.reply(302, "moved", headers=[("location", "/landing")])
+        if self.path == "/landing" and self.command == "GET":
+            return self.reply(200, "ok")
+        if self.path == "/echo":
+            echoed = self.headers.get("authorization") or ""
+            return self.reply(400, f"\x1b[31mbad request\x1b[0m; you sent authorization: {echoed}")
+        if self.path == "/slow":
+            time.sleep(3)
+            return self.reply(200, "ok")
         return self.reply(404, "no such hook")
 
     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = handle_any

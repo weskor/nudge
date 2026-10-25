@@ -295,8 +295,9 @@ impl fmt::Debug for Key {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Outcome {
     Continue,
-    /// Fill the focused step-1 field (or both, from a combined copy) from the clipboard.
-    ReadClipboard,
+    /// Fill this step-1 field (or both, from a combined copy) from the clipboard; report back with
+    /// [`Wizard::fill_from_clipboard`].
+    ReadClipboard(Field),
     /// Start the test ping for this webhook; report back with [`Wizard::tested`].
     Test(Webhook),
     /// Leave the screen and save, with the test ping's HTTP status if one passed.
@@ -505,11 +506,9 @@ impl Wizard {
     }
 
     /// Check `field` unless it's empty or already checked. A name another saved webhook uses is refused, except the
-    /// one this run updates.
+    /// one this run updates; the check uses the name as it will be saved (trimmed).
     fn check_field(&mut self, field: Field) {
-        let name = &self.answers.name.value;
-        let taken = field == Field::Name && self.loaded.as_ref() != Some(name) && self.saved.contains(name);
-        let entry = self.entry_mut(field);
+        let entry = self.entry(field);
         if entry.checked || entry.value.is_empty() {
             return;
         }
@@ -519,18 +518,22 @@ impl Wizard {
             Field::Name => check_webhook_name(&entry.value),
             Field::Description => Ok(entry.value.trim().to_owned()),
         };
+        let taken =
+            |name: &String| field == Field::Name && self.loaded.as_ref() != Some(name) && self.saved.contains(name);
+        let checked = match checked {
+            Ok(name) if taken(&name) => Err(format!(
+                "\"{name}\" is already a webhook; pick another name, or run nudge setup --webhook {name} to change it"
+            )),
+            Ok(value) => Ok(value),
+            Err(error) => Err(problem(&error.to_string()).to_owned()),
+        };
+        let entry = self.entry_mut(field);
         match checked {
-            Ok(_) if taken => {
-                entry.problem = Some(format!(
-                    "\"{0}\" is already a webhook; pick another name, or run nudge setup --webhook {0} to change it",
-                    entry.value
-                ));
-            }
             Ok(value) => {
                 entry.value = value;
                 entry.checked = true;
             }
-            Err(error) => entry.problem = Some(problem(&error.to_string()).to_owned()),
+            Err(problem) => entry.problem = Some(problem),
         }
     }
 
@@ -578,12 +581,13 @@ impl Wizard {
         }
     }
 
-    /// Fill the focused step-1 field from the clipboard (`None`: it's empty), or both from a combined copy.
-    pub(super) fn fill_from_clipboard(&mut self, text: Option<String>) {
-        let At::Connect { focus: field } = self.at else {
-            // The read finished after the user moved on; it fills nothing there.
+    /// The clipboard read Enter asked for on `field` (`None`: the clipboard is empty), or both fields from a combined
+    /// copy. The read runs in the background, so it fills only fields that are still empty, and nothing once the user
+    /// has left step 1.
+    pub(super) fn fill_from_clipboard(&mut self, field: Field, text: Option<String>) {
+        if self.step() != Step::Connect || !self.entry(field).value.is_empty() {
             return;
-        };
+        }
         let label = field.label();
         let Some(text) = text else {
             self.status = Some(format!("No clipboard text found. Type or paste the {label} here."));
@@ -591,19 +595,29 @@ impl Wizard {
         };
         let found = split_paste(&text);
         if found.both() {
-            self.fill(found.url, found.authorization, Source::Clipboard);
+            let url = found.url.filter(|_| self.answers.url.value.is_empty());
+            let authorization = found
+                .authorization
+                .filter(|_| self.answers.authorization.value.is_empty());
+            self.fill(url, authorization, Source::Clipboard);
             self.status = Some("✓ Found the URL and the Authorization header on the clipboard.".into());
             return;
         }
         let checked = match field {
             Field::Url => check_webhook_url(&text),
-            Field::Authorization | Field::Name | Field::Description => check_header(&text),
+            // The header found in a copied command line or header line, else the whole text as the header.
+            Field::Authorization | Field::Name | Field::Description => {
+                found.authorization.map_or_else(|| check_header(&text), Ok)
+            }
         };
         match checked {
             Ok(value) => {
                 *self.entry_mut(field) = Entry::given(Some((value, Source::Clipboard)));
                 self.changed();
-                if field == Field::Url && self.answers.authorization.value.is_empty() {
+                if field == Field::Url
+                    && self.focus() == Some(Field::Url)
+                    && self.answers.authorization.value.is_empty()
+                {
                     self.set_focus(Field::Authorization);
                 }
             }
@@ -618,8 +632,9 @@ impl Wizard {
     }
 
     /// A bracketed paste into `field`. The header must never land in a visible field: a paste holding both values
-    /// fills step 1 from any step, a header (or anything that isn't the start of a URL) pasted into the URL field
-    /// goes to the Authorization field, and a header pasted into the name or description is refused.
+    /// fills step 1 from any step, a header pasted into either step-1 field is stored as the header found (not the
+    /// command line around it), anything else pasted into an empty URL field that isn't the start of a URL goes to the
+    /// Authorization field, and a header pasted into the name or description is refused.
     fn paste(&mut self, field: Field, text: &str) {
         let found = split_paste(text);
         if found.both() {
@@ -631,24 +646,31 @@ impl Wizard {
             });
             return;
         }
-        let header_shaped = found.authorization.is_some();
-        let push = |value: &mut String| value.push_str(text);
-        match field {
-            Field::Url if header_shaped || (self.answers.url.value.is_empty() && !text.starts_with("http")) => {
+        let moved = "That isn't a URL, so it went into the Authorization field, where it's never shown.";
+        match (field, found.authorization) {
+            (Field::Name | Field::Description, Some(_)) => {
+                self.status = Some(
+                    "✗ That looks like an Authorization header, so it wasn't pasted here. It belongs in step 1.".into(),
+                );
+            }
+            (Field::Url | Field::Authorization, Some(header)) => {
+                self.fill(None, Some(header), Source::Pasted);
+                if field == Field::Url {
+                    self.set_focus(Field::Authorization);
+                    self.status = Some(moved.into());
+                }
+            }
+            (Field::Url, None) if self.answers.url.value.is_empty() && !text.starts_with("http") => {
                 self.edit(Field::Authorization, |value| {
                     value.clear();
                     value.push_str(text);
                 });
                 self.set_focus(Field::Authorization);
-                self.status =
-                    Some("That isn't a URL, so it went into the Authorization field, where it's never shown.".into());
+                self.status = Some(moved.into());
             }
-            Field::Name | Field::Description if header_shaped => {
-                self.status = Some(
-                    "✗ That looks like an Authorization header, so it wasn't pasted here. It belongs in step 1.".into(),
-                );
+            (Field::Url | Field::Authorization | Field::Name | Field::Description, None) => {
+                self.edit(field, |value| value.push_str(text));
             }
-            Field::Url | Field::Authorization | Field::Name | Field::Description => self.edit(field, push),
         }
     }
 
@@ -817,7 +839,7 @@ impl Wizard {
         match key {
             Key::Enter if connect && self.entry(field).value.is_empty() => {
                 self.status = Some("Reading the clipboard…".into());
-                return Outcome::ReadClipboard;
+                return Outcome::ReadClipboard(field);
             }
             Key::Enter if field == Field::Url => {
                 self.check_field(field);
@@ -1097,7 +1119,7 @@ mod tests {
         );
         assert_eq!(
             wizard.handle(Key::Enter),
-            Outcome::ReadClipboard,
+            Outcome::ReadClipboard(Field::Authorization),
             "Enter on an empty field pastes"
         );
         type_text(&mut wizard, HEADER);
@@ -1159,7 +1181,7 @@ mod tests {
         );
         assert_eq!(wizard.entry(Field::Authorization).source, Some(Source::Pasted));
         let mut wizard = Wizard::new(start(&[], None));
-        wizard.fill_from_clipboard(Some("Bearer not-a-url-0123456789".into()));
+        wizard.fill_from_clipboard(Field::Url, Some("Bearer not-a-url-0123456789".into()));
         assert!(value(&wizard, Field::Url).is_empty());
         assert!(
             wizard
@@ -1358,17 +1380,63 @@ mod tests {
 
         let mut wizard = connected(&[]);
         wizard.handle(Key::Clear);
-        assert_eq!(wizard.handle(Key::Enter), Outcome::ReadClipboard);
+        assert_eq!(wizard.handle(Key::Enter), Outcome::ReadClipboard(Field::Authorization));
         assert_eq!(wizard.status().as_deref(), Some("Reading the clipboard…"));
-        type_text(&mut wizard, HEADER);
+        type_text(&mut wizard, "Bearer typed-0123456789abcdef");
+        wizard.fill_from_clipboard(Field::Authorization, Some(format!("https://late.example/h\n{HEADER}")));
+        assert_eq!(
+            (value(&wizard, Field::Url), value(&wizard, Field::Authorization)),
+            (URL, "Bearer typed-0123456789abcdef"),
+            "a read that finishes after typing overwrites nothing"
+        );
         wizard.handle(Key::Enter);
         assert_eq!(wizard.step(), Step::Name);
-        wizard.fill_from_clipboard(Some("https://late.example/h".into()));
+        wizard.fill_from_clipboard(Field::Url, Some("https://late.example/h".into()));
         assert_eq!(
             value(&wizard, Field::Url),
             URL,
             "a read that finishes after leaving step 1 fills nothing"
         );
+    }
+
+    #[test]
+    fn a_name_with_spaces_around_it_cant_take_over_another_webhook() {
+        let mut wizard = connected(&["research"]);
+        wizard.handle(Key::Enter);
+        wizard.handle(Key::Clear);
+        type_text(&mut wizard, "research ");
+        wizard.handle(Key::Enter);
+        assert_eq!(wizard.step(), Step::Name);
+        assert!(wizard.status().unwrap().contains("\"research\" is already a webhook"));
+    }
+
+    #[test]
+    fn a_pasted_command_line_stores_only_the_header_in_it() {
+        for pasted in [
+            format!("-H \"Authorization: {HEADER}\""),
+            format!("'Authorization: {HEADER}'"),
+        ] {
+            let mut wizard = Wizard::new(start(&[], None));
+            wizard.handle(Key::Tab);
+            wizard.handle(Key::Paste(pasted.clone()));
+            assert_eq!(value(&wizard, Field::Authorization), HEADER, "{pasted}");
+            let mut wizard = Wizard::new(start(&[], None));
+            wizard.handle(Key::Paste(pasted.clone()));
+            assert_eq!(
+                value(&wizard, Field::Authorization),
+                HEADER,
+                "into the URL field: {pasted}"
+            );
+            assert!(value(&wizard, Field::Url).is_empty());
+            let mut wizard = Wizard::new(start(&[], None));
+            wizard.handle(Key::Tab);
+            wizard.fill_from_clipboard(Field::Authorization, Some(pasted.clone()));
+            assert_eq!(
+                value(&wizard, Field::Authorization),
+                HEADER,
+                "from the clipboard: {pasted}"
+            );
+        }
     }
 
     #[test]

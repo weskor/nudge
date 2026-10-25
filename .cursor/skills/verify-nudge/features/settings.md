@@ -42,7 +42,9 @@ screen. Quitting without saving prints `No changes saved.`. herdr opens it as an
   q again to discard them, or s to save.` and only a second consecutive quit exits (any other key in between disarms).
 - `settings-test` `t` on a webhook row: status `Testing "<webhook>"…`, then `✓ "<webhook>" received a test ping (HTTP 200)` or
   `✗ <error>[; copy the Authorization header|Webhook URL again with nudge setup]`; signed webhooks sign the ping.
-  Elsewhere: `Move to a webhook to test it.`. Testing is not an edit.
+  Elsewhere: `Move to a webhook to test it.`. Testing is not an edit. The ping runs in the background: keys keep
+  working while `Testing …` is up, and the result replaces it when it arrives (`settings-slow-test-ping`, fake route
+  `/slow`, 3 s).
 - `settings-action` `nudge plugin action settings` runs `herdr plugin pane open --plugin weskor.nudge --entrypoint
   settings --focus` (no `--target-pane`); if herdr fails, exit 1 `could not open the settings pane`.
 

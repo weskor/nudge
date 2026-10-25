@@ -145,13 +145,24 @@ pub(crate) fn link_command(root: &Path, env: &Env) -> Result<PathBuf> {
     Ok(link.path)
 }
 
-/// herdr installs each plugin update into a new directory. If the user linked `~/.local/bin/nudge` into an
-/// older nudge install, repoint it at this one. Leaves other links and files alone.
+/// herdr installs each plugin update into a new directory next to the old one (and later deletes the old one). If
+/// the user linked `~/.local/bin/nudge` into an older nudge install, repoint it at this one. Links anywhere else
+/// (`~/.cargo/bin/nudge`, a development checkout) and regular files are left alone.
 pub(crate) fn refresh_command_link(root: &Path, env: &Env) -> Result<bool> {
     let wanted = root.join("bin").join("nudge");
+    let older_install = |target: &PathBuf| {
+        // `<install>/bin/nudge`, where `<install>` sits in the same directory as this install.
+        let install = target
+            .parent()
+            .and_then(Path::parent)
+            .filter(|_| target.ends_with("bin/nudge"));
+        install
+            .and_then(Path::parent)
+            .is_some_and(|parent| Some(parent) == root.parent())
+    };
     let stale = command_link(env)
         .target
-        .is_some_and(|target| target != wanted && target.to_string_lossy().ends_with("/bin/nudge"));
+        .is_some_and(|target| target != wanted && older_install(&target));
     if stale {
         let _path = link_command(root, env)?;
     }
@@ -209,12 +220,16 @@ mod tests {
         assert!(!refresh_command_link(root, &current).unwrap());
 
         let (_foreign_home, foreign, foreign_link) = home();
-        symlink("/usr/local/bin/some-other-nudge", &foreign_link).unwrap();
-        assert!(!refresh_command_link(root, &foreign).unwrap());
-        assert_eq!(
-            fs::read_link(&foreign_link).unwrap(),
-            Path::new("/usr/local/bin/some-other-nudge")
-        );
+        for elsewhere in [
+            "/usr/local/bin/nudge",
+            "/home/user/.cargo/bin/nudge",
+            "/home/user/src/nudge/bin/nudge",
+        ] {
+            fs::remove_file(&foreign_link).ok();
+            symlink(elsewhere, &foreign_link).unwrap();
+            assert!(!refresh_command_link(root, &foreign).unwrap(), "{elsewhere}");
+            assert_eq!(fs::read_link(&foreign_link).unwrap(), Path::new(elsewhere));
+        }
 
         let (_empty_home, empty, _) = home();
         assert!(!refresh_command_link(root, &empty).unwrap());

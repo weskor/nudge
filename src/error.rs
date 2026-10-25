@@ -57,11 +57,12 @@ pub(crate) struct WebhookError {
 }
 
 impl WebhookError {
-    /// 401/403 blame the Authorization header, 404/405/410 the URL; anything else blames neither.
+    /// 401/403 blame the Authorization header; a redirect (nudge doesn't follow them) or 404/405/410 blames the
+    /// URL; anything else blames neither.
     pub(crate) const fn blames(&self) -> Option<Blame> {
         match self.http_status {
             Some(401 | 403) => Some(Blame::Authorization),
-            Some(404 | 405 | 410) => Some(Blame::Url),
+            Some(301 | 302 | 303 | 307 | 308 | 404 | 405 | 410) => Some(Blame::Url),
             Some(_) | None => None,
         }
     }
@@ -85,6 +86,7 @@ mod tests {
         assert_eq!(blame(Some(401)), Some(Blame::Authorization));
         assert_eq!(blame(Some(403)), Some(Blame::Authorization));
         assert_eq!(blame(Some(404)), Some(Blame::Url));
+        assert_eq!(blame(Some(308)), Some(Blame::Url));
         assert_eq!(blame(Some(500)), None);
         assert_eq!(blame(None), None);
     }

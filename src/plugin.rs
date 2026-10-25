@@ -5,19 +5,21 @@
 //!   startup        server start: keep `~/.local/bin/nudge` pointing at this install
 //!
 //! Decisions and failures go to stderr, which herdr keeps in `herdr plugin log list`.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::config::{Auto, Config, Scope, default_config_path, find_webhook, load_config, read_config, write_config};
-use crate::context::{Env, Run as _, Sender, System, herdr_agent, in_scope, pane_workspace, workspace_label};
+use crate::context::{
+    AgentInfo, Env, Run as _, Sender, System, herdr_agent, in_scope, pane_workspace, workspace_label,
+};
 use crate::error::{Error, Result};
 use crate::install::{PLUGIN_ID, nudge_root, refresh_command_link};
 use crate::notify::{NotifyStatus, Origin, build_notification, post_to_webhook};
 use crate::state::{now_ms, update_state};
-use crate::watch::{Decision, HerdrStatus, Settled, Trigger, auto_message, clean_tail, decide};
+use crate::watch::{Decision, HerdrStatus, Settled, Trigger, auto_message, decide};
 
 const USAGE: &str = "usage: nudge plugin event | action <id> | startup";
 
@@ -90,7 +92,7 @@ impl Plugin<'_> {
             (agent, raw.join().ok().flatten())
         });
         let lines = usize::try_from(config.auto.tail_lines).unwrap_or(usize::MAX);
-        let message = auto_message(trigger, &clean_tail(raw.as_deref().unwrap_or_default(), lines));
+        let message = auto_message(trigger, raw.as_deref().unwrap_or_default(), lines);
         let home = self.home.to_string_lossy();
         let (target, cwd) = match agent {
             Some(agent) => (
@@ -144,39 +146,58 @@ impl Plugin<'_> {
             }
             Decision::Notify(settled) => settled,
         };
+        let sent = self.notify_settled(&path, config, agent, &pane_id, settled);
+        if !matches!(sent, Ok(true)) {
+            // Nothing reached the webhook: give back the cooldown `decide` reserved, so the next event can notify.
+            update_state(self.env, |state| {
+                if let Some(pane) = state.panes.get_mut(&pane_id)
+                    && pane.last_auto_at == Some(now)
+                {
+                    pane.last_auto_at = None;
+                }
+            })?;
+        }
+        sent.map(|_| ())
+    }
+
+    /// Send the notification `decide` asked for; `false` when the pane is outside nudge's scope.
+    fn notify_settled(
+        &self,
+        path: &Path,
+        config: Option<Config>,
+        agent: Option<AgentInfo>,
+        pane_id: &str,
+        settled: Settled,
+    ) -> Result<bool> {
         let config = match config {
             Some(config) => config,
-            None => load_config(&path)?,
+            None => load_config(path)?,
         };
         let sender = agent.map_or_else(
             || Sender {
                 agent: None,
                 workspace_id: None,
-                pane_id: Some(pane_id.clone()),
+                pane_id: Some(pane_id.to_owned()),
             },
             |agent| agent.sender,
         );
-        if !in_scope(&config.scope, &sender, self.env, &System) {
-            log(&format!(
-                "{pane_id} {}: skipped (outside nudge's scope)",
-                status.as_str()
-            ));
-            return Ok(());
-        }
-        let (notify_status, done) = match settled {
-            Settled::Done => (NotifyStatus::Done, "finished a turn"),
-            Settled::Blocked => (NotifyStatus::Blocked, "is blocked"),
+        let (notify_status, status, done) = match settled {
+            Settled::Done => (NotifyStatus::Done, "done", "finished a turn"),
+            Settled::Blocked => (NotifyStatus::Blocked, "blocked", "is blocked"),
         };
-        let sent = self.send_pane(&config, &pane_id, notify_status, Trigger::Settled(settled))?;
+        if !in_scope(&config.scope, &sender, self.env, &System) {
+            log(&format!("{pane_id} {status}: skipped (outside nudge's scope)"));
+            return Ok(false);
+        }
+        let sent = self.send_pane(&config, pane_id, notify_status, Trigger::Settled(settled))?;
         log(&format!(
-            "{pane_id} {}: notified webhook (HTTP {})",
-            status.as_str(),
+            "{pane_id} {status}: notified webhook (HTTP {})",
             sent.http_status
         ));
         if config.auto.toast {
             self.toast(&format!("Told the webhook: {} {done}", sent.target));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Open one of the plugin's overlay panes (declared in herdr-plugin.toml) over the active pane.

@@ -2,6 +2,20 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## 0.10.3
+
+- **Private keys no longer slip past redaction.** Pane output is now redacted as a whole before it's cut to the last lines, so a key whose `-----BEGIN` line scrolled above the cut is still recognized. The base64 lines before a lone `-----END … PRIVATE KEY-----` are redacted too.
+- **A redirecting webhook is reported, not followed.** Following a redirect turned the POST into a body-less GET, so nudge could report "sent" while the webhook never got the event. It now fails with `returned HTTP 302 (a redirect: … set the webhook URL to where it points: …)`, and setup sends you back to fix the URL.
+- **Webhook replies can't leak your header or garble the terminal.** Text from a failing webhook's reply has control characters removed, and your Authorization value and signing secret are replaced with `[REDACTED]`, in case the endpoint echoes the request back.
+- **A failed send no longer uses up the cooldown.** If the webhook is down, the config is broken or the pane is outside the scope, the next `blocked` or `done` from that pane still notifies.
+- **herdr startup only repoints its own link.** `~/.local/bin/nudge` is repointed only when it points into an older install of the plugin next to the current one; links to `~/.cargo/bin/nudge`, `/usr/local/bin/nudge` or a checkout are left alone.
+- **Setup can't overwrite another webhook by a trailing space.** `research ` is now refused as taken when `research` exists (and `--webhook " research"` means `research`).
+- **A pasted `curl -H "Authorization: …"` saves only the header.** Pastes and clipboard reads store the header found in the text, not the text around it.
+- **A slow clipboard read never overwrites what you typed** (Enter on an empty field, then typing before the read finished).
+- **The settings test ping no longer freezes the screen.** It runs in the background; keys and Ctrl-C keep working.
+- **Safer config writes.** The config is flushed to disk before it replaces the old one, a symlinked config stays a symlink, and a failed write leaves no temp file behind.
+- **Clipboard on macOS.** Setup reads the clipboard with `pbpaste`, and `nudge doctor` no longer tells Mac users to install wl-clipboard.
+
 ## 0.10.2
 
 - **The setup wizard never freezes on the clipboard.** Clipboard reads (when the wizard opens, and Enter on an empty field) run in the background, so a slow clipboard tool no longer holds up the first screen or the keyboard. A read that finishes after you've typed fills only fields that are still empty.

@@ -217,7 +217,7 @@ fn min_turn(config: Option<&Config>) -> String {
 /// The setup wizard in a terminal; returns the exit code.
 fn interactive(options: &SetupOptions, env: &Env) -> Result<u8> {
     let existing = read_config(&default_config_path(env))?;
-    let name = options.webhook.clone().unwrap_or_else(|| "main".into());
+    let name = options.webhook.as_deref().map_or("main", str::trim).to_owned();
     let current = existing
         .as_ref()
         .and_then(|config| config.webhook.iter().find(|webhook| webhook.name == name))
@@ -349,7 +349,7 @@ fn missing(yes: bool, url_missing: bool) -> String {
 fn scripted(options: &SetupOptions, env: &Env) -> Result<u8> {
     let path = default_config_path(env);
     let existing = read_config(&path)?;
-    let name = options.webhook.as_deref().unwrap_or("main");
+    let name = options.webhook.as_deref().map_or("main", str::trim);
     let current = existing
         .as_ref()
         .and_then(|config| config.webhook.iter().find(|webhook| webhook.name == name))

@@ -4,17 +4,56 @@ use std::path::{Path, PathBuf};
 
 use crate::context::{Env, Run};
 
-/// Clipboard tools `nudge setup` can use, for doctor's report.
-pub(crate) const CLIPBOARD_TOOLS: [&str; 2] = ["wl-paste", "xclip"];
-
 const WL_PASTE: [&str; 4] = ["wl-paste", "--no-newline", "--type", "text"];
 const XCLIP: [&str; 4] = ["xclip", "-selection", "clipboard", "-o"];
+const PBPASTE: [&str; 1] = ["pbpaste"];
 
-/// Clipboard commands to try, in order: wl-paste, then xclip, each as-is first. Processes started by the herdr
-/// server (plugin panes) may lack the graphical session's `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` or `DISPLAY`, so
-/// also try every Wayland socket in the runtime dir and `DISPLAY=:0`.
-pub(crate) fn clipboard_commands(env: &Env, runtime_dir: &str, wayland_sockets: &[String]) -> Vec<Vec<String>> {
+/// The desktop nudge runs on, which decides the clipboard tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Desktop {
+    MacOs,
+    /// Linux and other Unix desktops: Wayland or X11.
+    Unix,
+}
+
+impl Desktop {
+    pub(crate) const CURRENT: Self = if cfg!(target_os = "macos") {
+        Self::MacOs
+    } else {
+        Self::Unix
+    };
+
+    /// Clipboard tools `nudge setup` can use here, for doctor's report.
+    pub(crate) const fn clipboard_tools(self) -> &'static [&'static str] {
+        match self {
+            Self::MacOs => &["pbpaste"],
+            Self::Unix => &["wl-paste", "xclip"],
+        }
+    }
+
+    /// What to do when none of [`Self::clipboard_tools`] is found.
+    pub(crate) const fn clipboard_fix(self) -> &'static str {
+        match self {
+            Self::MacOs => "pbpaste comes with macOS; check that /usr/bin is on PATH",
+            Self::Unix => "install wl-clipboard or xclip",
+        }
+    }
+}
+
+/// Clipboard commands to try, in order. macOS: `pbpaste`. Elsewhere: wl-paste, then xclip, each as-is first.
+/// Processes started by the herdr server (plugin panes) may lack the graphical session's `XDG_RUNTIME_DIR`,
+/// `WAYLAND_DISPLAY` or `DISPLAY`, so also try every Wayland socket in the runtime dir and `DISPLAY=:0`.
+pub(crate) fn clipboard_commands(
+    desktop: Desktop,
+    env: &Env,
+    runtime_dir: &str,
+    wayland_sockets: &[String],
+) -> Vec<Vec<String>> {
     let owned = |args: &[&str]| args.iter().map(|&arg| arg.to_owned()).collect::<Vec<String>>();
+    match desktop {
+        Desktop::MacOs => return vec![owned(&PBPASTE)],
+        Desktop::Unix => {}
+    }
     let mut commands = vec![owned(&WL_PASTE)];
     for socket in wayland_sockets {
         if env.get("WAYLAND_DISPLAY") == Some(socket.as_str()) && env.get("XDG_RUNTIME_DIR") == Some(runtime_dir) {
@@ -61,7 +100,11 @@ pub(crate) fn runtime_dir(env: &Env) -> PathBuf {
 /// Trimmed text from the first clipboard command that works and isn't empty; `None` if none do.
 pub(crate) fn read_clipboard(run: &dyn Run, env: &Env, runtime_dir: &Path) -> Option<String> {
     let dir = runtime_dir.to_string_lossy();
-    clipboard_commands(env, &dir, &wayland_sockets_in(runtime_dir))
+    let sockets = match Desktop::CURRENT {
+        Desktop::MacOs => Vec::new(),
+        Desktop::Unix => wayland_sockets_in(runtime_dir),
+    };
+    clipboard_commands(Desktop::CURRENT, env, &dir, &sockets)
         .into_iter()
         .find_map(|cmd| {
             let args: Vec<&str> = cmd.iter().map(String::as_str).collect();
@@ -73,7 +116,7 @@ pub(crate) fn read_clipboard(run: &dyn Run, env: &Env, runtime_dir: &Path) -> Op
 mod tests {
     use std::fs;
 
-    use super::{clipboard_commands, read_clipboard};
+    use super::{Desktop, clipboard_commands, read_clipboard};
     use crate::context::Env;
     use crate::context::tests::FakeRun;
 
@@ -142,6 +185,7 @@ mod tests {
         let joined = |commands: Vec<Vec<String>>| commands.into_iter().map(|c| c.join(" ")).collect::<Vec<_>>();
         assert_eq!(
             joined(clipboard_commands(
+                Desktop::Unix,
                 &graphical_session(),
                 "/run/user/1000",
                 &["wayland-1".into()]
@@ -150,6 +194,7 @@ mod tests {
         );
         assert_eq!(
             joined(clipboard_commands(
+                Desktop::Unix,
                 &Env::default(),
                 "/run/user/1000",
                 &["wayland-0".into(), "wayland-1".into()]
@@ -162,5 +207,11 @@ mod tests {
                 format!("env DISPLAY=:0 {XC}"),
             ]
         );
+    }
+
+    #[test]
+    fn macos_reads_pbpaste_only() {
+        let commands = clipboard_commands(Desktop::MacOs, &Env::default(), "", &["wayland-0".into()]);
+        assert_eq!(commands, [["pbpaste"]]);
     }
 }

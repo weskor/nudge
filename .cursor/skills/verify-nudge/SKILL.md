@@ -128,7 +128,9 @@ good-token-0123456789abcdef`, else 401 `{"message":"Invalid API key"}`; `POST /s
 `x-nudge-signature: sha256=<hex HMAC-SHA256(secret, "<x-nudge-timestamp>.<raw body>")>` for one of the secrets the
 helper passes it (`sign-secret-0123456789abcdef`, the seeded `signed` webhook's; `setup-secret-fedcba9876543210`, the one
 parity hands to `setup --signing-secret`), else 401 `{"message":"Invalid signature"}`; `/fail` answers 500
-`webhook exploded`; any other path 404 `no such hook`. Each logged request carries `"signature": "valid:<signed-webhook|setup>"
+`webhook exploded`; `POST /moved` answers 302 to `/landing` (whose GET answers 200); `POST /echo` answers 400 with the
+request's Authorization header in ANSI escapes; `POST /slow` answers 200 after 3 s; any other path 404 `no such hook`.
+Each logged request carries `"signature": "valid:<signed-webhook|setup>"
 | "invalid" | "missing"` when it has a signature header or targets `/signed`, and its receive time (`received_unix`).
 The offline webhook URL is a closed port.
 
@@ -152,12 +154,13 @@ NUDGE_BIN=/path/to/new/nudge $VN parity .verify/parity/new.json
 diff -u .verify/parity/old.json .verify/parity/new.json
 ```
 
-Runs the fixed scenario list (211 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
+Runs the fixed scenario list (218 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
 with its own fakes and one shared fake webhook, then writes one JSON transcript with sorted keys. Per step it
 records the same fields as `run`, with JSON payloads (webhook bodies, `list --json` stdout as `stdout_json`, MCP
 responses keyed by JSON-RPC id with JSON tool text as `text_json`, state.json) compared as data. Multi-line text is
 split into line arrays so `diff -u` points at the changed line; config text stays verbatim. Normalized: sandbox
-path `<RUN>`, install root `<NUDGE_ROOT>` (= dirname(dirname(realpath NUDGE_BIN))), ports `<PORT>`/`<OFFLINE_PORT>`,
+path `<RUN>`, install root `<NUDGE_ROOT>` (= dirname(dirname(realpath NUDGE_BIN))) and an older install next to it
+`<NUDGE_SIBLING>` (`{NUDGE_SIBLING}` in scenario links), ports `<PORT>`/`<OFFLINE_PORT>`,
 state epoch-ms values as `<now>` / `<now-Nms>` (values the harness seeded) / `<epoch-ms>`, the relative age at the
 end of doctor's `Recent:` lines (`just now`, `5m ago`, `371d ago`) as `<ago>`, any lowercase UUID v4 as `<uuid>` and any
 `YYYY-MM-DDTHH:MM:SSZ` as `<sent_at>` (a malformed `id`/`sent_at` stays raw so the diff shows it), a webhook

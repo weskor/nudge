@@ -23,7 +23,8 @@ the pane on screen and auto-notify being off no longer stop a notification. Afte
 - `event-scope` out of `[scope]`: `skipped (outside nudge's scope)`, no request, no toast (see scope.md). Checked only
   after the other rules decide to notify.
 - `event-skips` `auto-notify is off` (default), `you are looking at this pane`, `agent already notified the webhook
-  this turn`, `cooldown`.
+  this turn`, `cooldown`. The cooldown counts only notifications that reached the webhook: a failed send or an
+  out-of-scope skip gives it back, so the next event still notifies (`event-cooldown-after-failure`).
 - `event-away` with state.json `away` true, `you are looking at this pane` and `auto-notify is off` no longer skip
   (blocked and long done notify as usual, toast included); min turn, cooldown, `agent already notified the webhook this
   turn` and `[scope]` still skip. Without `away` (absent key) the rules are unchanged.
@@ -31,7 +32,9 @@ the pane on screen and auto-notify being off no longer stop a notification. Afte
   (else HOME), git repo/branch of that cwd, message lead + `Last terminal output (secrets redacted):` + tail, or
   `No terminal output captured.`; signed (`x-nudge-*`) when the default webhook has a `signing_secret`.
 - `event-redaction` Bearer/Basic/Token values, `*KEY*/*TOKEN*/*SECRET*/*PASSWORD*` assignments, `sk-`, `ghp_`,
-  `AKIA…`, JWTs, private-key blocks and long mixed tokens become `[REDACTED]`; hex SHAs stay.
+  `AKIA…`, JWTs, private-key blocks and long mixed tokens become `[REDACTED]`; hex SHAs stay. The whole capture is
+  redacted before it's cut to the tail, and the base64 lines before a lone `-----END … PRIVATE KEY-----` (its BEGIN
+  line scrolled away) are redacted too.
 - `event-failure` webhook/config errors exit 1, log `[nudge] failed: …` and toast `Webhook notify failed: …`.
 - `event-invalid` missing/garbled event JSON logs `ignoring event without pane_id/agent_status`, exit 0.
 

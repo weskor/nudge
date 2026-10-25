@@ -23,7 +23,11 @@ webhooks with the default marked `*`. Agents outside the config's `[scope]` are 
 - `notify-scope` with a non-empty `[scope]`, an agent outside it gets exit 1 `… is outside nudge's scope, so nothing
   was sent. …` and no request; `nudge test` ignores scope.
 - `notify-errors` exit 1 for empty message, unknown webhook, no/invalid config, several webhooks without default,
-  webhook 401/404/500 (body text included) and unreachable webhook; exit 2 for usage errors and bad `--status`.
+  webhook 401/404/500 (body text included) and unreachable webhook; exit 2 for usage errors and bad `--status`. The
+  webhook's body is shown with control characters turned into spaces and the webhook's own Authorization value or
+  signing secret replaced by `[REDACTED]` (`notify-echoed-header`, fake route `/echo`). A redirect is reported, not
+  followed: `… returned HTTP 302 (a redirect: nudge doesn't follow redirects; set the webhook URL to where it points:
+  /landing)…`, one request (`notify-redirect`, fake route `/moved`); setup blames the URL for it.
 - `test-ping` sends the fixed test message to the default or `--webhook` webhook.
 - `list` prints `* name  description` rows (`--json` prints `[{name, default, description}]`).
 - `config-migrates-old-format` a config still in the old format (`[[desk]]` tables, `default_desk`) is rewritten on read

@@ -111,6 +111,9 @@ fn regex(pattern: &str) -> Regex {
 
 static PRIVATE_KEY: LazyLock<Regex> =
     LazyLock::new(|| regex(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)"));
+/// The end of a key whose BEGIN line scrolled out of view: the base64 lines before an END line.
+static PRIVATE_KEY_END: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?m)(?:^[ \t]*[A-Za-z0-9+/=]{4,}[ \t]*\r?\n)*^[ \t]*-----END [A-Z ]*PRIVATE KEY-----"));
 static AUTH_SCHEME: LazyLock<Regex> = LazyLock::new(|| regex(r"(?i)\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}"));
 static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
     regex(
@@ -157,15 +160,18 @@ fn redact_long_tokens(text: &str) -> String {
 /// Replace things that look like credentials. Errs toward over-redacting; this text goes to a remote webhook.
 pub(crate) fn redact(text: &str) -> String {
     let text = PRIVATE_KEY.replace_all(text, REDACTED);
+    let text = PRIVATE_KEY_END.replace_all(&text, REDACTED);
     let text = AUTH_SCHEME.replace_all(&text, format!("${{1}} {REDACTED}"));
     let text = ASSIGNMENT.replace_all(&text, format!("${{1}}${{2}}{REDACTED}"));
     let text = KNOWN_TOKEN.replace_all(&text, REDACTED);
     redact_long_tokens(&text)
 }
 
-/// The last `lines` meaningful lines of a pane: no ANSI, no box-drawing rules, no blank runs.
-pub(crate) fn clean_tail(raw: &str, lines: usize) -> String {
-    let plain = ANSI.replace_all(raw, "");
+/// The last `lines` meaningful lines of a pane, redacted: no ANSI, no box-drawing rules, no blank runs. The whole
+/// capture is redacted before it's cut, so a secret that starts above the cut (a private key's BEGIN line) is
+/// still recognized.
+fn clean_tail(raw: &str, lines: usize) -> String {
+    let plain = redact(&ANSI.replace_all(raw, ""));
     let mut kept: Vec<&str> = Vec::new();
     for line in plain.split('\n') {
         let trimmed = line.strip_suffix('\r').unwrap_or(line).trim_end();
@@ -200,8 +206,9 @@ pub(crate) enum Trigger {
     Manual,
 }
 
-/// Message for an automatic or on-demand notification built from the pane's output.
-pub(crate) fn auto_message(trigger: Trigger, tail: &str) -> String {
+/// Message for an automatic or on-demand notification built from the pane's output (`raw`, as captured): its
+/// last `lines` meaningful lines, secrets redacted.
+pub(crate) fn auto_message(trigger: Trigger, raw: &str, lines: usize) -> String {
     let lead = match trigger {
         Trigger::Settled(Settled::Done) => {
             "Agent finished a turn (auto-detected by herdr; this message was not written by the agent)."
@@ -213,8 +220,8 @@ pub(crate) fn auto_message(trigger: Trigger, tail: &str) -> String {
             "The user asked you to look at this agent (sent from herdr; this message was not written by the agent)."
         }
     };
-    let redacted = redact(tail);
-    let output = redacted.trim();
+    let tail = clean_tail(raw, lines);
+    let output = tail.trim();
     if output.is_empty() {
         format!("{lead}\nNo terminal output captured.")
     } else {
@@ -483,9 +490,40 @@ mod tests {
         let message = auto_message(
             Trigger::Settled(Settled::Blocked),
             "Approve rm -rf build? token=abc12345secret",
+            40,
         );
         assert!(message.starts_with("Agent is waiting for approval or input (auto-detected by herdr"));
         assert!(message.contains("token=[REDACTED]"));
-        assert!(auto_message(Trigger::Settled(Settled::Done), "  ").ends_with("No terminal output captured."));
+        assert!(auto_message(Trigger::Settled(Settled::Done), "  ", 40).ends_with("No terminal output captured."));
+    }
+
+    /// `cat` of a 4096-bit key: 49 base64 lines, more than the 40-line tail, so its BEGIN line is cut.
+    fn long_key() -> (String, String) {
+        let body: Vec<String> = (0..49)
+            .map(|i| format!("MIIJKAIBAAKCAgEA{i:02}x+Lk/9qZr3/Wm+Tq8vY2bN5cP0dE7fH1gJ4kS6uX8wZ/aB3+cD{i:02}eF"))
+            .collect();
+        let key = format!(
+            "$ cat ~/.ssh/id_rsa\n-----BEGIN RSA PRIVATE KEY-----\n{}\n-----END RSA PRIVATE KEY-----\n$ ",
+            body.join("\n")
+        );
+        (key, body.join("\n"))
+    }
+
+    #[test]
+    fn a_private_key_is_redacted_even_when_its_begin_line_is_outside_the_tail() {
+        let (key, body) = long_key();
+        let message = auto_message(Trigger::Manual, &key, 40);
+        for line in body.lines() {
+            let middle: String = line.chars().skip(10).take(30).collect();
+            assert!(!message.contains(&middle), "key material sent: {message}");
+        }
+        assert!(message.contains("[REDACTED]"));
+        let without_begin = key.lines().skip(10).collect::<Vec<_>>().join("\n");
+        let redacted = redact(&without_begin);
+        assert!(!redacted.contains("Lk/9qZr3"), "{redacted}");
+        assert!(
+            redacted.ends_with("[REDACTED]\n$ ") || redacted.ends_with("[REDACTED]\n$"),
+            "{redacted}"
+        );
     }
 }

@@ -27,8 +27,10 @@ state, `away`/`away-on`/`away-off` flip away mode (notify even for the pane on s
   (no `--target-pane`); if herdr fails: exit 1, `could not open the <id> pane`, no toast. The `settings` entrypoint
   runs `nudge settings --pane`.
 - `action-unknown` unknown ids and bad modes exit 1 with `[nudge] failed: …`.
-- `startup-link` repoints a symlink that ends in `/bin/nudge` but targets another install; leaves the current
-  link, foreign links, regular files and missing links alone (silent).
+- `startup-link` repoints a symlink into an older install of the plugin (`<install>/bin/nudge` where `<install>` sits
+  next to the current root, as herdr lays out updates); leaves the current link, links into any other nudge
+  (`/opt/old-nudge/bin/nudge`, `~/.cargo/bin/nudge`, a checkout), foreign links, regular files and missing links
+  alone (silent). Parity: `startup-repoint`, `startup-other-nudge-link`.
 
 ## How to get to it (user POV)
 
@@ -46,7 +48,7 @@ Preconditions:
 - **Send pane.** Run `$VN run --cwd home --env 'HERDR_PLUGIN_CONTEXT_JSON={"focused_pane_id":"p_1","focused_pane_status":"blocked"}' -- plugin action send-pane`. Exit 0; `webhook[0].body.status` `blocked`, `from_agent` `claude-1`, redacted tail; toast `Sent this pane to the webhook (HTTP 200)`. With status `working` the body status is `question`.
 - **No pane.** Run `$VN run --cwd home --env 'HERDR_PLUGIN_CONTEXT_JSON={}' -- plugin action send-pane`. No request; toast `No pane to send`.
 - **Overlays.** Run `$VN run --cwd home -- plugin action setup`, `… status` and `… settings`. Exit 0; `herdr_calls` is the `plugin pane open … --entrypoint setup|status|settings --focus` call. With `$VN herdr none`: exit 1, stderr `[nudge] failed: could not open the setup pane`. Parity: `action-open-panes`, `action-settings-pane`, `action-settings-pane-fails`.
-- **Startup repoint.** Run `$VN link /opt/old-nudge/bin/nudge`, then `$VN run --cwd home --expect 0 -- plugin startup`. stderr `[nudge] repointed ~/.local/bin/nudge at this install`; `files.command_link.target` is `<NUDGE_ROOT>/bin/nudge`. A second run is silent and changes nothing; so do `$VN link /usr/bin/true`, `$VN link --file` and `$VN link --remove`.
+- **Startup repoint.** Run `$VN link '{NUDGE_SIBLING}/bin/nudge'`, then `$VN run --cwd home --expect 0 -- plugin startup`. stderr `[nudge] repointed ~/.local/bin/nudge at this install`; `files.command_link.target` is `<NUDGE_ROOT>/bin/nudge`. A second run is silent and changes nothing; so do `$VN link /opt/old-nudge/bin/nudge`, `$VN link /usr/bin/true`, `$VN link --file` and `$VN link --remove`.
 - **Scope actions.** With `$VN herdr workspaces; $VN seed-config`, run `$VN run --cwd home --env 'HERDR_PLUGIN_CONTEXT_JSON={"focused_pane_id":"wD:p1"}' -- plugin action only-workspace`: `files.config.text` gains `[scope]` / `workspaces = ["api-work"]` (mode still 600), toast `Only workspace "api-work" can notify the webhook`, `webhook` `[]`. Same with `only-agent` (`agents = ["claude-1"]`), `only-agent` on `wD:p3` (toast `No agent in this pane`), then `all-agents` (scope cleared, toast `All agents can notify the webhook`). A following `$VN run -- list` exits 0.
 - **Proof.** The records' `herdr_calls` are the toasts/overlays the user would see; `files` shows the state flips.
 

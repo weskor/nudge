@@ -383,13 +383,17 @@ fn draw(terminal: &mut DefaultTerminal, wizard: &Wizard) -> Result<()> {
 enum Done {
     /// The clipboard read when the wizard opened.
     Prefill(Option<String>),
-    /// The clipboard read when Enter was pressed on an empty field.
-    Clipboard(Option<String>),
+    /// The clipboard read Enter asked for on this field.
+    Clipboard(Field, Option<String>),
     Pinged(Result<Result<u16, WebhookError>>),
 }
 
 /// Read the clipboard on a worker thread (each tool may take seconds), sending the text back as `done`.
-fn read_clipboard_later(env: &Env, sender: &mpsc::Sender<Done>, done: fn(Option<String>) -> Done) {
+fn read_clipboard_later(
+    env: &Env,
+    sender: &mpsc::Sender<Done>,
+    done: impl FnOnce(Option<String>) -> Done + Send + 'static,
+) {
     let (env, sender, dir) = (env.clone(), sender.clone(), runtime_dir(env));
     // Not joined: it writes nothing, and a result that arrives after the user left is never read.
     thread::spawn(move || {
@@ -420,8 +424,17 @@ pub(super) fn run(
         if let Ok(done) = receiver.try_recv() {
             match done {
                 Done::Prefill(text) => wizard.prefill(text.as_deref()),
-                Done::Clipboard(text) => wizard.fill_from_clipboard(text),
-                Done::Pinged(result) => outcome = wizard.tested(result?),
+                Done::Clipboard(field, text) => wizard.fill_from_clipboard(field, text),
+                // A ping that couldn't start (no working directory) is a failed test, not a reason to leave.
+                Done::Pinged(result) => {
+                    let result = result.unwrap_or_else(|error| {
+                        Err(WebhookError {
+                            message: error.to_string(),
+                            http_status: None,
+                        })
+                    });
+                    outcome = wizard.tested(result);
+                }
             }
             redraw = true;
         } else if event::poll(TICK)? {
@@ -437,7 +450,9 @@ pub(super) fn run(
         match outcome {
             Outcome::Continue => {}
             Outcome::Quit => return Err(Error::Cancelled),
-            Outcome::ReadClipboard => read_clipboard_later(env, &sender, Done::Clipboard),
+            Outcome::ReadClipboard(field) => {
+                read_clipboard_later(env, &sender, move |text| Done::Clipboard(field, text));
+            }
             Outcome::Test(webhook) => {
                 let (env, sender) = (env.clone(), sender.clone());
                 // Not joined: on Ctrl-C the loop leaves and the ping ends with the process (nothing is saved yet).
