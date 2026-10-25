@@ -20,9 +20,11 @@ auto-notify, the `~/.local/bin/nudge` link and making the webhook the default.
 - `setup-signing-secret` `--signing-secret VALUE` (printable ASCII, 16+ characters) saves `signing_secret` for the
   webhook, and the test ping is already signed; re-running setup without the flag keeps the saved secret; the flag
   again replaces it. The secret never appears in output; invalid values exit 1 with nothing saved.
-- `setup-flags-file` `--authorization-file PATH` reads the header from a file (`-` = stdin); combining it with
-  `--authorization` is a usage error. `NUDGE_WEBHOOK_URL` / `NUDGE_WEBHOOK_AUTHORIZATION` supply values from the
-  environment. Precedence: flag > file > env > (scripted: stdin lines) > saved webhook > (wizard: clipboard).
+- `setup-flags-file` `--authorization-file PATH` reads the header from a file (`-` = stdin, which must be a pipe or a
+  redirect: with a terminal on stdin it exits 2, `… stdin is a terminal …`, so a typed header is never echoed);
+  combining it with `--authorization` is a usage error. `NUDGE_WEBHOOK_URL` / `NUDGE_WEBHOOK_AUTHORIZATION` supply
+  values from the environment. Precedence: flag > file > env > (scripted: stdin lines) > saved webhook > (wizard:
+  clipboard).
 - `setup-yes` `--yes`/`-y` saves with no screen (terminal or not) and applies step 3's defaults: auto-notify on if the
   herdr plugin is installed, links `~/.local/bin/nudge`; `--no-auto-notify`, `--no-install-command` turn them off.
   Missing values exit 1: `setup --yes needs the webhook URL: --url or NUDGE_WEBHOOK_URL` / `setup --yes needs the
@@ -40,8 +42,12 @@ auto-notify, the `~/.local/bin/nudge` link and making the webhook the default.
 - `setup-tty-clipboard` on opening, the clipboard (wl-paste, xclip, `env DISPLAY=:0 xclip`) prefills the URL or header only
   if it holds a value that checks out; otherwise it is never shown. Enter on an empty field pastes the clipboard.
 - `setup-tty-paste` typed characters and bracketed pastes go into the focused field; Backspace, Ctrl-U empties it. A
-  paste holding both the URL and the Authorization header fills both: `✓ Found the URL and the Authorization header in
-  what you pasted.`
+  paste holding both the URL and the Authorization header fills both from any step: `✓ Found the URL and the
+  Authorization header in what you pasted.` (on step 2: `…; step 1 has them now.`). The header never lands in a visible
+  field: a header, or anything not starting with `http`, pasted into an empty URL field goes to Authorization (`That
+  isn't a URL, so it went into the Authorization field, where it's never shown.`); a header pasted into Name or
+  Description is refused (`✗ That looks like an Authorization header, so it wasn't pasted here. It belongs in step
+  1.`). Parity: `setup-tty-paste-routing`, `setup-tty-authorization-file-terminal`.
 - `setup-tty-name` step 2: intro `What should nudge call this webhook? You'll use the name with` / `--webhook and in nudge
   list. With one webhook, main is fine.`; `Name` (prefilled `main` or `--webhook`), `Description` (`optional`). Names
   are checked like `--webhook`; an existing one is refused: `✗ "research" is already a webhook; pick another name, or run

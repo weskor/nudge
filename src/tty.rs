@@ -135,6 +135,15 @@ pub(crate) fn mask_secret(value: &str) -> String {
     }
 }
 
+/// A secret in `Debug` output: only its length, so a debug print or a failing assertion can't show it.
+pub(crate) struct Redacted<'a>(pub(crate) &'a str);
+
+impl fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<redacted, {} characters>", self.0.chars().count())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::mask_secret;

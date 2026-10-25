@@ -1,14 +1,26 @@
 //! Find the webhook URL and the Authorization header in pasted or copied text: two lines (as scripted setup reads
 //! them), a curl command, or a header line with a URL somewhere in the text. Values come back checked; anything
 //! else in the text is never returned, so it can't end up on screen.
+use std::fmt;
+
 use crate::config::{check_authorization, check_webhook_url};
 use crate::error::{Error, Result};
+use crate::tty::Redacted;
 
-/// What a paste held, each value already checked.
-#[derive(Debug, Default, PartialEq, Eq)]
+/// What a paste held, each value already checked. `Debug` redacts the header.
+#[derive(Default, PartialEq, Eq)]
 pub(super) struct Found {
     pub(super) url: Option<String>,
     pub(super) authorization: Option<String>,
+}
+
+impl fmt::Debug for Found {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Found")
+            .field("url", &self.url)
+            .field("authorization", &self.authorization.as_deref().map(Redacted))
+            .finish()
+    }
 }
 
 impl Found {

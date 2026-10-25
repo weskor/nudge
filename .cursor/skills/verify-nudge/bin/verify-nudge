@@ -1801,6 +1801,21 @@ def scenarios():
             keys("\\r\\r")], expect=0, sends=1, state_auto=False, has=["! auto-notify off", "✓ nudge command ~/.local/bin/nudge"]))
     add("setup-tty-pane-wait", pty(["setup", "--pane"], [
         step_screen(1, cursor="Webhook URL"), keys(CTRL_C), ["expect", "Press any key to close"], ["send", "x"]], expect=1))
+    # A header must never land in a visible field: the secret-leak check fails if the token shows on any screen.
+    add("setup-tty-paste-routing",
+        pty(["setup"], [
+            step_screen(1, cursor="Webhook URL"),
+            keys(PASTE_START + GOOD + PASTE_END),  # a header pasted into the URL field
+            step_screen(1, "Webhook URL    not set", "Authorization  ••••", "went into the Authorization field",
+                        cursor="Authorization"),
+            keys(CTRL_C)], expect=1, sends=0),
+        pty(["setup", "--url", URL, "--authorization", GOOD], [
+            step_screen(1, cursor="Webhook URL"), keys("\\r"), step_screen(2, cursor="Name           main"),
+            keys(PASTE_START + "Authorization: " + WRONG + PASTE_END),  # a header pasted into the name
+            step_screen(2, "looks like an Authorization header, so it wasn't pasted here", cursor="Name           main"),
+            keys(CTRL_C)], expect=1, sends=0))
+    add("setup-tty-authorization-file-terminal",
+        pty(["setup", "--authorization-file", "-"], [["expect", "stdin is a terminal"]], expect=2, sends=0))
 
     # ---- setup without a screen: --yes, --authorization-file, the environment
     add("setup-yes-environment", herdr(PRESETS["running"]),

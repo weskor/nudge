@@ -2,6 +2,12 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## 0.10.1
+
+- **The Authorization header can no longer end up on screen while pasting.** In the setup wizard, a header (or anything that isn't the start of a URL) pasted into the Webhook URL field now goes into the Authorization field, where it's never shown. A header pasted into the name or description is refused, and a URL and header pasted together on step 2 fill step 1 instead of the name.
+- **`--authorization-file -` refuses a terminal.** It used to read the terminal before the wizard opened, echoing the typed header. It now exits with a usage error that says to pipe the header in or pass a file path.
+- **Secrets stay out of debug output.** The header and signing secret are redacted (only their length is shown) wherever nudge's types are debug-printed, including failing test assertions.
+
 ## 0.10.0
 
 - **Setup is a step-by-step wizard.** `nudge setup` in a terminal (and the `weskor.nudge.setup` overlay) now walks through four steps with a step list on the left: connect webhook (URL and Authorization header), name (and an optional description), options, and test and save. Shift+Tab or Esc goes back a step and keeps your answers. The clipboard prefills the URL or header only when it holds a value that checks out, and is never shown otherwise. Pasting the URL and the header together fills both fields. A name that's already a webhook is refused, with a pointer to `nudge setup --webhook NAME` to change it. Step 3 lists what saving will do (auto-notify, the `nudge` command in `~/.local/bin`, the default webhook); Enter accepts, `e` changes them. Step 4 shows a spinner while it test-pings; if the ping fails you can try again, go back to step 1 to fix the header or URL, or save anyway. After saving, setup says what happens next.

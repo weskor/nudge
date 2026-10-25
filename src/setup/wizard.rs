@@ -1,11 +1,13 @@
 //! The setup wizard as pure state: four steps, the answers given so far, and what each key does. No terminal, no
 //! files, no network: the loop in `view` reads keys and the clipboard, runs the test ping and draws.
 use std::borrow::Cow;
+use std::fmt;
 
 use super::paste::{check_header, prefill, split_paste};
 use super::{Choices, explain};
 use crate::config::{Webhook, check_webhook_name, check_webhook_url, validate_webhook};
 use crate::error::{Blame, Result, WebhookError};
+use crate::tty::Redacted;
 
 /// A step of the wizard, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,8 +122,8 @@ impl Source {
 /// A step-1 value and where it came from, if there is one.
 pub(super) type Sourced = Option<(String, Source)>;
 
-/// A text field's value and what is known about it.
-#[derive(Clone, Debug, Default)]
+/// A text field's value and what is known about it. `Debug` shows only the value's length: the header is one.
+#[derive(Clone, Default)]
 pub(super) struct Entry {
     pub(super) value: String,
     /// The value passed its check (or is the saved one).
@@ -130,6 +132,17 @@ pub(super) struct Entry {
     pub(super) problem: Option<String>,
     /// Where the value came from, until it's edited.
     pub(super) source: Option<Source>,
+}
+
+impl fmt::Debug for Entry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Entry")
+            .field("value", &Redacted(&self.value))
+            .field("checked", &self.checked)
+            .field("problem", &self.problem)
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 impl Entry {
@@ -187,8 +200,9 @@ enum Edits {
     LeaveOnNextPress,
 }
 
-/// What the user pressed, independent of the terminal library.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What the user pressed, independent of the terminal library. `Debug` shows a paste's length only: it may hold
+/// the header.
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum Key {
     Up,
     Down,
@@ -203,6 +217,24 @@ pub(super) enum Key {
     Paste(String),
     /// Ctrl-C: leave now.
     Cancel,
+}
+
+impl fmt::Debug for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Paste(text) => f.debug_tuple("Paste").field(&Redacted(text)).finish(),
+            Self::Char(typed) => f.debug_tuple("Char").field(typed).finish(),
+            Self::Up => f.write_str("Up"),
+            Self::Down => f.write_str("Down"),
+            Self::Tab => f.write_str("Tab"),
+            Self::BackTab => f.write_str("BackTab"),
+            Self::Enter => f.write_str("Enter"),
+            Self::Esc => f.write_str("Esc"),
+            Self::Backspace => f.write_str("Backspace"),
+            Self::Clear => f.write_str("Clear"),
+            Self::Cancel => f.write_str("Cancel"),
+        }
+    }
 }
 
 /// What the loop should do after a key.
@@ -221,7 +253,7 @@ pub(super) enum Outcome {
 }
 
 /// Where the wizard starts: flags, the environment and the saved webhook, and what herdr and PATH look like.
-#[derive(Debug)]
+/// `Debug` leaves out the values: the header and signing secret are among them.
 pub(super) struct Start {
     pub(super) name: String,
     /// The saved webhook this run updates, if `name` is one.
@@ -240,8 +272,18 @@ pub(super) struct Start {
     pub(super) test: bool,
 }
 
+impl fmt::Debug for Start {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Start")
+            .field("name", &self.name)
+            .field("loaded", &self.loaded)
+            .field("test", &self.test)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The wizard: every answer so far, the step on screen, and what step 4 is doing.
-#[derive(Debug)]
+/// `Debug` shows where the wizard is, with every value redacted (the header and signing secret are among them).
 pub(super) struct Wizard {
     pub(super) step: Step,
     /// The furthest step reached; the steps before it are done.
@@ -264,6 +306,21 @@ pub(super) struct Wizard {
     pub(super) save: SaveState,
     edits: Edits,
     pub(super) status: Option<String>,
+}
+
+impl fmt::Debug for Wizard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Wizard")
+            .field("step", &self.step)
+            .field("focus", &self.focus)
+            .field("url", &self.url)
+            .field("authorization", &self.authorization)
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("signing_secret", &self.signing_secret.as_deref().map(Redacted))
+            .field("save", &self.save)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Wizard {
@@ -480,6 +537,41 @@ impl Wizard {
         }
     }
 
+    /// A bracketed paste into `field`. The header must never land in a visible field: a paste holding both values
+    /// fills step 1 from any step, a header (or anything that isn't the start of a URL) pasted into the URL field
+    /// goes to the Authorization field, and a header pasted into the name or description is refused.
+    fn paste(&mut self, field: Field, text: &str) {
+        let found = split_paste(text);
+        if found.both() {
+            self.fill(found.url, found.authorization, Source::Pasted);
+            self.status = Some(if self.step == Step::Connect {
+                "✓ Found the URL and the Authorization header in what you pasted.".into()
+            } else {
+                "✓ Found the URL and the Authorization header in what you pasted; step 1 has them now.".into()
+            });
+            return;
+        }
+        let header_shaped = found.authorization.is_some();
+        let push = |value: &mut String| value.push_str(text);
+        match field {
+            Field::Url if header_shaped || (self.url.value.is_empty() && !text.starts_with("http")) => {
+                self.edit(Field::Authorization, |value| {
+                    value.clear();
+                    value.push_str(text);
+                });
+                self.focus = Field::Authorization;
+                self.status =
+                    Some("That isn't a URL, so it went into the Authorization field, where it's never shown.".into());
+            }
+            Field::Name | Field::Description if header_shaped => {
+                self.status = Some(
+                    "✗ That looks like an Authorization header, so it wasn't pasted here. It belongs in step 1.".into(),
+                );
+            }
+            Field::Url | Field::Authorization | Field::Name | Field::Description => self.edit(field, push),
+        }
+    }
+
     /// Move the focus within the step's fields (wrapping), checking the field left.
     fn move_focus(&mut self, forward: bool) {
         let fields = self.step.fields();
@@ -646,15 +738,7 @@ impl Wizard {
             Key::Up => self.move_focus(false),
             Key::Esc | Key::BackTab if self.step == Step::Connect => return self.leave("Esc"),
             Key::Esc | Key::BackTab => self.back(),
-            Key::Paste(text) => {
-                let found = split_paste(&text);
-                if self.step == Step::Connect && found.both() {
-                    self.fill(found.url, found.authorization, Source::Pasted);
-                    self.status = Some("✓ Found the URL and the Authorization header in what you pasted.".into());
-                } else {
-                    self.edit(field, |value| value.push_str(text.trim()));
-                }
-            }
+            Key::Paste(text) => self.paste(field, text.trim()),
             Key::Char(typed) => self.edit(field, |value| value.push(typed)),
             Key::Backspace => self.edit(field, |value| {
                 value.pop();
@@ -1035,5 +1119,54 @@ mod tests {
         assert_eq!(wizard.handle(Key::Char('q')), Outcome::Quit);
         let mut wizard = connected(&[]);
         assert_eq!(wizard.handle(Key::Cancel), Outcome::Quit);
+    }
+
+    #[test]
+    fn a_pasted_header_never_lands_in_a_visible_field() {
+        let mut wizard = Wizard::new(start(&[], None));
+        wizard.handle(Key::Paste(format!("  {HEADER}\n")));
+        assert!(wizard.url.value.is_empty(), "the URL field never holds the header");
+        assert_eq!(
+            (wizard.authorization.value.as_str(), wizard.focus),
+            (HEADER, Field::Authorization)
+        );
+        let mut wizard = Wizard::new(start(&[], None));
+        wizard.handle(Key::Paste("sk-live-0123456789abcdef".into()));
+        assert!(
+            wizard.url.value.is_empty(),
+            "text that isn't a URL goes to the hidden field"
+        );
+
+        let mut wizard = connected(&[]);
+        wizard.handle(Key::Enter);
+        assert_eq!(wizard.step, Step::Name);
+        wizard.handle(Key::Paste(format!("Authorization: {HEADER}")));
+        assert_eq!(wizard.name.value, "main", "a header pasted into the name is refused");
+        assert!(wizard.status().unwrap().contains("looks like an Authorization header"));
+        wizard.handle(Key::Tab);
+        let other = "Bearer other-0123456789abcdef";
+        wizard.handle(Key::Paste(format!("https://other.example/h\n{other}")));
+        assert!(
+            wizard.description.value.is_empty(),
+            "a URL and header pasted on step 2 go to step 1"
+        );
+        assert_eq!(
+            (wizard.url.value.as_str(), wizard.authorization.value.as_str()),
+            ("https://other.example/h", other)
+        );
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_header() {
+        let mut wizard = connected(&[]);
+        let pasted = format!("{:?}", Key::Paste(HEADER.into()));
+        for _ in 0..2 {
+            wizard.handle(Key::Enter);
+        }
+        let test = wizard.handle(Key::Enter);
+        assert!(matches!(test, Outcome::Test(_)));
+        for shown in [pasted, format!("{wizard:?}"), format!("{test:?}")] {
+            assert!(!shown.contains("token-0123456789abcdef"), "{shown}");
+        }
     }
 }

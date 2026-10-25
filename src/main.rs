@@ -66,8 +66,9 @@ Config: $NUDGE_CONFIG or ~/.config/nudge/config.toml";
 const EXIT_ERROR: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 
-/// Parsed command line. Options may appear anywhere, as `--name value` or `--name=value`.
-#[derive(Debug, Default)]
+/// Parsed command line. Options may appear anywhere, as `--name value` or `--name=value`. `Debug` redacts the
+/// Authorization header and the signing secret.
+#[derive(Default)]
 #[expect(clippy::struct_excessive_bools, reason = "independent command-line flags")]
 struct Args {
     positionals: Vec<String>,
@@ -89,6 +90,18 @@ struct Args {
     json: bool,
     help: bool,
     version: bool,
+}
+
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("positionals", &self.positionals)
+            .field("webhook", &self.webhook)
+            .field("url", &self.url)
+            .field("authorization", &self.authorization.as_deref().map(tty::Redacted))
+            .field("signing_secret", &self.signing_secret.as_deref().map(tty::Redacted))
+            .finish_non_exhaustive()
+    }
 }
 
 impl From<lexopt::Error> for Error {

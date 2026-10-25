@@ -5,6 +5,7 @@ mod paste;
 mod view;
 mod wizard;
 
+use std::fmt;
 use std::io::{IsTerminal as _, Read as _};
 use std::path::Path;
 
@@ -21,9 +22,10 @@ use crate::error::{Blame, Error, Result, WebhookError};
 use crate::install::{Plugin, command_link, link_command, nudge_root, plugin};
 use crate::notify::{Origin, current_dir, ping_webhook};
 use crate::state::{current_state, update_state};
-use crate::tty::{Mark, Style, wait_for_key};
+use crate::tty::{Mark, Redacted, Style, wait_for_key};
 
-#[derive(Debug, Default)]
+/// `nudge setup`'s flags. `Debug` redacts the Authorization header and the signing secret.
+#[derive(Default)]
 #[expect(clippy::struct_excessive_bools, reason = "independent command-line flags")]
 pub(crate) struct SetupOptions {
     pub(crate) webhook: Option<String>,
@@ -43,6 +45,20 @@ pub(crate) struct SetupOptions {
     pub(crate) no_install_command: bool,
     /// Running inside a herdr plugin pane: wait for a key before exiting.
     pub(crate) pane: bool,
+}
+
+impl fmt::Debug for SetupOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SetupOptions")
+            .field("webhook", &self.webhook)
+            .field("url", &self.url)
+            .field("authorization", &self.authorization.as_deref().map(Redacted))
+            .field("authorization_file", &self.authorization_file)
+            .field("signing_secret", &self.signing_secret.as_deref().map(Redacted))
+            .field("yes", &self.yes)
+            .field("test", &self.test)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What to do after saving (the wizard's step 3): what's offered and what's chosen.
@@ -101,6 +117,14 @@ fn given(options: &SetupOptions, env: &Env) -> Result<(Sourced, Sourced)> {
         (None, file) => file,
     };
     let authorization = match file.as_deref() {
+        // Reading a terminal would echo the header as it's typed, so `-` needs a pipe or a redirect.
+        Some("-") if std::io::stdin().is_terminal() => {
+            return Err(Error::Usage(
+                "--authorization-file - reads the header from a pipe, but stdin is a terminal; pipe it in \
+                 (pass show hook | nudge setup --authorization-file -) or pass a file path"
+                    .into(),
+            ));
+        }
         Some("-") => {
             let mut input = String::new();
             std::io::stdin().read_to_string(&mut input)?;

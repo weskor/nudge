@@ -1,4 +1,5 @@
 //! The webhook config (`~/.config/nudge/config.toml`): parsing with every problem reported, and safe writes.
+use std::fmt;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{ErrorKind, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -8,6 +9,7 @@ use toml::Value;
 
 use crate::context::Env;
 use crate::error::{Error, Result};
+use crate::tty::Redacted;
 
 const PLACEHOLDER_PREFIX: &str = "REPLACE_WITH";
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
@@ -16,7 +18,8 @@ const AUTHORIZATION_PREFIX: &str = "authorization:";
 /// the new format when nudge reads it.
 const RENAMED_KEYS: [(&str, &str); 2] = [("desk", "webhook"), ("default_desk", "default_webhook")];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A configured webhook. `Debug` redacts the Authorization header and the signing secret.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Webhook {
     pub(crate) name: String,
     pub(crate) description: Option<String>,
@@ -25,6 +28,18 @@ pub(crate) struct Webhook {
     pub(crate) authorization: String,
     /// When set, requests are signed with HMAC-SHA256 (`x-nudge-signature`) so the webhook can verify them.
     pub(crate) signing_secret: Option<String>,
+}
+
+impl fmt::Debug for Webhook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Webhook")
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("url", &self.url)
+            .field("authorization", &Redacted(&self.authorization))
+            .field("signing_secret", &self.signing_secret.as_deref().map(Redacted))
+            .finish()
+    }
 }
 
 /// `[auto]`: when the herdr plugin notifies the webhook on its own.
