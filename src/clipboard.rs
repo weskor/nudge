@@ -97,14 +97,14 @@ pub(crate) fn runtime_dir(env: &Env) -> PathBuf {
     )
 }
 
-/// Trimmed text from the first clipboard command that works and isn't empty; `None` if none do.
-pub(crate) fn read_clipboard(run: &dyn Run, env: &Env, runtime_dir: &Path) -> Option<String> {
+/// Trimmed text from the first clipboard command for `desktop` that works and isn't empty; `None` if none do.
+pub(crate) fn read_clipboard(desktop: Desktop, run: &dyn Run, env: &Env, runtime_dir: &Path) -> Option<String> {
     let dir = runtime_dir.to_string_lossy();
-    let sockets = match Desktop::CURRENT {
+    let sockets = match desktop {
         Desktop::MacOs => Vec::new(),
         Desktop::Unix => wayland_sockets_in(runtime_dir),
     };
-    clipboard_commands(Desktop::CURRENT, env, &dir, &sockets)
+    clipboard_commands(desktop, env, &dir, &sockets)
         .into_iter()
         .find_map(|cmd| {
             let args: Vec<&str> = cmd.iter().map(String::as_str).collect();
@@ -136,7 +136,7 @@ mod tests {
         let runtime = tempfile::tempdir().unwrap();
         let run = FakeRun::new([(WL, "https://webhook.example/hook"), (XC, "other")]);
         assert_eq!(
-            read_clipboard(&run, &graphical_session(), runtime.path()).as_deref(),
+            read_clipboard(Desktop::Unix, &run, &graphical_session(), runtime.path()).as_deref(),
             Some("https://webhook.example/hook")
         );
         assert_eq!(run.calls(), [WL]);
@@ -150,7 +150,7 @@ mod tests {
             FakeRun::new([(WL, ""), (XC, "Bearer abc")]),
         ] {
             assert_eq!(
-                read_clipboard(&run, &graphical_session(), runtime.path()).as_deref(),
+                read_clipboard(Desktop::Unix, &run, &graphical_session(), runtime.path()).as_deref(),
                 Some("Bearer abc")
             );
         }
@@ -167,7 +167,7 @@ mod tests {
         );
         let run = FakeRun::new([(cmd.as_str(), "https://webhook.example/hook")]);
         assert_eq!(
-            read_clipboard(&run, &Env::default(), runtime.path()).as_deref(),
+            read_clipboard(Desktop::Unix, &run, &Env::default(), runtime.path()).as_deref(),
             Some("https://webhook.example/hook")
         );
     }
@@ -176,7 +176,10 @@ mod tests {
     fn none_when_nothing_yields_text() {
         let runtime = tempfile::tempdir().unwrap();
         let run = FakeRun::default();
-        assert_eq!(read_clipboard(&run, &graphical_session(), runtime.path()), None);
+        assert_eq!(
+            read_clipboard(Desktop::Unix, &run, &graphical_session(), runtime.path()),
+            None
+        );
         assert_eq!(run.calls(), [WL, XC]);
     }
 

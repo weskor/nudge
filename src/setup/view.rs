@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 
 use super::ping;
 use super::wizard::{Choice, FailChoice, Field, Key, Outcome, SaveState, Step, Wizard};
-use crate::clipboard::{read_clipboard, runtime_dir};
+use crate::clipboard::{Desktop, read_clipboard, runtime_dir};
 use crate::config::Config;
 use crate::context::{Env, System};
 use crate::error::{Blame, Error, Result, WebhookError};
@@ -397,7 +397,9 @@ fn read_clipboard_later(
     let (env, sender, dir) = (env.clone(), sender.clone(), runtime_dir(env));
     // Not joined: it writes nothing, and a result that arrives after the user left is never read.
     thread::spawn(move || {
-        sender.send(done(read_clipboard(&System, &env, &dir))).ok();
+        sender
+            .send(done(read_clipboard(Desktop::CURRENT, &System, &env, &dir)))
+            .ok();
     });
 }
 
