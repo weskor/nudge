@@ -2,6 +2,11 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+- **Webhook instructions template:** it now covers panes you send from herdr (the automation reports back to you instead of replying to the agent), and it always escalates auto-detected `blocked` events, because herdr won't prompt an agent that's waiting on its own terminal prompt. Update the instructions in your automation if you copied the old template.
+- **README:** the suggested send-pane key is `prefix+shift+s`; `prefix+n` is herdr's "next tab".
+
 ## 0.10.4
 
 - **0.10.3, released.** 0.10.3 was tagged but never released: its clipboard tests assumed the Linux clipboard tools and failed on macOS. 0.10.4 has every 0.10.3 change below, with tests that check the Linux and macOS clipboard paths on any platform, and CI now tests on macOS on every push.
