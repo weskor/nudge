@@ -11,15 +11,16 @@ use std::thread;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+use crate::auto::{Decision, HerdrStatus, Settled, Trigger, auto_message, decide};
 use crate::config::{Auto, Config, Scope, default_config_path, find_webhook, load_config, read_config, write_config};
-use crate::context::{
-    AgentInfo, Env, Run as _, Sender, System, herdr_agent, in_scope, pane_workspace, workspace_label,
-};
+use crate::env::{Env, Run as _, System};
 use crate::error::{Error, Result};
-use crate::install::{PLUGIN_ID, nudge_root, refresh_command_link};
-use crate::notify::{NotifyStatus, Origin, build_notification, post_to_webhook};
+use crate::herdr::{
+    AgentInfo, PLUGIN_ID, Sender, herdr_agent, in_scope, nudge_root, pane_workspace, refresh_command_link,
+    workspace_label,
+};
 use crate::state::{now_ms, update_state};
-use crate::watch::{Decision, HerdrStatus, Settled, Trigger, auto_message, decide};
+use crate::webhook::{NotifyStatus, Origin, build_notification, post_to_webhook};
 
 const USAGE: &str = "usage: nudge plugin event | action <id> | startup";
 

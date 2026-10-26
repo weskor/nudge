@@ -3,12 +3,12 @@ use std::path::Path;
 
 use crate::clipboard::Desktop;
 use crate::config::{Auto, default_config_path, default_webhook_name, read_config, seconds_in_words};
-use crate::context::{Env, Run as _, System};
+use crate::env::{Env, Run as _, System};
 use crate::error::{Blame, Error, Result};
-use crate::install::{PLUGIN_ID, Plugin, command_link, nudge_root, plugin, plugin_logs};
-use crate::notify::{Origin, current_dir, ping_webhook};
+use crate::herdr::{PLUGIN_ID, Plugin, command_link, nudge_root, plugin, plugin_logs};
 use crate::state::{current_state, now_ms, state_dir};
-use crate::tty::{Mark, Style, wait_for_key};
+use crate::terminal::tty::{Mark, Style, wait_for_key};
+use crate::webhook::{Origin, current_dir, ping_webhook};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Level {

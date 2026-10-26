@@ -70,24 +70,11 @@ impl WebhookError {
 
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[cfg(test)]
-mod tests {
-    use super::{Blame, WebhookError};
-
-    #[test]
-    fn blames_points_at_the_authorization_header_or_the_url() {
-        let blame = |status| {
-            WebhookError {
-                message: String::new(),
-                http_status: status,
-            }
-            .blames()
-        };
-        assert_eq!(blame(Some(401)), Some(Blame::Authorization));
-        assert_eq!(blame(Some(403)), Some(Blame::Authorization));
-        assert_eq!(blame(Some(404)), Some(Blame::Url));
-        assert_eq!(blame(Some(308)), Some(Blame::Url));
-        assert_eq!(blame(Some(500)), None);
-        assert_eq!(blame(None), None);
-    }
+/// The literal patterns in this crate are covered by tests; a broken one is a programming error.
+#[expect(clippy::panic, reason = "only reachable if a literal regex in the source is invalid")]
+pub(crate) fn unreachable_regex(error: &regex::Error) -> regex::Regex {
+    panic!("invalid built-in regex: {error}")
 }
+
+#[cfg(test)]
+mod tests;

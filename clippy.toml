@@ -2,3 +2,5 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
+# Functions longer than this fail `clippy::too_many_lines` (pedantic, denied). File length: scripts/check-sizes.sh.
+too-many-lines-threshold = 50

@@ -1,28 +1,29 @@
 //! `nudge`: tell your webhook (an AI routine or automation) when a herdr agent is done, blocked or has a question.
+mod auto;
 mod clipboard;
 mod config;
-mod context;
 mod doctor;
+mod env;
 mod error;
-mod install;
+mod git;
+mod herdr;
 mod mcp;
-mod notify;
 mod plugin;
 mod settings;
 mod setup;
 mod state;
-mod tty;
-mod ui;
-mod watch;
+mod terminal;
+mod webhook;
 
 use std::io::Read as _;
 use std::process::ExitCode;
 
 use crate::config::{default_config_path, default_webhook_name, load_config};
-use crate::context::{Env, System};
+use crate::env::{Env, System};
 use crate::error::{Error, Result};
-use crate::notify::{NotifyStatus, Origin, Sent, current_dir, notify_webhook, ping_webhook};
 use crate::setup::{SetupOptions, setup};
+use crate::terminal::tty::Redacted;
+use crate::webhook::{NotifyStatus, Origin, Sent, current_dir, notify_webhook, ping_webhook};
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -98,8 +99,8 @@ impl std::fmt::Debug for Args {
             .field("positionals", &self.positionals)
             .field("webhook", &self.webhook)
             .field("url", &self.url)
-            .field("authorization", &self.authorization.as_deref().map(tty::Redacted))
-            .field("signing_secret", &self.signing_secret.as_deref().map(tty::Redacted))
+            .field("authorization", &self.authorization.as_deref().map(Redacted))
+            .field("signing_secret", &self.signing_secret.as_deref().map(Redacted))
             .finish_non_exhaustive()
     }
 }

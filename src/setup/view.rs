@@ -12,11 +12,11 @@ use super::ping;
 use super::wizard::{Choice, FailChoice, Field, Key, Outcome, SaveState, Step, Wizard};
 use crate::clipboard::{Desktop, read_clipboard, runtime_dir};
 use crate::config::Config;
-use crate::context::{Env, System};
+use crate::env::{Env, System};
 use crate::error::{Blame, Error, Result, WebhookError};
-use crate::install::Plugin;
-use crate::tty::mask_secret;
-use crate::ui::{self, BAD, DIM, GOOD, HEADER, StepMark, View, WARN, check, radio};
+use crate::herdr::Plugin;
+use crate::terminal::tty::mask_secret;
+use crate::terminal::ui::{self, BAD, DIM, GOOD, HEADER, StepMark, View, WARN, check, radio};
 
 /// How often the screen redraws while waiting, so the spinner turns.
 const TICK: Duration = Duration::from_millis(80);
