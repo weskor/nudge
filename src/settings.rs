@@ -1,5 +1,5 @@
 //! `nudge settings`: a terminal UI for auto-notify, who can notify, and the default webhook. herdr opens it as an
-//! overlay (`weskor.nudge.settings`). It edits the same config and state as the actions and `nudge setup`.
+//! overlay (`nudge.settings`). It edits the same config and state as the actions and `nudge setup`.
 use std::ffi::OsStr;
 use std::io::IsTerminal as _;
 use std::path::Path;

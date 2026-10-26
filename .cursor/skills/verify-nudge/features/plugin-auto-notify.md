@@ -41,7 +41,7 @@ the pane on screen and auto-notify being off no longer stop a notification. Afte
 ## How to get to it (user POV)
 
 - Automatic: an agent in herdr changes status; herdr invokes the `[[events]]` hook from herdr-plugin.toml.
-- Turned on by setup's `Turn on auto-notify` checkbox, `nudge settings`, or the `weskor.nudge.enable` action.
+- Turned on by setup's `Turn on auto-notify` checkbox, `nudge settings`, or the `nudge.enable` action.
 
 ## Driving it with verify-nudge
 

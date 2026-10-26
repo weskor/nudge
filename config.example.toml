@@ -33,7 +33,7 @@ tail_lines = 40          # terminal lines sent along (1 to 200)
 toast = true             # herdr toast when one is sent
 
 # Optional: which agents may notify. Leave it out (or both lists empty) for every agent.
-# The herdr actions weskor.nudge.only-workspace / .only-agent / .all-agents rewrite it.
+# The herdr actions nudge.only-workspace / .only-agent / .all-agents rewrite it.
 [scope]
 workspaces = ["api"]     # herdr workspace names (or ids)
 agents = ["reviewer"]    # herdr agent names (or pane ids)

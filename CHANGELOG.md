@@ -2,8 +2,9 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 0.11.0
 
+- **BREAKING: the plugin id is now `nudge` (was `weskor.nudge`).** Actions are `nudge.send-pane`, `nudge.enable`, `nudge.settings` and so on, and `herdr plugin uninstall nudge` / `update nudge` / `log list --plugin nudge` use the short id. Install is unchanged: `herdr plugin install weskor/nudge` (herdr installs from GitHub paths). To upgrade an existing install, run `herdr plugin uninstall weskor.nudge`, then `herdr plugin install weskor/nudge`, and rename any `weskor.nudge.*` keybindings in `~/.config/herdr/config.toml` to `nudge.*`. Your nudge config and state are kept: they live in `~/.config/nudge` and `~/.local/state/nudge`, not under the plugin id.
 - **Webhook instructions template:** it now covers panes you send from herdr (the automation reports back to you instead of replying to the agent), and it always escalates auto-detected `blocked` events, because herdr won't prompt an agent that's waiting on its own terminal prompt. Update the instructions in your automation if you copied the old template.
 - **README:** the suggested send-pane key is `prefix+shift+s`; `prefix+n` is herdr's "next tab".
 

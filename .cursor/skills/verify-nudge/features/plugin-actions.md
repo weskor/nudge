@@ -23,7 +23,7 @@ state, `away`/`away-on`/`away-off` flip away mode (notify even for the pane on s
   webhook` (`No workspace for this pane` without one); `only-agent` → `agents = ["<name>"]`, toast `Only agent "<name>"
   can notify the webhook` (`No agent in this pane`, config unchanged); `all-agents` clears `[scope]`, toast `All agents
   can notify the webhook`. Focused pane from `focused_pane_id`, else `HERDR_PANE_ID`. No config: exit 1. Details in scope.md.
-- `action-panes` `setup` / `status` / `settings` run `herdr plugin pane open --plugin weskor.nudge --entrypoint <id> --focus`
+- `action-panes` `setup` / `status` / `settings` run `herdr plugin pane open --plugin nudge --entrypoint <id> --focus`
   (no `--target-pane`); if herdr fails: exit 1, `could not open the <id> pane`, no toast. The `settings` entrypoint
   runs `nudge settings --pane`.
 - `action-unknown` unknown ids and bad modes exit 1 with `[nudge] failed: …`.
@@ -34,7 +34,7 @@ state, `away`/`away-on`/`away-off` flip away mode (notify even for the pane on s
 
 ## How to get to it (user POV)
 
-- `herdr plugin action invoke weskor.nudge.<id>` or a key binding; herdr sets `HERDR_PLUGIN_CONTEXT_JSON`.
+- `herdr plugin action invoke nudge.<id>` or a key binding; herdr sets `HERDR_PLUGIN_CONTEXT_JSON`.
 - Startup runs automatically when the herdr server starts (`[[startup]]` in herdr-plugin.toml).
 
 ## Driving it with verify-nudge

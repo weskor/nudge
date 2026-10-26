@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::context::{Env, Run, herdr_json};
 use crate::error::{Error, Result};
 
-pub(crate) const PLUGIN_ID: &str = "weskor.nudge";
+pub(crate) const PLUGIN_ID: &str = "nudge";
 
 /// Root of this nudge checkout or plugin install (the directory with herdr-plugin.toml): `$NUDGE_ROOT` (set by
 /// `bin/nudge`), else two levels above the binary (`<root>/dist/nudge`).

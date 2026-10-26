@@ -33,7 +33,7 @@ herdr actions `only-workspace`, `only-agent` and `all-agents` rewrite `[scope]` 
 ## How to get to it (user POV)
 
 - Edit `~/.config/nudge/config.toml`: `[scope]` then `workspaces = ["api-work"]` and/or `agents = ["claude-1"]`.
-- herdr actions `weskor.nudge.only-workspace`, `weskor.nudge.only-agent`, `weskor.nudge.all-agents` (key bindings or
+- herdr actions `nudge.only-workspace`, `nudge.only-agent`, `nudge.all-agents` (key bindings or
   `herdr plugin action invoke`), run from the pane whose workspace/agent should be the only sender.
 - `nudge doctor` shows the current scope.
 

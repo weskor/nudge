@@ -84,7 +84,7 @@ auto-notify, the `~/.local/bin/nudge` link and making the webhook the default.
 
 - `nudge setup [--webhook NAME] [--url URL] [--authorization VALUE | --authorization-file PATH] [--description TEXT] [--signing-secret VALUE] [--default] [--no-test] [--yes] [--no-auto-notify] [--no-install-command]` in a terminal.
 - `printf '%s\n%s\n' "$URL" "Bearer $TOKEN" | nudge setup` (no terminal).
-- herdr action `weskor.nudge.setup` opens `nudge setup --pane` in an overlay (see plugin-actions.md for the action itself).
+- herdr action `nudge.setup` opens `nudge setup --pane` in an overlay (see plugin-actions.md for the action itself).
 
 ## Driving it with verify-nudge
 

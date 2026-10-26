@@ -45,13 +45,13 @@ screen. Quitting without saving prints `No changes saved.`. herdr opens it as an
   Elsewhere: `Move to a webhook to test it.`. Testing is not an edit. The ping runs in the background: keys keep
   working while `Testing …` is up, and the result replaces it when it arrives (`settings-slow-test-ping`, fake route
   `/slow`, 3 s).
-- `settings-action` `nudge plugin action settings` runs `herdr plugin pane open --plugin weskor.nudge --entrypoint
+- `settings-action` `nudge plugin action settings` runs `herdr plugin pane open --plugin nudge --entrypoint
   settings --focus` (no `--target-pane`); if herdr fails, exit 1 `could not open the settings pane`.
 
 ## How to get to it (user POV)
 
 - `nudge settings` in a terminal.
-- In herdr: the `weskor.nudge.settings` action (key binding or `herdr plugin action invoke weskor.nudge.settings`) opens
+- In herdr: the `nudge.settings` action (key binding or `herdr plugin action invoke nudge.settings`) opens
   the `settings` pane entrypoint, which runs `nudge settings --pane`.
 
 ## Driving it with verify-nudge

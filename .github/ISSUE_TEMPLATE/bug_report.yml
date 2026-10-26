@@ -13,7 +13,7 @@ body:
     id: doctor
     attributes:
       label: nudge doctor output
-      description: Run `nudge doctor` (or the herdr action `weskor.nudge.status`) and paste the output. It never prints your Authorization header, but check before posting.
+      description: Run `nudge doctor` (or the herdr action `nudge.status`) and paste the output. It never prints your Authorization header, but check before posting.
       render: text
     validations:
       required: true
@@ -21,7 +21,7 @@ body:
     id: logs
     attributes:
       label: Plugin log
-      description: For auto-notify problems, the relevant lines from `herdr plugin log list --plugin weskor.nudge`.
+      description: For auto-notify problems, the relevant lines from `herdr plugin log list --plugin nudge`.
       render: text
   - type: input
     id: versions

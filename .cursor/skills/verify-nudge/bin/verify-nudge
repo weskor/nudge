@@ -60,7 +60,7 @@ SIGNING_SECRET = "sign-secret-0123456789abcdef"
 SETUP_SIGNING_SECRET = "setup-secret-fedcba9876543210"
 WEBHOOK_SECRETS = (("signed-webhook", SIGNING_SECRET), ("setup", SETUP_SIGNING_SECRET))
 SECRET_MARKERS = ("good-token-0123456789abcdef", "wrong-token-0123456789abcdef", SIGNING_SECRET, SETUP_SIGNING_SECRET)
-PLUGIN_ID = "weskor.nudge"
+PLUGIN_ID = "nudge"
 UUID_V4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 SENT_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 SIGNATURE = re.compile(r"sha256=[0-9a-f]{64}")
@@ -2177,7 +2177,7 @@ def scenarios():
         event("blocked", pane="wD:p1", sends=0, toasts=[], has=f"wD:p1 blocked: skipped ({outside})"),
         event("blocked", pane="wE:p2", sends=1, toasts=["Told the webhook: reviewer is blocked"]))
     away_doctor = ["✓ Away mode on  notifying even for the pane you're looking at",
-                   "    → when you're back: herdr plugin action invoke weskor.nudge.away-off"]
+                   "    → when you're back: herdr plugin action invoke nudge.away-off"]
     add("doctor-away", config(), herdr(PRESETS["running"]), state({"auto": True}),
         cmd(["doctor"], expect=0, lacks=["Away mode", "away-off"]),
         action("away-on", toasts=[away_on]),
@@ -2186,7 +2186,7 @@ def scenarios():
         action("away-off", toasts=[away_off]),
         cmd(["doctor"], expect=0, lacks=["Away mode", "away-off"]))
     add("doctor-away-auto-off", config(), herdr(PRESETS["running"]), state({"away": True}),
-        cmd(["doctor"], expect=0, has=["! Auto-notify off\n    → herdr plugin action invoke weskor.nudge.enable\n"
+        cmd(["doctor"], expect=0, has=["! Auto-notify off\n    → herdr plugin action invoke nudge.enable\n"
                                        + "\n".join(away_doctor) + "\n"]))
     add("doctor-away-no-herdr", config(), state({"away": True}), cmd(["doctor"], expect=0, lacks=["Away mode"]))
 

@@ -53,7 +53,7 @@ const USAGE: &str = "Usage:
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
   settings Change auto-notify, who can notify and the default webhook in a
-           full-screen editor (herdr action weskor.nudge.settings).
+           full-screen editor (herdr action nudge.settings).
   list     Show configured webhooks (* = default).
   mcp      Run the stdio MCP server (tools notify_webhook, list_webhooks).
 

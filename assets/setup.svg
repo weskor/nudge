@@ -12,7 +12,7 @@
   <circle cx="22" cy="18" r="6" fill="#f85149"/>
   <circle cx="42" cy="18" r="6" fill="#d29922"/>
   <circle cx="62" cy="18" r="6" fill="#3fb950"/>
-  <text x="430" y="23" class="mono d" text-anchor="middle" font-size="12">herdr plugin action invoke weskor.nudge.setup</text>
+  <text x="430" y="23" class="mono d" text-anchor="middle" font-size="12">herdr plugin action invoke nudge.setup</text>
 
   <rect x="28" y="58" width="804" height="322" rx="10" fill="none" stroke="#484f58"/>
   <rect x="42" y="50" width="172" height="16" fill="#0d1117"/>

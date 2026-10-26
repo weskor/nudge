@@ -43,7 +43,7 @@ The install step downloads the prebuilt `nudge` binary for your platform (about 
 **1. Connect your webhook.** Open setup inside herdr:
 
 ```sh
-herdr plugin action invoke weskor.nudge.setup
+herdr plugin action invoke nudge.setup
 ```
 
 Setup is a wizard in four steps, with the step list on the left. **1 Connect webhook**: copy the webhook URL and the Authorization header from your webhook's settings; if the clipboard already holds a valid one it's filled in, otherwise press Enter on a field to paste, or type (pasting both at once works too). nudge never shows the header, only a masked preview like `Bearer ••••••••cdef  (34 characters)`. **2 Name**: `main` is fine if you only have one, plus an optional description; a name that's already a webhook is refused. **3 Options**: after saving, nudge turns on auto-notify (when the herdr plugin is installed), installs the `nudge` command into `~/.local/bin` and makes the webhook the default; Enter accepts these, `e` changes them. **4 Test and save**: nudge test-pings the webhook and saves only if it answers. If the ping fails, choose **Try again**, **Back to step 1** to fix the header or URL, or **Save anyway**. Shift+Tab or Esc goes back a step and keeps your answers.
@@ -78,13 +78,13 @@ The plugin listens to herdr's agent status changes. It notifies your default web
 | The agent is in [scope](#choose-which-agents-can-notify) | You decide which agents may reach the webhook |
 | Auto-notify is on | Off until you turn it on |
 
-The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. When it's sent, herdr shows a toast ("Told the webhook: api-refactor is blocked"). Every decision, including skipped events and why, is in `herdr plugin log list --plugin weskor.nudge`, and `nudge doctor` shows the most recent ones.
+The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. When it's sent, herdr shows a toast ("Told the webhook: api-refactor is blocked"). Every decision, including skipped events and why, is in `herdr plugin log list --plugin nudge`, and `nudge doctor` shows the most recent ones.
 
 The 2 minutes, 5 minutes, 40 lines and the toast are [settings](#settings).
 
 ### Away mode
 
-nudge counts the pane that's focused in herdr as one you're watching, even if you walked away and left the window open. Before you leave, run `weskor.nudge.away-on` (or `weskor.nudge.away` to toggle, or tick it in [settings](#settings)): until you run `weskor.nudge.away-off`, every agent's `blocked` and long `done` reach the webhook, including the pane on screen, and even with auto-notify off. The other rules (turn length, cooldown, scope) still apply. `nudge doctor` shows when away mode is on.
+nudge counts the pane that's focused in herdr as one you're watching, even if you walked away and left the window open. Before you leave, run `nudge.away-on` (or `nudge.away` to toggle, or tick it in [settings](#settings)): until you run `nudge.away-off`, every agent's `blocked` and long `done` reach the webhook, including the pane on screen, and even with auto-notify off. The other rules (turn length, cooldown, scope) still apply. `nudge doctor` shows when away mode is on.
 
 A keybinding makes it one keystroke:
 
@@ -92,7 +92,7 @@ A keybinding makes it one keystroke:
 [[keys.command]]
 key = "prefix+a"
 type = "plugin_action"
-command = "weskor.nudge.away"
+command = "nudge.away"
 description = "nudge: away on/off"
 ```
 
@@ -102,15 +102,15 @@ By default every agent can reach the webhook. To narrow that down, tick workspac
 
 | Action | Who can notify afterwards |
 | --- | --- |
-| `weskor.nudge.only-workspace` | Agents in the focused pane's workspace |
-| `weskor.nudge.only-agent` | Only the agent in the focused pane |
-| `weskor.nudge.all-agents` | Every agent again |
+| `nudge.only-workspace` | Agents in the focused pane's workspace |
+| `nudge.only-agent` | Only the agent in the focused pane |
+| `nudge.all-agents` | Every agent again |
 
 Both write the `[scope]` table in the config. Scope applies to automatic notifications and to `nudge notify` and the MCP tool; an agent outside it gets an error and nothing is sent. Sending a pane yourself with `send-pane`, and `nudge test`, ignore it.
 
 ### Settings
 
-`herdr plugin action invoke weskor.nudge.settings` (or `nudge settings` in a terminal) opens an editor for everything above, with the workspaces and agents that are open in herdr right now:
+`herdr plugin action invoke nudge.settings` (or `nudge settings` in a terminal) opens an editor for everything above, with the workspaces and agents that are open in herdr right now:
 
 ```text
 ╭ nudge settings ─────────────────────────────────── ● unsaved ╮
@@ -227,13 +227,13 @@ To verify, recompute the HMAC over the timestamp, a `.` and the raw request body
 
 | Action | What it does |
 | --- | --- |
-| `weskor.nudge.setup` | Open setup in an overlay |
-| `weskor.nudge.status` | Open `nudge doctor` in an overlay |
-| `weskor.nudge.settings` | Open [settings](#settings) in an overlay |
-| `weskor.nudge.send-pane` | Send the focused pane to the webhook now, skipping the rules above |
-| `weskor.nudge.toggle` | Turn auto-notify on or off (also `.enable`, `.disable`) |
-| `weskor.nudge.away` | Tell nudge you're [away](#away-mode) or back (also `.away-on`, `.away-off`) |
-| `weskor.nudge.only-workspace`, `.only-agent`, `.all-agents` | Choose [which agents can notify](#choose-which-agents-can-notify) |
+| `nudge.setup` | Open setup in an overlay |
+| `nudge.status` | Open `nudge doctor` in an overlay |
+| `nudge.settings` | Open [settings](#settings) in an overlay |
+| `nudge.send-pane` | Send the focused pane to the webhook now, skipping the rules above |
+| `nudge.toggle` | Turn auto-notify on or off (also `.enable`, `.disable`) |
+| `nudge.away` | Tell nudge you're [away](#away-mode) or back (also `.away-on`, `.away-off`) |
+| `nudge.only-workspace`, `.only-agent`, `.all-agents` | Choose [which agents can notify](#choose-which-agents-can-notify) |
 
 Bind them in `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
 
@@ -241,7 +241,7 @@ Bind them in `~/.config/herdr/config.toml`, then run `herdr server reload-config
 [[keys.command]]
 key = "prefix+shift+s"
 type = "plugin_action"
-command = "weskor.nudge.send-pane"
+command = "nudge.send-pane"
 description = "nudge: send this pane to the webhook"
 ```
 
@@ -307,16 +307,16 @@ nudge mcp
 
 ## Troubleshooting
 
-Start with `nudge doctor`, or `herdr plugin action invoke weskor.nudge.status` to see the same report in herdr. It checks each piece and says how to fix what's broken.
+Start with `nudge doctor`, or `herdr plugin action invoke nudge.status` to see the same report in herdr. It checks each piece and says how to fix what's broken.
 
 | Symptom | Fix |
 | --- | --- |
 | Setup says the webhook rejected the Authorization header | Copy the header again. It's usually `Bearer <token>`; a pasted `Authorization:` prefix is fine |
-| No notification after an agent finished | `herdr plugin log list --plugin weskor.nudge` shows why it was skipped: a short turn, you were watching, cooldown, outside the scope, or auto-notify off |
+| No notification after an agent finished | `herdr plugin log list --plugin nudge` shows why it was skipped: a short turn, you were watching, cooldown, outside the scope, or auto-notify off |
 | No notification while I was away, with herdr still open | The agent's pane was focused, so nudge thought you were watching. Turn on [away mode](#away-mode) before you leave |
-| `nudge notify` says the agent is outside nudge's scope | Run `weskor.nudge.all-agents`, or add the agent or its workspace to `[scope]` |
+| `nudge notify` says the agent is outside nudge's scope | Run `nudge.all-agents`, or add the agent or its workspace to `[scope]` |
 | `from_agent` is `null` | The event wasn't sent from an agent's pane, so pass `--agent NAME` |
-| `nudge: command not found` | Run `herdr plugin action invoke weskor.nudge.setup` and accept the command install, or add `~/.local/bin` to your `PATH` |
+| `nudge: command not found` | Run `herdr plugin action invoke nudge.setup` and accept the command install, or add `~/.local/bin` to your `PATH` |
 
 ## Limitations
 

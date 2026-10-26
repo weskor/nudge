@@ -137,7 +137,7 @@ The offline webhook URL is a closed port.
 The fake herdr (`bin/fake-herdr`) answers from `<sandbox>/herdr.json` (`{"rules":[{"argv":[...]|"prefix":[...],
 "stdout": str|json, "exit": n}], "default_exit": 1}`; `{RUN}` in stdout expands to the sandbox) and logs every
 call. Presets: `none` (no fixture: every call exits 1, like herdr missing), `running` (`--version`, plugin
-`weskor.nudge` enabled at `<RUN>/plugin`, 7 plugin log entries, no agents, `notification show` and
+`nudge` enabled at `<RUN>/plugin`, 7 plugin log entries, no agents, `notification show` and
 `plugin pane open` succeed), `agent-pane` (running + agent `claude-1` in pane `p_1`, cwd `<RUN>/repo`, unfocused,
 `pane read p_1` returns 45 numbered build lines, then ANSI, box rules, blank runs and planted secrets),
 `workspaces` (running + herdr's real `agent get` / `pane get` / `workspace get` JSON shapes: workspace `wD` labelled
