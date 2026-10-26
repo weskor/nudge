@@ -2,7 +2,7 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 0.11.1
 
 - **Internal:** the code is split into area folders (`cli/`, `setup/`, `settings/`, `terminal/`, `doctor/`, `plugin/`, `herdr/`, `auto/`, `webhook/`, `config/`) of single-responsibility files, with unit tests beside each module. CI now fails on a source file over 300 lines or a function over 50. No change in behavior: the verification harness transcript is byte-for-byte the same.
 
