@@ -1,3 +1,4 @@
+//! The errors nudge reports, how each maps to an exit code, and the one panic it allows (a broken built-in regex).
 use std::fmt;
 
 /// Every failure nudge reports. The variant picks the exit code and whether the herdr plugin shows a toast.

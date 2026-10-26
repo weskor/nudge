@@ -18,28 +18,34 @@ herdr plugin link "$PWD"      # herdr runs target/release/nudge through bin/nudg
 
 ```sh
 cargo fmt --check
+scripts/check-sizes.sh
 cargo clippy --all-targets -- -D warnings
 cargo test
 NUDGE_BIN=$PWD/target/release/nudge .cursor/skills/verify-nudge/bin/verify-nudge parity /tmp/parity.json
 ```
 
-CI runs all four on Linux, and clippy and the tests on macOS too. The lint set in `Cargo.toml` is strict on purpose (no `unwrap`, no panics, no unchecked indexing, no `as` casts, exhaustive matches). An exception is a `#[expect(lint, reason = "...")]` on the item it excuses. [AGENTS.md](AGENTS.md) lists the project rules and what enforces each.
+CI runs all five on Linux, and clippy and the tests on macOS too. The lint set in `Cargo.toml` is strict on purpose (no `unwrap`, no panics, no unchecked indexing, no `as` casts, exhaustive matches). An exception is a `#[expect(lint, reason = "...")]` on the item it excuses. Files stay under 300 lines (`scripts/check-sizes.sh`) and functions under 50 (`too-many-lines-threshold` in `clippy.toml`). [AGENTS.md](AGENTS.md) lists the project rules and what enforces each.
 
 The last command drives the real binary through every user journey in the harness's scenario list, each in a sandbox with a fake webhook, fake herdr and fake clipboard. See [`.cursor/skills/verify-nudge`](.cursor/skills/verify-nudge/SKILL.md). To check that a change keeps behavior, run it before and after and `diff -u` the two transcripts.
 
 ## Layout
 
+Each area is a folder whose `mod.rs` is the facade (submodules are private); each file owns one thing and says so in its first `//!` line. Unit tests sit next to their module in `tests.rs` (`foo.rs` → `foo/tests.rs`).
+
 | Path | What |
 | --- | --- |
-| `src/main.rs` | Command-line entry point |
-| `src/plugin.rs` | herdr hook and actions (`nudge plugin …`) |
-| `src/setup/` | Setup: `wizard.rs` (the wizard's state and keys), `view.rs` (drawing it and the terminal loop), `paste.rs` (finding the URL and header in pasted text), `mod.rs` (flags, the scripted path, saving) |
-| `src/settings.rs`, `src/ui.rs` | The settings editor, and the look it shares with the setup wizard |
-| `src/doctor.rs`, `src/tty.rs` | `nudge doctor` checks, and terminal output outside the full-screen views |
+| `src/main.rs`, `src/cli/` | Entry point; usage text, argument parsing and the `nudge` commands |
+| `src/setup/` | `nudge setup`: `wizard/` (the wizard's state, keys and steps), `view/` (drawing it and the terminal loop), the scripted path, and saving |
+| `src/settings/` | `nudge settings`: rows, keys, rendering, saving and the terminal loop |
+| `src/terminal/` | `ui/`, the full-screen look setup and settings share, and `tty.rs`, plain terminal output and prompts |
+| `src/doctor/` | `nudge doctor` checks |
+| `src/plugin/` | herdr hooks and actions (`nudge plugin …`): status events, actions, send-pane, startup |
+| `src/herdr/` | herdr queries: agents, workspaces, sender detection, scope, plugin registration and logs, the `~/.local/bin/nudge` link |
+| `src/auto/` | Auto-notify rules, redaction and the pane message |
+| `src/webhook/` | The notification payload, sending and signing, and `notify`/`ping` |
+| `src/config/` | Config model, value checks, parsing, reading and migrating, writing and serializing |
 | `src/mcp.rs` | The stdio MCP server |
-| `src/config.rs`, `src/notify.rs`, `src/context.rs`, `src/state.rs`, `src/error.rs` | Config, notifications, herdr/git detection, state, errors |
-| `src/watch.rs` | Auto-notify rules and redaction |
-| `src/install.rs`, `src/clipboard.rs` | herdr plugin and `~/.local/bin/nudge` link detection, and reading the clipboard (pbpaste, wl-paste, xclip) |
+| `src/env.rs`, `src/git.rs`, `src/state.rs`, `src/clipboard.rs`, `src/error.rs` | Environment and external commands, git repo/branch, state.json, the clipboard (pbpaste, wl-paste, xclip), errors |
 | `herdr-plugin.toml` | Plugin manifest |
 | `scripts/install.sh` | herdr build step: download and verify the release binary |
 | `.cursor/skills/verify-nudge/` | Verification skill and harness (also at `.claude/skills/`) |

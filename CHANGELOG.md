@@ -2,6 +2,10 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+- **Internal:** the code is split into area folders (`cli/`, `setup/`, `settings/`, `terminal/`, `doctor/`, `plugin/`, `herdr/`, `auto/`, `webhook/`, `config/`) of single-responsibility files, with unit tests beside each module. CI now fails on a source file over 300 lines or a function over 50. No change in behavior: the verification harness transcript is byte-for-byte the same.
+
 ## 0.11.0
 
 - **BREAKING: the plugin id is now `nudge` (was `weskor.nudge`).** Actions are `nudge.send-pane`, `nudge.enable`, `nudge.settings` and so on, and `herdr plugin uninstall nudge` / `update nudge` / `log list --plugin nudge` use the short id. Install is unchanged: `herdr plugin install weskor/nudge` (herdr installs from GitHub paths). To upgrade an existing install, run `herdr plugin uninstall weskor.nudge`, then `herdr plugin install weskor/nudge`, and rename any `weskor.nudge.*` keybindings in `~/.config/herdr/config.toml` to `nudge.*`. Your nudge config and state are kept: they live in `~/.config/nudge` and `~/.local/state/nudge`, not under the plugin id.
