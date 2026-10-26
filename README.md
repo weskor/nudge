@@ -239,7 +239,7 @@ Bind them in `~/.config/herdr/config.toml`, then run `herdr server reload-config
 
 ```toml
 [[keys.command]]
-key = "prefix+n"
+key = "prefix+shift+s"
 type = "plugin_action"
 command = "weskor.nudge.send-pane"
 description = "nudge: send this pane to the webhook"
