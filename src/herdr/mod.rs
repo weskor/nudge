@@ -1,14 +1,22 @@
 //! herdr as nudge sees it: the agent and workspace a notification comes from, nudge's scope, the plugin's install
 //! state and logs, and the `~/.local/bin/nudge` link.
-mod detect;
-mod install;
+mod agents;
+mod link;
+mod logs;
+mod query;
+mod registration;
+mod root;
+mod scope;
+mod sender;
+mod workspaces;
 
-pub(crate) use detect::{
-    AgentInfo, ListedAgent, ListedWorkspace, Sender, detect_sender, herdr_agent, herdr_agents, herdr_workspaces,
-    in_scope, pane_workspace, workspace_label,
-};
+pub(crate) use agents::{AgentInfo, ListedAgent, herdr_agent, herdr_agents};
+pub(crate) use link::{command_link, link_command, refresh_command_link};
+pub(crate) use logs::plugin_logs;
 #[cfg(test)]
-pub(crate) use install::PluginInfo;
-pub(crate) use install::{
-    PLUGIN_ID, Plugin, command_link, link_command, nudge_root, plugin, plugin_logs, refresh_command_link,
-};
+pub(crate) use registration::PluginInfo;
+pub(crate) use registration::{PLUGIN_ID, Plugin, plugin};
+pub(crate) use root::nudge_root;
+pub(crate) use scope::in_scope;
+pub(crate) use sender::{Sender, detect_sender};
+pub(crate) use workspaces::{ListedWorkspace, herdr_workspaces, pane_workspace, workspace_label};

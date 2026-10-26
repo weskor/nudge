@@ -1,95 +1,10 @@
-//! Where this copy of nudge lives, its herdr plugin registration, and the `nudge` command on PATH.
+//! The `nudge` command on PATH: what `~/.local/bin/nudge` is, linking it, and repointing it after plugin updates.
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
-use super::detect::herdr_json;
-use crate::env::{Env, Run};
+use crate::env::Env;
 use crate::error::{Error, Result};
-
-pub(crate) const PLUGIN_ID: &str = "nudge";
-
-/// Root of this nudge checkout or plugin install (the directory with herdr-plugin.toml): `$NUDGE_ROOT` (set by
-/// `bin/nudge`), else two levels above the binary (`<root>/dist/nudge`).
-pub(crate) fn nudge_root(env: &Env) -> PathBuf {
-    if let Some(root) = env.get("NUDGE_ROOT") {
-        return PathBuf::from(root);
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.parent()?.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub(crate) struct PluginInfo {
-    pub(crate) enabled: bool,
-    pub(crate) plugin_root: String,
-    pub(crate) version: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct PluginList {
-    result: PluginListResult,
-}
-
-#[derive(Debug, Deserialize)]
-struct PluginListResult {
-    plugins: Vec<PluginInfo>,
-}
-
-/// The herdr plugin as herdr sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Plugin {
-    /// herdr isn't installed or its server isn't running.
-    HerdrUnavailable,
-    NotInstalled,
-    Installed(PluginInfo),
-}
-
-pub(crate) fn plugin(env: &Env, run: &dyn Run) -> Plugin {
-    let args = ["plugin", "list", "--plugin", PLUGIN_ID, "--json"];
-    match herdr_json::<PluginList>(&args, env, Path::new("/"), run) {
-        None => Plugin::HerdrUnavailable,
-        Some(list) => list
-            .result
-            .plugins
-            .into_iter()
-            .next()
-            .map_or(Plugin::NotInstalled, Plugin::Installed),
-    }
-}
-
-/// One plugin hook or action run from `herdr plugin log list`.
-#[derive(Clone, Debug, Deserialize)]
-pub(crate) struct PluginLog {
-    pub(crate) started_unix_ms: i64,
-    pub(crate) status: String,
-    #[serde(default)]
-    pub(crate) stderr: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct LogList {
-    result: LogListResult,
-}
-
-#[derive(Debug, Deserialize)]
-struct LogListResult {
-    logs: Vec<PluginLog>,
-}
-
-/// Most recent plugin hook/action runs, newest last.
-pub(crate) fn plugin_logs(env: &Env, run: &dyn Run) -> Vec<PluginLog> {
-    let args = ["plugin", "log", "list", "--plugin", PLUGIN_ID];
-    let mut logs = herdr_json::<LogList>(&args, env, Path::new("/"), run)
-        .map(|list| list.result.logs)
-        .unwrap_or_default();
-    logs.sort_by_key(|log| log.started_unix_ms);
-    logs
-}
 
 pub(crate) fn command_link_path(env: &Env) -> PathBuf {
     env.home().join(".local").join("bin").join("nudge")
