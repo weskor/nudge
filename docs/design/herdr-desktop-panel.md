@@ -165,7 +165,7 @@ flowchart LR
   W --> PIPE
   CTX -. read .-> W
   PIPE --> WH[("webhook")]
-  W -- "status.json" --> M
+  W -- "watch.json" --> M
 ```
 
 - **TUI backend: unchanged process model.** herdr runs `nudge plugin event` for each status change. Only the code behind it moves behind the shared pipeline.
@@ -315,8 +315,9 @@ pub(crate) struct Transition {
     pub(crate) at_ms: i64,
 }
 
-/// What a backend can do for the pipeline once a transition settles.
-pub(crate) trait Backend Source {
+/// What a backend can do for the pipeline once a transition settles. Two implementations: `TuiSource`
+/// (wraps today's `src/herdr/`) and `CoreSource` (wraps `hc`).
+pub(crate) trait AgentSource {
     /// The last lines of the pane's terminal, raw (ANSI included); redaction happens in the pipeline.
     fn tail(&self, agent: &AgentRef, lines: usize) -> Option<String>;
     /// "reply with: herdr agent prompt …" or "reply with: hc send …".
@@ -325,8 +326,6 @@ pub(crate) trait Backend Source {
     fn toast(&self, text: &str) -> bool;
 }
 ```
-
-(The trait is named `AgentSource` in code: `trait AgentSource { … }`. Two implementations: `TuiSource` (wraps today's `herdr/`) and `CoreSource` (wraps `hc`).)
 
 ```rust
 // src/pipeline/: shared by both backends
@@ -380,7 +379,7 @@ fn read_app_context(env: &Env) -> Option<AppContext>;                    // ~/.c
 
 ### The mod
 
-**Files** (in this repo, under `herdr-app/mods/nudge/`; Wes installs it):
+**Files** (in this repo, under `herdr-app/mods/nudge/`; installing it is a copy into `~/.config/herdr-app/mods/`, see open question 8):
 
 | File | Holds |
 |---|---|
