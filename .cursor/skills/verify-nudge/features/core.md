@@ -36,12 +36,13 @@ doesn't send a duplicate.
 - `core-cli` usage errors (exit 2).
 - `core-service` (Linux: a systemd user unit, through fake `systemctl` / `loginctl`) `status` says `Login service:
   not installed`; `install` writes `~/.config/systemd/user/nudge-watch.service` (`ExecStart="<nudge>" core watch`,
-  `Restart=on-failure`, `RestartSec=10`, `Environment="PATH=<PATH at install>"`, `WantedBy=default.target`), runs
-  `systemctl --user daemon-reload` and `enable --now nudge-watch.service`, and with `$USER` set asks
+  `Restart=on-failure`, `RestartSec=10`, `Environment="PATH=<absolute PATH entries at install>"`,
+  `WantedBy=default.target`), runs `systemctl --user daemon-reload`, `enable nudge-watch.service` and `restart
+  nudge-watch.service` (so a reinstall restarts a running watcher on the new unit), and with `$USER` set asks
   `loginctl show-user <user> --property=Linger --value`: `no` prints `! Lingering is off for <user> …
   loginctl enable-linger <user>`; `status` then asks `systemctl --user is-active` (`installed, running` /
-  `installed, not running`); `remove` runs `disable --now`, deletes the unit and reloads; removing again says
-  `The login service isn't installed.`
+  `installed, not running`); a reinstall with `PATH=…::.:bin:…` keeps only the absolute entries; `remove` runs
+  `disable --now`, deletes the unit and reloads; removing again says `The login service isn't installed.`
 - `core-service-command-link` with `~/.local/bin/nudge` present, the unit runs that link instead of the binary.
 - `core-service-fails` / `core-service-no-systemd` a failing `systemctl` step is exit 1 naming the command.
 - `core-service-cli` usage errors.
