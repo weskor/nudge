@@ -15,6 +15,9 @@ read as `tui:` keys and written back prefixed.
 - `switch-cli` `nudge on` prints `nudge is on: agents and the herdr plugin can notify webhooks.`; `nudge off` prints
   `nudge is off: nothing is sent from this machine. Turn it back on with nudge on`; both exit 0, are idempotent and
   take no arguments (exit 2).
+- `toggle-cli` `nudge auto on|off` prints `Auto-notify on` / `Auto-notify off` and sets `auto`; `nudge away on|off`
+  prints the away actions' toasts and sets `away` (absent while off). Idempotent, independent of each other and of
+  the switch; anything but one `on`/`off` is exit 2.
 - `switch-actions` `on`, `off` and `switch` set or flip `on` and toast `Nudge on` or `Nudge off: nothing is sent from
   this machine`; `auto` and `away` are untouched.
 - `switch-off-notify-test` `nudge notify` / `nudge test` while off: exit 1, stderr `nudge: nudge is off: …`, no request,

@@ -6,7 +6,7 @@ use super::list::list;
 use super::route::{route, set_default};
 use super::send::{notify, ping};
 use super::status::status;
-use super::switch::switch;
+use super::switch::{Toggle, switch, toggle};
 use super::usage::answer_info;
 use crate::env::{Env, System};
 use crate::error::{Error, Result};
@@ -44,6 +44,8 @@ fn dispatch(command: &str, rest: &[String], args: Args, env: &Env) -> Result<u8>
         "test" => ping(rest, args, env),
         "on" => switch(true, rest, env),
         "off" => switch(false, rest, env),
+        "auto" => toggle(Toggle::Auto, rest, env),
+        "away" => toggle(Toggle::Away, rest, env),
         "default" => set_default(rest, env),
         "core" => core(rest, &args, env),
         "doctor" => {

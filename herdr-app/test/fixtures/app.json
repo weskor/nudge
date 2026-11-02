@@ -1,0 +1,234 @@
+{
+  "agents": [
+    {
+      "address": "t3",
+      "pane": "p1",
+      "space": "s1",
+      "space_name": "client-a",
+      "tab": "s1t1",
+      "tab_index": 1,
+      "tab_name": "1",
+      "status": "blocked",
+      "app": "claude-code",
+      "program": {
+        "key": "claude",
+        "name": "Claude Code",
+        "icon": null,
+        "tint": false,
+        "tile": null,
+        "color": null,
+        "shell": false,
+        "agent": true
+      },
+      "title": "Claude Code",
+      "seq": 3,
+      "focused": true
+    },
+    {
+      "address": "t5",
+      "pane": "p2",
+      "space": "s2",
+      "space_name": "nudge",
+      "tab": "s2t1",
+      "tab_index": 1,
+      "tab_name": "1",
+      "status": "working",
+      "app": "claude-code",
+      "program": {
+        "key": "claude",
+        "name": "Claude Code",
+        "icon": null,
+        "tint": false,
+        "tile": null,
+        "color": null,
+        "shell": false,
+        "agent": true
+      },
+      "title": "Claude Code",
+      "seq": 2,
+      "focused": false
+    },
+    {
+      "address": "t9",
+      "pane": "p3",
+      "space": "s2",
+      "space_name": "nudge",
+      "tab": "s2t1",
+      "tab_index": 1,
+      "tab_name": "1",
+      "status": "idle",
+      "app": "claude-code",
+      "program": {
+        "key": "claude",
+        "name": "Claude Code",
+        "icon": null,
+        "tint": false,
+        "tile": null,
+        "color": null,
+        "shell": false,
+        "agent": true
+      },
+      "title": "pi",
+      "seq": 1,
+      "focused": false
+    },
+    {
+      "address": "box/t7",
+      "pane": "box/p1",
+      "space": "box/s1",
+      "space_name": "gpu",
+      "tab": "box/s1t1",
+      "tab_index": 1,
+      "tab_name": "1",
+      "status": "working",
+      "app": "claude-code",
+      "program": {
+        "key": "claude",
+        "name": "Claude Code",
+        "icon": null,
+        "tint": false,
+        "tile": null,
+        "color": null,
+        "shell": false,
+        "agent": true
+      },
+      "title": "Codex",
+      "seq": 4,
+      "focused": false
+    }
+  ],
+  "terminals": [
+    {
+      "address": "t3",
+      "name": "api-refactor",
+      "labels": {
+        "herdr.space": "s1",
+        "herdr.tab": "s1t1"
+      },
+      "state": "live",
+      "status": "blocked"
+    },
+    {
+      "address": "t5",
+      "name": "docs-site",
+      "labels": {
+        "herdr.space": "s2",
+        "herdr.tab": "s2t1"
+      },
+      "state": "live",
+      "status": "working"
+    },
+    {
+      "address": "t9",
+      "name": null,
+      "labels": {
+        "herdr.space": "s2",
+        "herdr.tab": "s2t1"
+      },
+      "state": "live",
+      "status": "idle"
+    },
+    {
+      "address": "t11",
+      "name": null,
+      "labels": {
+        "herdr.space": "s1",
+        "herdr.tab": "s1t1"
+      },
+      "state": "live",
+      "status": "unknown"
+    },
+    {
+      "address": "box/t7",
+      "name": "trainer",
+      "labels": {
+        "herdr.space": "s1",
+        "herdr.tab": "s1t1"
+      },
+      "state": "live",
+      "status": "working"
+    }
+  ],
+  "spaces": [
+    {
+      "id": "s1",
+      "index": 1,
+      "name": "client-a",
+      "named": true,
+      "folder": "",
+      "machine": null,
+      "branch": null,
+      "active": true,
+      "status": "blocked",
+      "tabs": []
+    },
+    {
+      "id": "s2",
+      "index": 2,
+      "name": "nudge",
+      "named": true,
+      "folder": "",
+      "machine": null,
+      "branch": null,
+      "active": false,
+      "status": "working",
+      "tabs": []
+    },
+    {
+      "id": "s3",
+      "index": 3,
+      "name": "scratch",
+      "named": true,
+      "folder": "",
+      "machine": null,
+      "branch": null,
+      "active": false,
+      "status": null,
+      "tabs": []
+    },
+    {
+      "id": "box/s1",
+      "index": 4,
+      "name": "gpu",
+      "named": true,
+      "folder": "",
+      "machine": "box",
+      "branch": null,
+      "active": false,
+      "status": "working",
+      "tabs": []
+    }
+  ],
+  "machines": [
+    {
+      "name": null,
+      "layout": "ready"
+    },
+    {
+      "name": "box",
+      "layout": "ready"
+    },
+    {
+      "name": "gpu-vm",
+      "layout": "unavailable"
+    }
+  ],
+  "focused": {
+    "space": "s1",
+    "tab": "s1t1",
+    "pane": "p1",
+    "terminal": "t3",
+    "shown": null,
+    "agent": "t3",
+    "cwd": "/home/me/src/api"
+  },
+  "focused_box": {
+    "space": "box/s1",
+    "tab": "box/s1t1",
+    "pane": "box/p1",
+    "terminal": "box/t7",
+    "shown": null,
+    "agent": "box/t7",
+    "cwd": "/home/me"
+  }
+}

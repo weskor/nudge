@@ -9,6 +9,8 @@ cargo fmt --check && scripts/check-sizes.sh && cargo clippy --all-targets -- -D 
 cargo build --release && NUDGE_BIN=$PWD/target/release/nudge .cursor/skills/verify-nudge/bin/verify-nudge parity /tmp/after.json
 ```
 
+For a change under `herdr-app/`: `bun test herdr-app/test && scripts/check-mod.sh`.
+
 For anything user-visible, run the parity command on `main` first (`/tmp/before.json`) and `diff -u` the two transcripts. Every difference in the diff is either the change you meant to make or a bug. To drive one feature by hand, use the [verify-nudge skill](.cursor/skills/verify-nudge/SKILL.md).
 
 ## Rules

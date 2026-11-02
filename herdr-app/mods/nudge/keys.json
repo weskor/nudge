@@ -1,0 +1,7 @@
+{
+  "global": {
+    "ctrl-shift-y": "nudge.toggle",
+    "ctrl-shift-u": "nudge.send",
+    "ctrl-shift-r": "nudge.route"
+  }
+}
