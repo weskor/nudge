@@ -189,13 +189,15 @@ The desktop app tells nudge which terminal you're looking at, and what this mach
 
 [`herdr-app/mods/nudge/`](herdr-app/mods/nudge/) is a panel for the Herdr desktop app. It shows whether nudge is on, where each agent's and space's notifications go and why, whether the watcher runs, and nudge's recent decisions, and it changes them: the switch, auto-notify and away, routes, the default webhook, sending a pane now, starting the watcher or installing the login service. It does everything by running `nudge` (and `hc` to start the watcher), on this computer or on a machine you connected with `hc machine add`, and never reads nudge's files or sees a webhook's URL or secret. It also tells nudge which terminal you're looking at (`nudge core context`), so the watcher skips it. [RECIPE.md](herdr-app/mods/nudge/RECIPE.md) describes it in full.
 
-To use it, copy the folder into the app's mods:
+To install it, run this with Herdr open:
 
 ```sh
-cp -R herdr-app/mods/nudge ~/.config/herdr-app/mods/
+nudge panel install
 ```
 
-Herdr's own layouts (the default "Herdr", Terminals, Herdr 98) don't take new panels. To dock it on the right, make your own copy of the layout once and restart Herdr: `herdr-app do layout.clone '{"name":"main"}'` (Herdr shows the copy from then on; your terminals keep running). Without that, open it over the window with `herdr-app do mod.open --name nudge` (the same again closes it). Add the key bindings from its `keys.json` (`ctrl-shift-y` on/off, `ctrl-shift-s` send the focused pane, `ctrl-shift-r` its route) to `~/.config/herdr-app/keys.json` if you want them.
+It puts the panel's files in `~/.config/herdr-app/mods/nudge/` and docks the panel on the right of the window, at once: nothing restarts, not Herdr, not herdr-core, not a terminal. Herdr's own layouts (the default "Herdr", Terminals, Herdr 98) take no new panels, so on one of those it first makes your copy with Herdr's own `layout.clone` (named `main-nudge` for the default; your sizes and shown panels come along) and shows that. On a layout of your own it adds the panel's block to that layout's file and prints exactly what it added. Running it again changes nothing; after a nudge update it refreshes the panel's files. With Herdr closed it only installs the files; run it again once Herdr is open. You can also open the panel over the window with `herdr-app do mod.open --name nudge`. Add the key bindings from [its `keys.json`](herdr-app/mods/nudge/keys.json) (`ctrl-shift-y` on/off, `ctrl-shift-s` send the focused pane, `ctrl-shift-r` its route) to `~/.config/herdr-app/keys.json` if you want them.
+
+`nudge panel remove` undoes it: Herdr shows your layout again (`main` instead of `main-nudge`), the panel's block comes out of your layouts (install and remove touch only the block's own bytes, so your layout's file comes back exactly as it was), the copy install made is deleted (kept, with a note, if you changed it since), and the panel's files go. It's safe to run again, and with Herdr closed.
 
 <p align="center"><img src="herdr-app/mods/nudge/preview.png" width="320" alt="The Nudge panel: nudge on, auto-notify on, watching 3 agents; api-refactor blocked and routed to client-a by its workspace, docs-site and review-bot to the default webhook main; recent decisions; the default webhook and Test in the footer"></p>
 
@@ -344,6 +346,7 @@ A config with routes is still read by older nudge versions, but they ignore the 
 | `~/.config/nudge/config.toml` | Webhooks (URL, Authorization header, optional description and signing secret), `[auto]`, `[scope]` and `[[route]]` |
 | `~/.local/state/nudge/state.json` | The on/off switch, the auto-notify and away toggles, and per-pane timestamps |
 | `~/.local/state/nudge/watch.json`, `context.json` | What the herdr-core watcher is doing; the desktop app's focus and space names |
+| `~/.local/state/nudge/panel.json` | The Herdr layout copies `nudge panel install` made, so `nudge panel remove` deletes only those |
 | `~/.local/bin/nudge` | Optional link to the plugin's `nudge` command; kept current across plugin updates |
 
 | Environment variable | Effect |
@@ -369,6 +372,7 @@ nudge route  ls [--json]
 nudge route  set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
 nudge route  rm  (--pane NAME | --workspace NAME) [--backend tui|core]
 nudge core   watch [--once] | send <terminal> [--blocked] | service install|remove|status | context '<json>'
+nudge panel  install | remove
 nudge doctor [--ping]
 nudge settings
 nudge list   [--json]

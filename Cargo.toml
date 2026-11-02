@@ -19,7 +19,7 @@ regex = { version = "1.13.1", default-features = false, features = ["std", "perf
 ring = "0.17"
 rustix = { version = "1.1.5", features = ["termios", "stdio", "process", "system", "fs"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["raw_value"] }
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 url = "2.5.8"

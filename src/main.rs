@@ -10,6 +10,7 @@ mod error;
 mod git;
 mod herdr;
 mod mcp;
+mod panel;
 mod pipeline;
 mod plugin;
 mod settings;

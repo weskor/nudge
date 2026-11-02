@@ -26,6 +26,7 @@ Parity:
 Session selection: $VERIFY_NUDGE_SESSION, else the id in <repo>/.verify/current.
 """
 import calendar
+import hashlib
 import json
 import os
 import re
@@ -48,9 +49,10 @@ except ImportError:
     tomllib = None
 
 BIN_DIR = os.path.dirname(os.path.realpath(__file__))
-# Fakes run by fake-herdr besides herdr itself: herdr-core's CLI and the service managers `nudge core service`
-# drives. Each has <RUN>/<tool>.json (no fixture: exit 1, never the real tool) and records <tool>_calls when called.
-OPTIONAL_FAKES = ("hc", "systemctl", "loginctl", "launchctl")
+# Fakes run by fake-herdr besides herdr itself: herdr-core's CLI, the service managers `nudge core service`
+# drives, and the Herdr desktop app's CLI `nudge panel install` asks. Each has <RUN>/<tool>.json (no fixture: exit 1,
+# never the real tool) and records <tool>_calls when called.
+OPTIONAL_FAKES = ("hc", "systemctl", "loginctl", "launchctl", "herdr-app")
 SKILL_DIR = os.path.dirname(BIN_DIR)
 REPO = os.path.realpath(os.path.join(SKILL_DIR, "..", "..", ".."))
 EVIDENCE_ROOT = os.path.join(REPO, ".verify")
@@ -685,6 +687,20 @@ class Sandbox:
         app_context = os.path.join(self.state_dir, "context.json")
         if os.path.exists(app_context):
             out["app_context"] = json.loads(open(app_context).read())
+        # The Herdr desktop app's home (`nudge panel install`), only while it exists: the panel's files, and for
+        # each layout whether it shows the panel and a hash of its bytes (install then remove must give them back).
+        app_home = os.path.join(self.home, ".config", "herdr-app")
+        if os.path.isdir(app_home):
+            mod = os.path.join(app_home, "mods", "nudge")
+            layouts = os.path.join(app_home, "layouts")
+            texts = {name: open(os.path.join(layouts, name), "rb").read()
+                     for name in sorted(os.listdir(layouts))} if os.path.isdir(layouts) else None
+            out["herdr_app"] = {
+                "mod_files": sorted(os.listdir(mod)) if os.path.isdir(mod) else None,
+                "layouts": None if texts is None else {
+                    name: {"panel": re.search(rb'"mod":\s*"nudge"', text) is not None,
+                           "sha256": hashlib.sha256(text).hexdigest()[:12]} for name, text in texts.items()},
+            }
         return out
 
     # ---- drivers
@@ -2551,6 +2567,57 @@ def scenarios():
     add("status-json-old-config", raw_config(OLD_FORMAT_CONFIG),
         cmd(["status", "--json"], expect=0, config_unchanged=1, has=['"default_webhook": "main"', '"name": "research"'],
             lacks=["updated"]))
+
+    # ---- `nudge panel install`: the panel's files into the Herdr app's home, then docked through a fake `herdr-app`
+    # (never the real window). `herdr_app` in `files` lists the mod's files and each layout's panel and bytes.
+    layouts_dir = "home/.config/herdr-app/layouts/"
+    shipped = json.dumps({"id": "root", "type": "row", "children": [{"id": "work", "type": "block", "content": {"tab": "active"}}]})
+    # A layout of your own as Herdr writes it: two-space indent, Herdr's key order.
+    own = json.dumps({"id": "root", "cloned_from": {"name": "main", "version": "0.1.12"}, "type": "row",
+                      "children": [{"id": "work", "type": "block", "content": {"tab": "active"}}]}, indent=2) + "\n"
+    with_panel = json.dumps({"id": "root", "type": "row", "cloned_from": {"name": "main"},
+                             "children": [{"id": "nudge-panel", "type": "block", "content": {"mod": "nudge"}}]}, indent=2)
+    status = lambda name: rule(["status"], {"layout": name, "errors": []})
+    add("panel-install-closed",
+        cmd(["panel", "install"], expect=0, has=["Installed the Nudge panel in ", "Herdr's window isn't open"]),
+        cmd(["panel", "install"], expect=0, has="Already installed: the Nudge panel"),
+        cmd(["panel", "remove"], expect=0, has="Removed the Nudge panel's files ("),
+        cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in "))
+    add("panel-install-remove-own-layout", write(layouts_dir + "mine.json", own), fake("herdr-app", fixture(status("mine"))),
+        cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in ", lacks=["Took the panel out"]),
+        cmd(["panel", "install"], expect=0,
+            has=['Docked it on the right of your layout "mine": added to ', "mine.json as the last child of its top row:\n  ",
+                 '{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}',
+                 "`nudge panel remove` takes it out again."]),
+        cmd(["panel", "install"], expect=0, has='It\'s docked in your layout "mine".'),
+        # mine.json's hash after this remove is the one after the first step: the same bytes.
+        cmd(["panel", "remove"], expect=0, has=['Took the panel out of your layout "mine" (', "Removed the Nudge panel's files ("]),
+        cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in ", lacks=["Took the panel out"]))
+    switch = rule(["do", "layout.switch", "--name", "main-nudge"], {"ok": True})
+    add("panel-install-shows-the-copy", write(layouts_dir + "main.json", shipped), write(layouts_dir + "main-nudge.json", with_panel),
+        fake("herdr-app", fixture(status("main"), switch)),
+        cmd(["panel", "install"], expect=0, has='Docked it on the right of "main-nudge", your copy of Herdr\'s "main" layout'))
+    add("panel-remove-switches-back", write(layouts_dir + "main.json", shipped), write(layouts_dir + "main-nudge.json", with_panel),
+        fake("herdr-app", fixture(status("main-nudge"), rule(["do", "layout.switch", "--name", "main"], {"ok": True}))),
+        cmd(["panel", "remove"], expect=0,
+            has=['Herdr showed "main-nudge"; it shows "main" again.', 'Took the panel out of your layout "main-nudge"',
+                 'Kept the layout "main-nudge": `nudge panel install` didn\'t make it.']))
+    add("panel-install-copy-refused", write(layouts_dir + "main.json", shipped), fake("herdr-app", fixture(status("main"))),
+        cmd(["panel", "install"], expect=1, has='nudge: Herdr couldn\'t copy the layout "main"'))
+    tall = json.dumps({"id": "root", "type": "column", "cloned_from": {"name": "main"}, "children": []}, indent=2)
+    add("panel-install-refused", write(layouts_dir + "tall.json", tall), fake("herdr-app", fixture(status("tall"))),
+        cmd(["panel", "install"], expect=1,
+            has=["nudge: this layout isn't a row with children at its top, so the panel can't dock on its right\n",
+                 "tall.json (Herdr's own layouts take no new panels: clone one first):\n  "
+                 '{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}\n',
+                 "Or open it over the window: herdr-app do mod.open --name nudge"]))
+    no_app = {"PATH": "/usr/bin:/bin"}  # no fakebin: no herdr-app at all
+    add("panel-no-herdr-app", write(layouts_dir + "mine.json", own),
+        cmd(["panel", "install"], env=no_app, expect=0, has="`herdr-app` isn't on PATH, so nudge can't reach Herdr's window to dock the panel."),
+        cmd(["panel", "remove"], env=no_app, expect=0,
+            has=["`herdr-app` isn't on PATH, so nudge can't reach Herdr's window to show another layout.", "Removed the Nudge panel's files ("]))
+    add("panel-cli", cmd(["panel"], expect=2), cmd(["panel", "frob"], expect=2), cmd(["panel", "install", "extra"], expect=2),
+        cmd(["panel", "remove", "extra"], expect=2))
 
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per

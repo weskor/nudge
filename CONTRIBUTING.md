@@ -46,6 +46,7 @@ Each area is a folder whose `mod.rs` is the facade (submodules are private); eac
 | `src/pipeline/` | The shared path from a status change to a webhook request: rules, scope, route, tail, payload, delivery, cooldown give-back |
 | `src/herdr/` | herdr queries and the TUI's `AgentSource` (`TuiSource`): agents, workspaces, sender detection, plugin registration and logs, the `~/.local/bin/nudge` link |
 | `src/core/` | The herdr-core backend: `hc events` parsing, the watcher (`nudge core watch`, its lock and `watch.json`), `CoreSource` over `hc`, `nudge core send`, and the sender inside a core terminal |
+| `src/panel/` | `nudge panel install` / `remove`: the desktop panel's files (built in from `herdr-app/mods/nudge/`), docking it in the open Herdr window's layout and undoing that (`edit.rs` splices the block into a layout's text and back out, leaving every other byte), and `panel.json` (the layout copies install made) |
 | `src/auto/` | Auto-notify rules, redaction and the pane message |
 | `src/webhook/` | The notification payload, sending and signing, and `notify`/`ping` |
 | `src/config/` | Config model, routes, value checks, parsing, reading and migrating, writing and serializing |
