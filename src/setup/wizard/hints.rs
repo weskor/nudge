@@ -47,7 +47,9 @@ impl Wizard {
                 )
                 .into(),
                 Some(Choice::Command) => "Links ~/.local/bin/nudge so agents can run nudge notify.".into(),
-                Some(Choice::Default) => "Notifications go to the default webhook unless they name another one.".into(),
+                Some(Choice::Default) => {
+                    "Notifications go to the default webhook unless a route or the agent picks another.".into()
+                }
                 None => "".into(),
             },
             At::Options { editing: None } if self.offered().is_empty() => {

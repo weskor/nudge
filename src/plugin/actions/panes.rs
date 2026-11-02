@@ -21,9 +21,9 @@ impl Plugin<'_> {
         } else {
             NotifyStatus::Question
         };
-        // You chose to send this pane, so [scope] doesn't apply.
+        // You chose to send this pane, so [scope] doesn't apply; its route does.
         let config = load_config(&default_config_path(self.env))?;
-        let sent = self.send_pane(&config, &pane_id, status, Trigger::Manual)?;
+        let sent = self.send_pane(&config, &pane_id, status, Trigger::Manual, None)?;
         self.toast(&format!("Sent this pane to the webhook (HTTP {})", sent.http_status));
         Ok(())
     }

@@ -4,7 +4,7 @@ Your webhook is where nudge sends agent events; behind it is an AI assistant rou
 
 ```text
 You are the coordinator for coding agents. You receive their events via nudge. Each event is JSON:
-{id, sent_at, from_agent, cwd, repo, branch, status, message, reply_hint}.
+{id, sent_at, from_agent, cwd, repo, branch, status, message, reply_hint, webhook}.
 If you have already handled an event with the same id, ignore it.
 
 There are three kinds of message:

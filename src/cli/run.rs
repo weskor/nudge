@@ -2,6 +2,7 @@
 //! command.
 use super::args::{Args, no_args, parse_args};
 use super::list::list;
+use super::route::{route, set_default};
 use super::send::{notify, ping};
 use super::switch::switch;
 use super::usage::answer_info;
@@ -12,11 +13,13 @@ use crate::{doctor, mcp, plugin, settings};
 
 /// Run the command line `words` (without the program name); returns the exit code.
 pub(crate) fn run(words: Vec<String>, env: &Env) -> Result<u8> {
-    // herdr plugin entrypoints parse their own arguments.
-    if let Some((first, rest)) = words.split_first()
-        && first == "plugin"
-    {
-        return Ok(plugin::run_plugin(rest, env));
+    // herdr plugin entrypoints, and `route` (whose --pane takes a name), parse their own arguments.
+    if let Some((first, rest)) = words.split_first() {
+        match first.as_str() {
+            "plugin" => return Ok(plugin::run_plugin(rest, env)),
+            "route" => return route(rest, env),
+            _ => {}
+        }
     }
     let mut args = parse_args(words)?;
     let positionals = std::mem::take(&mut args.positionals);
@@ -39,6 +42,7 @@ fn dispatch(command: &str, rest: &[String], args: Args, env: &Env) -> Result<u8>
         "test" => ping(rest, args, env),
         "on" => switch(true, rest, env),
         "off" => switch(false, rest, env),
+        "default" => set_default(rest, env),
         "doctor" => {
             no_args(rest, "doctor")?;
             doctor::doctor(args.ping, args.pane, env)

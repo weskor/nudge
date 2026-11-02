@@ -1,12 +1,12 @@
-//! Sending a pane's recent output to the default webhook on behalf of the agent in it.
+//! Sending a pane's recent output to its webhook (its route's, else the default) on behalf of the agent in it.
 use std::thread;
 
 use super::Plugin;
 use crate::auto::{Trigger, auto_message};
-use crate::config::{Config, find_webhook};
+use crate::config::{Backend, Config, Webhook, find_webhook, routes_name_workspaces};
 use crate::env::{Run as _, System};
 use crate::error::Result;
-use crate::herdr::herdr_agent;
+use crate::herdr::{AgentInfo, Sender, SenderIds, herdr_agent};
 use crate::webhook::{NotifyStatus, Origin, build_notification, deliver};
 
 /// What the webhook accepted from [`Plugin::send_pane`].
@@ -18,15 +18,22 @@ pub(super) struct PaneSent {
 }
 
 impl Plugin<'_> {
-    /// Send the pane's recent output to the default webhook on behalf of its agent.
+    /// Send the pane's recent output to its webhook on behalf of its agent. `ids`: the sender's names and ids, when
+    /// the caller already looked them up (with the workspace if routes name one).
     pub(super) fn send_pane(
         &self,
         config: &Config,
         pane_id: &str,
         status: NotifyStatus,
         trigger: Trigger,
+        ids: Option<&SenderIds>,
     ) -> Result<PaneSent> {
-        let webhook = find_webhook(config, None)?;
+        // Without routes it's the default webhook: checked first, so a config problem shows before herdr is asked.
+        let fixed = config
+            .route
+            .is_empty()
+            .then(|| find_webhook(config, None))
+            .transpose()?;
         let (agent, raw) = thread::scope(|scope| {
             let read = [
                 self.env.herdr(),
@@ -44,6 +51,10 @@ impl Plugin<'_> {
             let agent = herdr_agent(pane_id, self.env, &self.home, &System);
             (agent, raw.join().ok().flatten())
         });
+        let webhook = match fixed {
+            Some(webhook) => webhook,
+            None => self.routed_webhook(config, pane_id, agent.as_ref(), ids)?,
+        };
         let lines = usize::try_from(config.auto.tail_lines).unwrap_or(usize::MAX);
         let message = auto_message(trigger, raw.as_deref().unwrap_or_default(), lines);
         let home = self.home.to_string_lossy();
@@ -59,8 +70,28 @@ impl Plugin<'_> {
             cwd: &cwd,
             run: &System,
         };
-        let notification = build_notification(status.into(), &message, Some(target.clone()), origin)?;
+        let notification = build_notification(status.into(), &message, Some(target.clone()), &webhook.name, origin)?;
         let http_status = deliver(self.env, webhook, &notification)?;
         Ok(PaneSent { http_status, target })
+    }
+
+    /// The webhook the route for the agent in `pane_id` names, else the default webhook.
+    fn routed_webhook<'a>(
+        &self,
+        config: &'a Config,
+        pane_id: &str,
+        agent: Option<&AgentInfo>,
+        ids: Option<&SenderIds>,
+    ) -> Result<&'a Webhook> {
+        let looked_up;
+        let ids = if let Some(ids) = ids {
+            ids
+        } else {
+            let sender = agent.map_or_else(|| Sender::in_pane(pane_id), |agent| agent.sender.clone());
+            let workspace = routes_name_workspaces(&config.route, Backend::Tui);
+            looked_up = SenderIds::lookup(&sender, workspace, self.env, &System);
+            &looked_up
+        };
+        find_webhook(config, ids.route(&config.route).map(|route| route.webhook.as_str()))
     }
 }

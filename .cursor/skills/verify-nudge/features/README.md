@@ -58,5 +58,6 @@ four H2 sections in this order: `Sub-features`, `How to get to it (user POV)`, `
 - [Plugin actions and startup](./plugin-actions.md): toggle/enable/disable, away/away-on/away-off, send-pane, setup/status/settings overlays, scope actions, startup command-link repoint. The on/off/switch actions are in [Global switch](./switch.md).
 - [Global switch](./switch.md): `nudge on` / `nudge off` and the `on` / `off` / `switch` actions; while off every entry point fails or skips and nothing is sent; `tui:` pane keys in state.json.
 - [Scope](./scope.md): `[scope]` limits which workspaces/agents may notify (events, notify, MCP); only-workspace / only-agent / all-agents actions; doctor's scope line.
+- [Routes and the default webhook](./routes.md): `[[route]]` pane > workspace > default for events, send-pane, notify and MCP; the body's `webhook` field; `nudge route ls|set|rm`, `nudge default`; settings lists routes.
 - [Settings](./settings.md): the full-screen `nudge settings` editor (auto-notify, away mode, `[auto]` values, who can notify, default webhook, test pings, save/discard) and its herdr `settings` action.
 - [MCP server](./mcp.md): `nudge mcp` with `list_webhooks` and `notify_webhook`.

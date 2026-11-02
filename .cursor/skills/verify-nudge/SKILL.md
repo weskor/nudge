@@ -154,7 +154,7 @@ NUDGE_BIN=/path/to/new/nudge $VN parity .verify/parity/new.json
 diff -u .verify/parity/old.json .verify/parity/new.json
 ```
 
-Runs the fixed scenario list (226 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
+Runs the fixed scenario list (240 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
 with its own fakes and one shared fake webhook, then writes one JSON transcript with sorted keys. Per step it
 records the same fields as `run`, with JSON payloads (webhook bodies, `list --json` stdout as `stdout_json`, MCP
 responses keyed by JSON-RPC id with JSON tool text as `text_json`, state.json) compared as data. Multi-line text is
@@ -177,7 +177,8 @@ not the request the webhook received. Steps may also assert `sends=N` (requests 
 `scope_is=(workspaces, agents)` (the config's `[scope]` after the step), `config_keys={key: value}` (top-level config
 keys after the step, `None` = absent), `state_auto=BOOL`, `state_keys={key: value}` (top-level state.json keys after the
 step, `None` = absent, e.g. `{"away": None}`), `config_mode="600"`, `config_unchanged=True` (config text
-identical to before the step) and `herdr_has=[argv…]` (exact herdr calls made); TOML checks need python ≥ 3.11 for
+identical to before the step), `herdr_has=[argv…]` (exact herdr calls made) and `sent_to=[name…]` (each request's body
+`webhook`, in order); TOML checks need python ≥ 3.11 for
 `tomllib`. PTY steps that use `screen` expectations record the matched `screens` and the normal-screen `output` instead
 of raw bytes (the raw bytes are still scanned for secrets). The command prints the failures and exits 1 if there are
 any (0 otherwise), so CI can run it directly:
@@ -188,7 +189,8 @@ differ in scenarios and normalization; regenerate both sides with the same harne
 away mode (before 0.8.0) fails the `*away*` scenarios and the `settings-*` cursor steps (the `I'm away` row
 moves every cursor stop below `Auto-notify` down by one): that is the expected diff, not a harness problem. Likewise a
 build without the global switch (0.11.1 and older) fails the `switch-*` scenarios, keeps unprefixed pane keys in
-state.json, and its doctor has no `Nudge on` line.
+state.json, and its doctor has no `Nudge on` line. A build without routes (before slice 2) fails the `route-*`,
+`default-cli` and `settings-routes` scenarios, and its webhook bodies have no `webhook` field.
 
 ## Evidence
 

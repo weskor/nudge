@@ -32,7 +32,7 @@ pub(super) const fn describe(row: Row) -> &'static str {
         Row::OnlyThese => "Only agents in the ticked workspaces, and the ticked agents, can reach the webhook.",
         Row::Workspace(_) => "Agents in this workspace can notify.",
         Row::Agent(_) => "This agent can notify, whichever workspace it is in.",
-        Row::Webhook(_) => "Notifications go here unless they name another webhook. t sends a test ping.",
+        Row::Webhook(_) => "Used when no route matches and the agent names no webhook. t sends a test ping.",
     }
 }
 

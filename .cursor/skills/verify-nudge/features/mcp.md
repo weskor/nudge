@@ -10,8 +10,9 @@ payload. Config and webhook failures come back as tool results with `isError: tr
 - `mcp-tools-list` lists `list_webhooks` and `notify_webhook` (input `message` required, `status` default `done`,
   optional `webhook`, `agent`).
 - `mcp-list-webhooks` returns pretty JSON text `[{name, default, description}]`.
-- `mcp-notify` returns `{ok: true, webhook, http_status, id, sent_at, from_agent, cwd, repo, branch, status, message,
-  reply_hint}` and POSTs the same body as `nudge notify` (same `id`/`sent_at`; signed for a webhook with `signing_secret`).
+- `mcp-notify` returns `{ok: true, http_status, id, sent_at, from_agent, cwd, repo, branch, status, message,
+  reply_hint, webhook}` and POSTs the same body as `nudge notify` (same `id`/`sent_at`; signed for a webhook with
+  `signing_secret`). Without a `webhook` argument it follows the sender's route (see routes.md).
 - `mcp-scope` with `HERDR_PANE_ID` (or `HERDR_WORKSPACE_ID`) outside `[scope]`, `notify_webhook` is `isError: true` with
   `… outside nudge's scope …` and sends nothing; `list_webhooks` still works.
 - `mcp-errors` webhook failure / unknown webhook / missing config → `isError: true` with the error text.

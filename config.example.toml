@@ -37,3 +37,16 @@ toast = true             # herdr toast when one is sent
 [scope]
 workspaces = ["api"]     # herdr workspace names (or ids)
 agents = ["reviewer"]    # herdr agent names (or pane ids)
+
+# Optional: send one pane's or one workspace's notifications to a webhook other than the default.
+# The most specific wins: a pane route, then a workspace route, then default_webhook. Routes of
+# each kind are tried in file order. Set them with `nudge route set`; list them with `nudge route ls`.
+# `nudge notify --webhook NAME` (and the MCP tool's `webhook`) still wins over every route.
+[[route]]
+workspace = "research"   # herdr workspace name (or id)
+webhook = "research"
+
+[[route]]
+pane = "reviewer"        # herdr agent name (or pane id)
+webhook = "main"
+# backend = "tui"        # optional: "tui" (herdr) or "core" (herdr-core); without it, both

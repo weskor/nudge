@@ -1,6 +1,7 @@
-//! The config data model: webhooks, `[auto]`, `[scope]` and the config that holds them.
+//! The config data model: webhooks, `[auto]`, `[scope]`, `[[route]]` and the config that holds them.
 use std::fmt;
 
+use super::routes::Route;
 use crate::terminal::tty::Redacted;
 
 /// A configured webhook. `Debug` redacts the Authorization header and the signing secret.
@@ -104,6 +105,8 @@ pub(crate) struct Config {
     pub(crate) webhook: Vec<Webhook>,
     pub(crate) auto: Auto,
     pub(crate) scope: Scope,
+    /// `[[route]]` tables in file order: which webhook a pane's or a workspace's notifications go to.
+    pub(crate) route: Vec<Route>,
 }
 
 #[cfg(test)]

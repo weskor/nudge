@@ -1,5 +1,6 @@
 //! Serializing a [`Config`] to the TOML `nudge setup` writes, leaving out absent and default settings.
 use super::model::{Auto, Config, Scope, Webhook};
+use super::routes::Route;
 
 /// A TOML basic string. JSON string escapes are a subset of TOML's.
 fn toml_string(value: &str) -> String {
@@ -25,7 +26,24 @@ pub(super) fn serialize_config(config: &Config) -> String {
     }
     lines.extend(auto_table(config.auto));
     lines.extend(scope_table(&config.scope));
+    for route in &config.route {
+        lines.extend(route_table(route));
+    }
     lines.join("\n")
+}
+
+/// One `[[route]]` table, followed by a blank line.
+fn route_table(route: &Route) -> Vec<String> {
+    let mut lines = vec![
+        "[[route]]".to_owned(),
+        format!("{} = {}", route.selector.key(), toml_string(route.selector.name())),
+        format!("webhook = {}", toml_string(&route.webhook)),
+    ];
+    if let Some(backend) = route.backend {
+        lines.push(format!("backend = {}", toml_string(backend.as_str())));
+    }
+    lines.push(String::new());
+    lines
 }
 
 /// One `[[webhook]]` table, followed by a blank line.

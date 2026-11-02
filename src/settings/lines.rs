@@ -43,11 +43,26 @@ impl Settings {
         items.extend(self.auto_items(cursor_row));
         items.extend(self.scope_items());
         items.extend(self.webhook_items());
+        items.extend(self.route_items());
         let selected = items
             .iter()
             .position(|(row, _)| row.is_some() && *row == cursor_row)
             .unwrap_or(0);
         (items.into_iter().map(|(_, line)| line).collect(), selected)
+    }
+
+    /// "Routes", read-only and only when there are any: the cursor never stops here; `nudge route` edits them.
+    fn route_items(&self) -> Vec<Item> {
+        if self.routes.is_empty() {
+            return Vec::new();
+        }
+        let mut items = vec![(None, Line::default()), (None, Line::styled("Routes", HEADER))];
+        items.extend(self.routes.iter().map(|route| (None, Line::raw(format!("  {route}")))));
+        items.push((
+            None,
+            Line::styled("  change with nudge route set / nudge route rm", DIM),
+        ));
+        items
     }
 
     /// "Mode": the auto-notify and away switches.
