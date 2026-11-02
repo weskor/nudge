@@ -3,6 +3,7 @@ mod args;
 mod list;
 mod run;
 mod send;
+mod switch;
 mod usage;
 
 pub(crate) use args::utf8;

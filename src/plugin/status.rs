@@ -7,9 +7,9 @@ use super::{Plugin, log};
 use crate::auto::{Decision, HerdrStatus, Settled, Trigger, decide};
 use crate::config::{Auto, Config, default_config_path, load_config, read_config};
 use crate::env::System;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::herdr::{AgentInfo, Sender, herdr_agent, in_scope};
-use crate::state::{now_ms, update_state};
+use crate::state::{now_ms, tui_key, update_state};
 use crate::webhook::NotifyStatus;
 
 #[derive(Debug, Deserialize)]
@@ -36,20 +36,15 @@ impl Plugin<'_> {
         let settles = matches!(status, HerdrStatus::Done | HerdrStatus::Blocked);
         let path = default_config_path(self.env);
         // A missing or broken config only matters once there is something to send; that load reports it.
-        let config = if settles {
-            read_config(&path).ok().flatten()
-        } else {
-            None
-        };
+        let config = settles.then(|| read_config(&path).ok().flatten()).flatten();
         let rules = config.as_ref().map_or_else(Auto::default, |config| config.auto);
-        let agent = if settles {
-            herdr_agent(&pane_id, self.env, &self.home, &System)
-        } else {
-            None
-        };
+        let agent = settles
+            .then(|| herdr_agent(&pane_id, self.env, &self.home, &System))
+            .flatten();
         let focused = agent.as_ref().is_some_and(|agent| agent.focused);
         let now = now_ms();
-        let decision = update_state(self.env, |state| decide(state, &pane_id, status, now, focused, rules))?;
+        let key = tui_key(&pane_id);
+        let decision = update_state(self.env, |state| decide(state, &key, status, now, focused, rules))?;
         let settled = match decision {
             Decision::Skip(reason) => {
                 if settles {
@@ -63,14 +58,21 @@ impl Plugin<'_> {
         if !matches!(sent, Ok(true)) {
             // Nothing reached the webhook: give back the cooldown `decide` reserved, so the next event can notify.
             update_state(self.env, |state| {
-                if let Some(pane) = state.panes.get_mut(&pane_id)
+                if let Some(pane) = state.panes.get_mut(&key)
                     && pane.last_auto_at == Some(now)
                 {
                     pane.last_auto_at = None;
                 }
             })?;
         }
-        sent.map(|_| ())
+        match sent {
+            // Turned off between deciding and sending: nobody asked for this notification, so it's a skip.
+            Err(Error::Off) => {
+                log(&format!("{pane_id} {}: skipped (nudge is off)", status.as_str()));
+                Ok(())
+            }
+            other => other.map(|_| ()),
+        }
     }
 
     /// Send the notification `decide` asked for; `false` when the pane is outside nudge's scope.

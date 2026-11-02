@@ -1,11 +1,13 @@
 # Doctor
 
-`nudge doctor` prints a checklist (`✓` ok, `!` warning, `✗` failure, with `→` fixes) for the config, the agents
-allowed to notify (`[scope]`), the default webhook (`--ping` sends a test ping), herdr and the nudge plugin,
+`nudge doctor` prints a checklist (`✓` ok, `!` warning, `✗` failure, with `→` fixes) for the global switch, the config,
+the agents allowed to notify (`[scope]`), the default webhook (`--ping` sends a test ping), herdr and the nudge plugin,
 auto-notify and away mode, recent plugin log lines, the `nudge` command and clipboard tools, and exits 1 when any check failed.
 
 ## Sub-features
 
+- `doctor-switch` the first check: `✓ Nudge on`, or `! Nudge off: nothing is sent` with `→ nudge on` (a warning; see
+  switch.md). While off, `--ping` shows `! Webhook not tested: nudge is off` instead of pinging.
 - `doctor-config` reports no config (fail), invalid TOML/schema (fail, with each problem), webhook count and default
   (warn + fix when several webhooks have no default); `[auto]`/`[scope]` errors such as `auto.bogus: unknown setting`.
 - `doctor-scope` `✓ Scope: all agents`, or `✓ Scope: workspaces a, b; agents x` with a fix pointing at the

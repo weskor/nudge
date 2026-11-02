@@ -2,7 +2,7 @@
 use serde::Deserialize;
 
 use crate::config::Auto;
-use crate::state::State;
+use crate::state::{PaneState, State};
 
 /// An agent status as herdr reports it in `pane.agent_status_changed`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -41,37 +41,30 @@ pub(crate) enum Decision {
 }
 
 /// Apply one `pane.agent_status_changed` event to `state` and decide whether to notify.
-/// - `working` starts a turn; `idle` (seen by you) and `done` end it.
+/// - `working` starts a turn; `idle` (seen by you) and `done` end it. Turns are tracked even when nothing is sent.
 /// - `blocked` always qualifies; `done` only after a turn of at least `rules.min_turn_seconds` with a known start.
-/// - Skipped when auto-notify is off, you are looking at the pane (`focused`), the agent already ran
-///   `nudge notify` this turn, or the pane is in its `rules.cooldown_seconds` cooldown.
-/// - Away mode (`state.away`) overrides the first two: you said you're away.
+/// - Skipped when nudge is off (`nudge off`), auto-notify is off, you are looking at the pane (`focused`), the agent
+///   already ran `nudge notify` this turn, or the pane is in its `rules.cooldown_seconds` cooldown.
+/// - Away mode (`state.away`) overrides auto-notify being off and the focus skip: you said you're away.
+///
+/// `key` is the pane's key in `state.panes` (see [`crate::state::tui_key`]).
 pub(crate) fn decide(
     state: &mut State,
-    pane_id: &str,
+    key: &str,
     status: HerdrStatus,
     now: i64,
     focused: bool,
     rules: Auto,
 ) -> Decision {
-    let pane = state.panes.entry(pane_id.to_owned()).or_default();
+    let pane = state.panes.entry(key.to_owned()).or_default();
     let turn_start = pane.working_since;
-    let settled = match status {
-        HerdrStatus::Working => {
-            pane.working_since.get_or_insert(now);
-            return Decision::Skip("turn started".into());
-        }
-        HerdrStatus::Idle | HerdrStatus::Unknown => {
-            pane.working_since = None;
-            return Decision::Skip(format!("status {}", status.as_str()));
-        }
-        HerdrStatus::Done => {
-            pane.working_since = None;
-            Settled::Done
-        }
-        HerdrStatus::Blocked => Settled::Blocked,
+    let settled = match track_turn(pane, status, now) {
+        Ok(settled) => settled,
+        Err(skip) => return skip,
     };
-
+    if !state.on {
+        return Decision::Skip("nudge is off".into());
+    }
     if !state.auto && !state.away {
         return Decision::Skip("auto-notify is off".into());
     }
@@ -95,6 +88,25 @@ pub(crate) fn decide(
     }
     pane.last_auto_at = Some(now);
     Decision::Notify(settled)
+}
+
+/// Record the turn `status` starts or ends; the settled status, or why it doesn't settle anything.
+fn track_turn(pane: &mut PaneState, status: HerdrStatus, now: i64) -> Result<Settled, Decision> {
+    match status {
+        HerdrStatus::Working => {
+            pane.working_since.get_or_insert(now);
+            Err(Decision::Skip("turn started".into()))
+        }
+        HerdrStatus::Idle | HerdrStatus::Unknown => {
+            pane.working_since = None;
+            Err(Decision::Skip(format!("status {}", status.as_str())))
+        }
+        HerdrStatus::Done => {
+            pane.working_since = None;
+            Ok(Settled::Done)
+        }
+        HerdrStatus::Blocked => Ok(Settled::Blocked),
+    }
 }
 
 #[cfg(test)]

@@ -96,6 +96,10 @@ command = "nudge.away"
 description = "nudge: away on/off"
 ```
 
+### Turn nudge off
+
+`nudge off` (or the herdr action `nudge.off`, or `nudge.switch` to flip it) stops every webhook request from this machine until `nudge on`. Nothing pretends to send while it's off: `nudge notify` and `nudge test` fail with `nudge is off: nothing was sent. Turn it on with nudge on` (exit 1), the MCP tool returns that as an error, `nudge.send-pane` fails with a toast, and automatic notifications are skipped (the plugin log says `skipped (nudge is off)`), even in away mode. It's separate from auto-notify: turning nudge back on brings back whatever auto-notify and away mode were set to. `nudge doctor` shows whether nudge is on.
+
 ### Choose which agents can notify
 
 By default every agent can reach the webhook. To narrow that down, tick workspaces or agents in [settings](#settings), or focus a pane and run one of these herdr actions:
@@ -231,6 +235,7 @@ To verify, recompute the HMAC over the timestamp, a `.` and the raw request body
 | `nudge.status` | Open `nudge doctor` in an overlay |
 | `nudge.settings` | Open [settings](#settings) in an overlay |
 | `nudge.send-pane` | Send the focused pane to the webhook now, skipping the rules above |
+| `nudge.switch` | [Turn nudge off](#turn-nudge-off) or back on: while off, nothing is sent (also `.on`, `.off`) |
 | `nudge.toggle` | Turn auto-notify on or off (also `.enable`, `.disable`) |
 | `nudge.away` | Tell nudge you're [away](#away-mode) or back (also `.away-on`, `.away-off`) |
 | `nudge.only-workspace`, `.only-agent`, `.all-agents` | Choose [which agents can notify](#choose-which-agents-can-notify) |
@@ -273,7 +278,7 @@ agents = ["reviewer"]    # herdr agent names (or pane ids)
 | Path | Holds |
 | --- | --- |
 | `~/.config/nudge/config.toml` | Webhooks (URL, Authorization header, optional description and signing secret), `[auto]` and `[scope]` |
-| `~/.local/state/nudge/state.json` | The auto-notify toggle and per-pane timestamps |
+| `~/.local/state/nudge/state.json` | The on/off switch, the auto-notify and away toggles, and per-pane timestamps |
 | `~/.local/bin/nudge` | Optional link to the plugin's `nudge` command; kept current across plugin updates |
 
 | Environment variable | Effect |
@@ -292,6 +297,7 @@ nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE | --authorizati
              [--yes] [--no-auto-notify] [--no-install-command]
 nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
 nudge test   [--webhook NAME] [--agent NAME]
+nudge on | off
 nudge doctor [--ping]
 nudge settings
 nudge list   [--json]
@@ -301,7 +307,7 @@ nudge mcp
 - `notify -` reads the message from stdin.
 - Without a terminal, `setup` takes the URL and header from flags, `--authorization-file PATH` (`-` reads stdin), the `NUDGE_WEBHOOK_URL` and `NUDGE_WEBHOOK_AUTHORIZATION` environment variables, or stdin, one per line: `printf '%s\n%s\n' "$URL" "Bearer $TOKEN" | nudge setup`. Flags win over the file, the file over the environment, and all of them over stdin and the saved webhook. It still tests before saving; `--no-test` skips that. Plain scripted setup never touches auto-notify or the command link.
 - `setup --yes` (`-y`) skips the screen even in a terminal and applies step 3's defaults: auto-notify on if the herdr plugin is installed, and `~/.local/bin/nudge` linked. `--no-auto-notify` and `--no-install-command` turn those off. It needs the URL and header from flags, the file or the environment.
-- Exit codes: 0 ok, 1 error, 2 usage.
+- Exit codes: 0 ok, 1 error (including "nudge is off"), 2 usage.
 
 </details>
 

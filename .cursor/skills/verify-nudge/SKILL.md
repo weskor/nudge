@@ -154,7 +154,7 @@ NUDGE_BIN=/path/to/new/nudge $VN parity .verify/parity/new.json
 diff -u .verify/parity/old.json .verify/parity/new.json
 ```
 
-Runs the fixed scenario list (218 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
+Runs the fixed scenario list (226 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
 with its own fakes and one shared fake webhook, then writes one JSON transcript with sorted keys. Per step it
 records the same fields as `run`, with JSON payloads (webhook bodies, `list --json` stdout as `stdout_json`, MCP
 responses keyed by JSON-RPC id with JSON tool text as `text_json`, state.json) compared as data. Multi-line text is
@@ -186,7 +186,9 @@ Two runs of the same binary must produce identical files — if not, the harness
 before trusting a cross-build diff. Transcripts from an older harness (`"harness"` other than `verify-nudge parity v4`)
 differ in scenarios and normalization; regenerate both sides with the same harness before diffing. A build without
 away mode (before 0.8.0) fails the `*away*` scenarios and the `settings-*` cursor steps (the `I'm away` row
-moves every cursor stop below `Auto-notify` down by one): that is the expected diff, not a harness problem.
+moves every cursor stop below `Auto-notify` down by one): that is the expected diff, not a harness problem. Likewise a
+build without the global switch (0.11.1 and older) fails the `switch-*` scenarios, keeps unprefixed pane keys in
+state.json, and its doctor has no `Nudge on` line.
 
 ## Evidence
 

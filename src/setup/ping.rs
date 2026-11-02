@@ -37,6 +37,11 @@ pub(super) fn ping(webhook: &Webhook, env: &Env) -> Result<Result<u16, WebhookEr
     ) {
         Ok(sent) => Ok(Ok(sent.http_status)),
         Err(Error::Webhook(error)) => Ok(Err(error)),
+        // Shown like any failed ping, so setup can still save without the test.
+        Err(error @ Error::Off) => Ok(Err(WebhookError {
+            message: error.to_string(),
+            http_status: None,
+        })),
         Err(other) => Err(other),
     }
 }

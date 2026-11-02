@@ -2,6 +2,11 @@
 
 All notable changes to nudge are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+- **`nudge off` stops every send from this machine.** `nudge on` / `nudge off` and the herdr actions `nudge.on`, `nudge.off` and `nudge.switch` flip one switch, separate from auto-notify and away mode. While it's off nothing reaches a webhook, and nothing pretends to: `nudge notify` and `nudge test` exit 1 with `nudge is off: nothing was sent. Turn it on with nudge on`, the MCP `notify_webhook` tool returns that as an error, `nudge.send-pane` fails with a toast, setup's test ping fails (`--no-test` still saves), and automatic notifications are skipped and logged as `skipped (nudge is off)` without starting a cooldown. `nudge doctor` shows whether nudge is on.
+- **state.json pane keys name their backend.** Pane entries are now keyed `tui:<herdr pane id>`, ready for herdr-core terminals; existing keys are rewritten on the next write, so turn tracking and cooldowns carry over.
+
 ## 0.11.1
 
 - **Internal:** the code is split into area folders (`cli/`, `setup/`, `settings/`, `terminal/`, `doctor/`, `plugin/`, `herdr/`, `auto/`, `webhook/`, `config/`) of single-responsibility files, with unit tests beside each module. CI now fails on a source file over 300 lines or a function over 50. No change in behavior: the verification harness transcript is byte-for-byte the same.

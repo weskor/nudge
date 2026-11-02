@@ -1,9 +1,24 @@
-//! The on/off actions: auto-notify (`enable`, `disable`, `toggle`) and away mode (`away`, `away-on`, `away-off`).
+//! The on/off actions: nudge itself (`on`, `off`, `switch`), auto-notify (`enable`, `disable`, `toggle`) and away
+//! mode (`away`, `away-on`, `away-off`).
 use crate::error::Result;
 use crate::plugin::Plugin;
 use crate::state::update_state;
 
 impl Plugin<'_> {
+    /// Turn nudge on (`on`), off (`off`) or over (`switch`), and confirm with a toast. While off, nothing is sent.
+    pub(super) fn switch_nudge(&self, action: &str) -> Result<()> {
+        let on = update_state(self.env, |state| {
+            state.on = if action == "switch" { !state.on } else { action == "on" };
+            state.on
+        })?;
+        self.toast(if on {
+            "Nudge on"
+        } else {
+            "Nudge off: nothing is sent from this machine"
+        });
+        Ok(())
+    }
+
     /// Turn auto-notify on (`enable`), off (`disable`) or over (`toggle`), and confirm with a toast.
     pub(super) fn switch_auto(&self, action: &str) -> Result<()> {
         let auto = update_state(self.env, |state| {

@@ -2,7 +2,7 @@ use super::{Decision, HerdrStatus, Settled, decide};
 use crate::config::Auto;
 use crate::state::{PaneState, State};
 
-const P: &str = "w1:p3";
+const P: &str = "tui:w1:p3";
 const T0: i64 = 1_800_000_000_000;
 
 fn fresh() -> State {
@@ -181,4 +181,23 @@ fn focused_panes_and_auto_off_are_skipped_without_starting_a_cooldown() {
     assert_eq!(last(&mut state, &[(120, Blocked)]), skip("auto-notify is off"));
     state.auto = true;
     assert_eq!(last(&mut state, &[(180, Blocked)]), Decision::Notify(Settled::Blocked));
+}
+
+#[test]
+fn nudge_off_skips_even_away_mode_but_keeps_tracking_turns() {
+    let mut state = State {
+        on: false,
+        away: true,
+        ..fresh()
+    };
+    let decisions = run(&mut state, &[(0, Working), (200, Done)], false);
+    assert_eq!(decisions[1], skip("nudge is off"));
+    assert_eq!(state.panes[P].last_auto_at, None, "no cooldown starts");
+    let _started = run(&mut state, &[(300, Working)], false);
+    state.on = true;
+    assert_eq!(
+        last(&mut state, &[(500, Done)]),
+        Decision::Notify(Settled::Done),
+        "the turn that began while off counts once nudge is on"
+    );
 }

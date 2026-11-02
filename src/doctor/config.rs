@@ -101,6 +101,7 @@ fn check_ping(config: &Config, default_name: &str, env: &Env) -> Result<Check> {
                 .detail(error.message)
                 .fix(fix))
         }
+        Err(Error::Off) => Ok(Check::new(Level::Warn, "Webhook not tested: nudge is off").fix("nudge on")),
         Err(other) => Err(other),
     }
 }

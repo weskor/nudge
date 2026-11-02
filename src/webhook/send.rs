@@ -16,8 +16,8 @@ use crate::state::now_ms;
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// POST `payload` to the webhook with its Authorization header (and signature, if the webhook has a signing
-/// secret); returns the 2xx status.
-pub(crate) fn post_to_webhook(webhook: &Webhook, payload: &Notification) -> Result<u16, WebhookError> {
+/// secret); returns the 2xx status. Only [`super::deliver`] calls it, after checking nudge's global switch.
+pub(super) fn post_to_webhook(webhook: &Webhook, payload: &Notification) -> Result<u16, WebhookError> {
     let body = serde_json::to_string(payload).map_err(|error| unreachable_error(webhook, &error))?;
     let response = request(webhook, &body)
         .send(body)
