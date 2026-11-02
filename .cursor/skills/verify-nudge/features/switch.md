@@ -30,7 +30,9 @@ read as `tui:` keys and written back prefixed.
 - `switch-off-setup-yes` `setup --yes` while off fails its test ping (`test ping failed, nothing saved: nudge is off:
   …`); with `--no-test` it saves and leaves nudge off.
 - `state-keys` pane entries are keyed `tui:<herdr pane id>` (`core:<address>` is reserved for herdr-core terminals);
-  any key without a backend prefix is rewritten as `tui:<key>` on the next state write.
+  any key without a backend prefix is rewritten as `tui:<key>` on the next state write. When `p_1` and `tui:p_1` both
+  exist (an older nudge wrote `p_1` after the migration), each field set in `p_1` wins and the rest keep their
+  `tui:p_1` values.
 
 ## How to get to it (user POV)
 

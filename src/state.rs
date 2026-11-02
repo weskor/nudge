@@ -25,6 +25,17 @@ pub(crate) struct PaneState {
     pub(crate) self_notified_at: Option<i64>,
 }
 
+impl PaneState {
+    /// `self`, with each field it doesn't have taken from `older`.
+    fn or(self, older: &Self) -> Self {
+        Self {
+            working_since: self.working_since.or(older.working_since),
+            last_auto_at: self.last_auto_at.or(older.last_auto_at),
+            self_notified_at: self.self_notified_at.or(older.self_notified_at),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct State {
     /// Automatic notifications from the herdr plugin. Off until turned on (setup asks), since they send
@@ -79,17 +90,24 @@ pub(crate) fn tui_key(pane_id: &str) -> String {
 
 impl State {
     /// Give keys saved before nudge had backends (`w1:p3`) their backend prefix (`tui:w1:p3`).
+    ///
+    /// When `w1:p3` and `tui:w1:p3` both exist, `w1:p3` was written later, by an older nudge that never saw the
+    /// `tui:` entry (a rollback, or an older `nudge` command beside a newer plugin): this nudge rewrites every key it
+    /// reads. Its fields win; the ones it never set (it started that entry from scratch) keep the `tui:` values, so
+    /// e.g. a turn the plugin tracked survives an older `nudge notify` recording `self_notified_at`.
     fn with_backend_keys(mut self) -> Self {
-        self.panes = std::mem::take(&mut self.panes)
+        let (unprefixed, mut panes): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.panes)
             .into_iter()
-            .map(|(key, pane)| {
-                if BACKEND_PREFIXES.iter().any(|prefix| key.starts_with(prefix)) {
-                    (key, pane)
-                } else {
-                    (tui_key(&key), pane)
-                }
-            })
-            .collect();
+            .partition(|(key, _)| !BACKEND_PREFIXES.iter().any(|prefix| key.starts_with(prefix)));
+        for (key, pane) in unprefixed {
+            let key = tui_key(&key);
+            let pane = match panes.remove(&key) {
+                Some(twin) => pane.or(&twin),
+                None => pane,
+            };
+            panes.insert(key, pane);
+        }
+        self.panes = panes;
         self
     }
 }
