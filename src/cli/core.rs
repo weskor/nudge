@@ -1,7 +1,7 @@
-//! `nudge core watch [--once]`, `nudge core send <terminal> [--blocked]` and
-//! `nudge core service install|remove|status`: the herdr-core backend.
+//! `nudge core watch [--once]`, `nudge core send <terminal> [--blocked]`,
+//! `nudge core service install|remove|status` and `nudge core context '<json>'`: the herdr-core backend.
 use super::args::Args;
-use crate::core::{ServiceAction, send_terminal, service, watch};
+use crate::core::{ServiceAction, save_app_context, send_terminal, service, watch};
 use crate::env::Env;
 use crate::error::{Error, Result};
 
@@ -37,14 +37,23 @@ pub(super) fn core(rest: &[String], args: &Args, env: &Env) -> Result<u8> {
             }
             service(action, env)
         }
+        [command, json] if command == "context" => {
+            if args.once || args.blocked {
+                return Err(Error::Usage("core context takes no options".into()));
+            }
+            save_app_context(env, json)
+        }
         [command, ..] if command == "send" => Err(Error::Usage(
             "core send takes one terminal: t7, a name, or box/t7".into(),
         )),
         [command, ..] if command == "service" => {
             Err(Error::Usage("core service takes install, remove or status".into()))
         }
+        [command, ..] if command == "context" => Err(Error::Usage(
+            "core context takes one JSON argument: {terminal, window_active, spaces, at}".into(),
+        )),
         _ => Err(Error::Usage(
-            "core needs a command: watch, send <terminal> or service install|remove|status".into(),
+            "core needs a command: watch, send <terminal>, service install|remove|status or context '<json>'".into(),
         )),
     }
 }

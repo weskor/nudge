@@ -1,5 +1,6 @@
 //! `nudge core send <terminal> [--blocked]`: send a core terminal's recent output to its webhook now, the core's
 //! "send this pane".
+use super::context::{name_space, read_app_context};
 use super::source::CoreSource;
 use crate::auto::Trigger;
 use crate::config::{default_config_path, load_config};
@@ -18,9 +19,10 @@ pub(crate) fn send_terminal(terminal: &str, blocked: bool, env: &Env) -> Result<
         home: &home,
         run: &System,
     };
-    let agent = source
+    let mut agent = source
         .agent(terminal)
         .ok_or_else(|| Error::Other(format!("herdr-core has no terminal \"{terminal}\" (see hc ls)")))?;
+    name_space(&mut agent, read_app_context(env).as_ref());
     let agent = locate(agent, &config, false, &source);
     let status = if blocked {
         NotifyStatus::Blocked

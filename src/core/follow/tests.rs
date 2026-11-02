@@ -1,6 +1,7 @@
 use std::fs;
 
 use super::Watcher;
+use crate::core::context::save_app_context;
 use crate::env::Env;
 use crate::env::tests::FakeRun;
 use crate::state::{now_ms, update_state};
@@ -170,4 +171,50 @@ fn missed_reconciles_without_notifying_and_drops_terminals_that_went_away() {
         panes["core:t2"].working_since, None,
         "a turn the watcher couldn't follow isn't counted"
     );
+}
+
+#[test]
+fn the_terminal_in_focus_in_the_app_is_skipped_unless_the_context_is_stale() {
+    let hook = FakeWebhook::start(|_| (200, String::new()));
+    let (_state, env) = setup(&hook.base);
+    let run = FakeRun::default();
+    let mut watcher = Watcher::new(&env, &run);
+    watcher.set_connected(true);
+    let _snapshot = watcher.line(&snapshot(now_ms() - 600_000));
+    let focus = |terminal: &str, at: i64| {
+        let context = format!(r#"{{"terminal":"{terminal}","window_active":true,"spaces":[],"at":{at}}}"#);
+        save_app_context(&env, &context).unwrap();
+    };
+    focus("t1", now_ms());
+    let _done = watcher.line(&status("t1", "done"));
+    assert!(hook.requests().is_empty(), "you were looking at t1");
+    focus("t2", now_ms() - 90_000);
+    let _blocked = watcher.line(&status("t2", "blocked"));
+    assert_eq!(hook.requests().len(), 1, "a 90 s old context watches nothing");
+}
+
+#[test]
+fn a_route_can_name_the_space_the_app_calls_it() {
+    let hook = FakeWebhook::start(|_| (200, String::new()));
+    let (state, env) = setup(&hook.base);
+    let config = state.path().join("config.toml");
+    let text = format!(
+        "{}\n[[webhook]]\nname = \"client-a\"\nurl = \"{}/client\"\nauthorization = \"Bearer t0ken-for-tests\"\n\n[[route]]\nworkspace = \"client\"\nwebhook = \"client-a\"\n",
+        fs::read_to_string(&config).unwrap(),
+        hook.base
+    );
+    fs::write(&config, text).unwrap();
+    let context = format!(
+        r#"{{"terminal":"t1","window_active":false,"spaces":[{{"id":"s1","name":"client"}}],"at":{}}}"#,
+        now_ms()
+    );
+    save_app_context(&env, &context).unwrap();
+    let run = FakeRun::default();
+    let mut watcher = Watcher::new(&env, &run);
+    watcher.set_connected(true);
+    let _snapshot = watcher.line(&snapshot(now_ms() - 600_000));
+    let _done = watcher.line(&status("t1", "done"));
+    let requests = hook.requests();
+    assert_eq!(requests.len(), 1, "an inactive window watches nothing");
+    assert_eq!(requests[0].path, "/client");
 }

@@ -1,8 +1,10 @@
 //! Following one `hc events` stream: each line through the tracker, then state.json or the shared pipeline, with
 //! a log line and a decision for every settled terminal, and `watch.json` rewritten after every line.
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
+use super::context::{name_space, read_app_context};
 use super::events::{CoreLine, TerminalRecord, parse_line};
 use super::source::CoreSource;
 use super::status_file::{DECISIONS_KEPT, DecisionRecord, TerminalStatus, WatchStatus, write_status};
@@ -115,8 +117,14 @@ impl<'a> Watcher<'a> {
         snapshot
     }
 
-    /// Run a status change through the pipeline; log and keep a decision for a settled one.
-    fn handle(&mut self, transition: Transition) {
+    /// Run a status change through the pipeline; log and keep a decision for a settled one. The desktop app's
+    /// context says whether you're looking at the terminal, and what its space is called.
+    fn handle(&mut self, mut transition: Transition) {
+        let app = read_app_context(self.env);
+        transition.watched = app
+            .as_ref()
+            .is_some_and(|app| app.watches(&transition.agent.pane, transition.at_ms));
+        name_space(&mut transition.agent, app.as_ref());
         let (address, status) = (transition.agent.pane.clone(), transition.status);
         let settles = status.settles();
         let path = default_config_path(self.env);
@@ -145,7 +153,7 @@ impl<'a> Watcher<'a> {
         self.decisions.push_back(DecisionRecord {
             at: now_ms(),
             terminal: address,
-            status: status.as_str(),
+            status: status.as_str().to_owned(),
             outcome,
         });
     }
@@ -155,7 +163,7 @@ impl<'a> Watcher<'a> {
         let status = WatchStatus {
             pid: std::process::id(),
             started_at: self.started_at,
-            started_by: self.started_by,
+            started_by: Cow::Borrowed(self.started_by),
             connected: self.connected,
             last_seq: self.last_seq,
             last_event_at: self.last_event_at,
@@ -164,7 +172,7 @@ impl<'a> Watcher<'a> {
                 .terminals()
                 .map(|record| terminal_status(record, config.as_ref()))
                 .collect(),
-            decisions: &self.decisions,
+            decisions: Cow::Borrowed(&self.decisions),
         };
         if let Err(error) = write_status(&state_dir(self.env), &status) {
             log(&format!("could not write watch.json: {error}"));

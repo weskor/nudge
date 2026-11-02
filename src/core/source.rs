@@ -2,6 +2,7 @@
 //! the reply hint (`hc send`), and who runs `nudge notify` inside a core terminal (`$HC_TERMINAL_ID`).
 use std::path::Path;
 
+use super::context::{name_space, read_app_context};
 use super::events::{SPACE_LABEL, TerminalRecord};
 use crate::env::{Env, Run};
 use crate::source::{AgentRef, AgentSource, Backend, WorkspaceRef, shell_word};
@@ -61,7 +62,8 @@ impl AgentSource for CoreSource<'_> {
         core_reply_hint(&agent.pane)
     }
 
-    /// The space id from the terminal's label; core knows no space names.
+    /// The space from the terminal's label, named from the app context by whoever built `agent`; core itself knows
+    /// no space names.
     fn workspace(&self, agent: &AgentRef) -> Option<WorkspaceRef> {
         agent.workspace.clone()
     }
@@ -71,7 +73,7 @@ impl AgentSource for CoreSource<'_> {
 }
 
 /// The core terminal `nudge notify` runs in (`$HC_TERMINAL_ID`), unless it runs in a herdr TUI pane: as hc
-/// describes it, else just its address.
+/// describes it (its space named from the app context), else just its address.
 pub(crate) fn core_sender(env: &Env, run: &dyn Run) -> Option<AgentRef> {
     if env.get("HERDR_PANE_ID").is_some() {
         return None;
@@ -81,11 +83,11 @@ pub(crate) fn core_sender(env: &Env, run: &dyn Run) -> Option<AgentRef> {
         home: Path::new("/"),
         run,
     };
-    Some(
-        source
-            .agent(address)
-            .unwrap_or_else(|| AgentRef::in_pane(Backend::Core, address.to_owned())),
-    )
+    let mut agent = source
+        .agent(address)
+        .unwrap_or_else(|| AgentRef::in_pane(Backend::Core, address.to_owned()));
+    name_space(&mut agent, read_app_context(env).as_ref());
+    Some(agent)
 }
 
 #[cfg(test)]

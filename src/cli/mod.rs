@@ -5,6 +5,7 @@ mod list;
 mod route;
 mod run;
 mod send;
+mod status;
 mod switch;
 mod usage;
 

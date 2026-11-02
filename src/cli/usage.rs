@@ -13,9 +13,11 @@ const USAGE: &str = "Usage:
   nudge route  ls [--json] | set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
                | rm (--pane NAME | --workspace NAME) [--backend tui|core]
   nudge core   watch [--once] | send <terminal> [--blocked] | service install|remove|status
+               | context '<json>'
   nudge doctor [--ping]
   nudge settings
   nudge list   [--json]
+  nudge status --json
   nudge mcp
 
   setup    Connect a webhook, step by step: its Webhook URL and Authorization
@@ -45,12 +47,17 @@ const USAGE: &str = "Usage:
            send: send a core terminal's output to its webhook now (as a
            question, or --blocked). service: run watch at every login (a
            systemd user unit on Linux, a launchd agent on macOS); status
-           says whether it's installed and running.
+           says whether it's installed and running. context: the desktop
+           app's focus and space names, {terminal, window_active,
+           spaces: [{id, name}], at}; the focused terminal isn't notified.
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
   settings Change auto-notify, who can notify and the default webhook in a
            full-screen editor (herdr action nudge.settings).
   list     Show configured webhooks (* = default).
+  status   --json: this machine's nudge for the desktop panel (switches,
+           webhooks by name and host, routes, the watcher, the login service,
+           terminals and recent decisions). No URLs or secrets.
   mcp      Run the stdio MCP server (tools notify_webhook, list_webhooks).
 
   --agent  herdr agent the webhook should reply to. Default: $NUDGE_AGENT, else the

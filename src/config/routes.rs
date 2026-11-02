@@ -1,6 +1,8 @@
 //! `[[route]]`: the webhook one pane's or one workspace's notifications go to, and which route applies to a sender.
 use std::fmt;
 
+use serde::ser::{Serialize, SerializeMap as _, Serializer};
+
 use crate::source::Backend;
 
 /// What a route matches, by name or id like `[scope]`.
@@ -59,6 +61,19 @@ impl fmt::Display for Route {
             write!(f, " ({} only)", backend.as_str())?;
         }
         Ok(())
+    }
+}
+
+/// `{"pane": "api-refactor", "webhook": "client-a"}`, with `"backend"` when the route names one: names only.
+impl Serialize for Route {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry(self.selector.key(), self.selector.name())?;
+        map.serialize_entry("webhook", &self.webhook)?;
+        if let Some(backend) = self.backend {
+            map.serialize_entry("backend", backend.as_str())?;
+        }
+        map.end()
     }
 }
 
