@@ -38,7 +38,7 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 
 ## Built from
 
-- `mod.json`: `{ "place": "right", "size": 320, "title": "Nudge" }`.
+- `mod.json`: `{ "place": "right", "size": 320, "title": "Nudge", "overlay": { "width": 340, "height": 640 } }` (the overlay size is for `mod.open`).
 - `main.js`: the panel's `View`. `popup-view.js`: the popups, opened as `openOverlay({ mod: "nudge", kind: "popup", props: { popup: "route" | "default" | "footer" | "machines", ... } })`; the popup tells the panel what changed through `setShared("nudge.machine")` and `setShared("nudge.bump")`.
 - `rows.js` and `popup.js`: pure functions (rows, route reasons, the context plan, popup options with the exact `nudge` argv each runs), tested with `bun test`.
 - `herdr` functions: `agents`, `terminals`, `spaces`, `machines`, `focused`, `window`, `exec`, `hc`, `notify`, `openOverlay` (its popups, and Herdr's own `confirm` dialog with `command: { name: "nudge.remove-service" }`), `closeOverlay`, `props`, `shared`, `setShared`, `run` (`tab.new`, `space.new`), `nextCommand`, `watchFolder`, `home`, `theme`.
@@ -52,7 +52,7 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 - `exec` rejects when `nudge` isn't installed there; the panel shows "nudge not found" for that machine.
 - An older nudge without `status --json` shows "This nudge has no `nudge status --json`; update nudge there" instead of the panel.
 - **Start** runs `nudge` in a herdr-core terminal, so it uses the core's PATH, which can differ from the app's: an older nudge first on the core's PATH starts and stops at once (the toast says where to look).
-- The panel docks on the right the first time Herdr starts with the folder in place: after copying it, restart Herdr.
+- Herdr's own layouts take no new panels: Herdr docks the panel on the right only while a layout of your own is shown, the first time it sees the folder. On the default layout, clone it (`herdr-app do layout.clone '{"name":"main"}'`) and restart Herdr; or open the panel over the window with `herdr-app do mod.open --name nudge`.
 - `herdr-app check` renders only the first, loading state.
 
 ## Done when
@@ -70,4 +70,5 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 
 1. Copy `mods/nudge/` into `~/.config/herdr-app/mods/nudge/`, leaving `RECIPE.md`, `keys.json` and `preview.png` out.
 2. Merge the `global` entries of `keys.json` into `~/.config/herdr-app/keys.json`, keeping any key you already use.
-3. Run `herdr-app check ~/.config/herdr-app/mods/nudge`, then restart Herdr.
+3. Run `herdr-app check ~/.config/herdr-app/mods/nudge`.
+4. To dock it, show a layout of your own (on the default one: `herdr-app do layout.clone '{"name":"main"}'`) and restart Herdr. To use it without docking, `herdr-app do mod.open --name nudge` opens it over the window and closes it again.
