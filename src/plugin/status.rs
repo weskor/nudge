@@ -1,16 +1,13 @@
-//! The `pane.agent_status_changed` hook: auto-notify the webhook when an agent settles (done or blocked).
-use std::path::Path;
-
+//! The `pane.agent_status_changed` hook: herdr's event, parsed once, becomes a [`Transition`] for the shared
+//! pipeline, which decides whether to notify the webhook.
 use serde::Deserialize;
 
 use super::{Plugin, log};
-use crate::auto::{Decision, HerdrStatus, Settled, Trigger, decide};
-use crate::config::{Auto, Backend, Config, default_config_path, load_config, read_config, routes_name_workspaces};
-use crate::env::System;
-use crate::error::{Error, Result};
-use crate::herdr::{AgentInfo, Sender, SenderIds, herdr_agent};
-use crate::state::{now_ms, tui_key, update_state};
-use crate::webhook::NotifyStatus;
+use crate::config::{default_config_path, read_config};
+use crate::error::Result;
+use crate::pipeline::{Outcome, handle};
+use crate::source::{AgentRef, AgentStatus, Backend, Transition};
+use crate::state::now_ms;
 
 #[derive(Debug, Deserialize)]
 struct StatusEvent {
@@ -23,90 +20,64 @@ struct StatusEventData {
     agent_status: HerdrStatus,
 }
 
+/// An agent status as herdr reports it in `pane.agent_status_changed`.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum HerdrStatus {
+    Idle,
+    Working,
+    Blocked,
+    Done,
+    Unknown,
+}
+
+impl From<HerdrStatus> for AgentStatus {
+    fn from(status: HerdrStatus) -> Self {
+        match status {
+            HerdrStatus::Idle => Self::Idle,
+            HerdrStatus::Working => Self::Working,
+            HerdrStatus::Blocked => Self::Blocked,
+            HerdrStatus::Done => Self::Done,
+            HerdrStatus::Unknown => Self::Unknown,
+        }
+    }
+}
+
 impl Plugin<'_> {
     pub(super) fn on_status_changed(&self) -> Result<()> {
         let Some(event) = self.json_env::<StatusEvent>("HERDR_PLUGIN_EVENT_JSON") else {
             log("ignoring event without pane_id/agent_status");
             return Ok(());
         };
-        let StatusEventData {
-            pane_id,
-            agent_status: status,
-        } = event.data;
-        let settles = matches!(status, HerdrStatus::Done | HerdrStatus::Blocked);
+        let pane_id = event.data.pane_id;
+        let status = AgentStatus::from(event.data.agent_status);
+        let settles = status.settles();
+        let source = self.source();
         let path = default_config_path(self.env);
-        // A missing or broken config only matters once there is something to send; that load reports it.
+        // Only a settling status can be sent, so only then is herdr asked about the agent and the config read. A
+        // missing or broken config only matters once there is something to send; the pipeline's load reports it.
         let config = settles.then(|| read_config(&path).ok().flatten()).flatten();
-        let rules = config.as_ref().map_or_else(Auto::default, |config| config.auto);
-        let agent = settles
-            .then(|| herdr_agent(&pane_id, self.env, &self.home, &System))
-            .flatten();
-        let focused = agent.as_ref().is_some_and(|agent| agent.focused);
-        let now = now_ms();
-        let key = tui_key(&pane_id);
-        let decision = update_state(self.env, |state| decide(state, &key, status, now, focused, rules))?;
-        let settled = match decision {
-            Decision::Skip(reason) => {
-                if settles {
-                    log(&format!("{pane_id} {}: skipped ({reason})", status.as_str()));
-                }
-                return Ok(());
+        let (agent, watched) = settles
+            .then(|| source.agent(&pane_id))
+            .flatten()
+            .unwrap_or_else(|| (AgentRef::in_pane(Backend::Tui, pane_id.clone()), false));
+        let transition = Transition {
+            agent,
+            status,
+            watched,
+            at_ms: now_ms(),
+        };
+        match handle(transition, &source, &self.context(&path), config)? {
+            Outcome::Skipped(reason) if settles => {
+                log(&format!("{pane_id} {}: skipped ({reason})", status.as_str()));
             }
-            Decision::Notify(settled) => settled,
-        };
-        let sent = self.notify_settled(&path, config, agent, &pane_id, settled);
-        if !matches!(sent, Ok(true)) {
-            // Nothing reached the webhook: give back the cooldown `decide` reserved, so the next event can notify.
-            update_state(self.env, |state| {
-                if let Some(pane) = state.panes.get_mut(&key)
-                    && pane.last_auto_at == Some(now)
-                {
-                    pane.last_auto_at = None;
-                }
-            })?;
+            Outcome::Skipped(_) => {}
+            Outcome::Sent(sent) => log(&format!(
+                "{pane_id} {}: notified webhook (HTTP {})",
+                status.as_str(),
+                sent.http_status
+            )),
         }
-        match sent {
-            // Turned off between deciding and sending: nobody asked for this notification, so it's a skip.
-            Err(Error::Off) => {
-                log(&format!("{pane_id} {}: skipped (nudge is off)", status.as_str()));
-                Ok(())
-            }
-            other => other.map(|_| ()),
-        }
-    }
-
-    /// Send the notification `decide` asked for; `false` when the pane is outside nudge's scope.
-    fn notify_settled(
-        &self,
-        path: &Path,
-        config: Option<Config>,
-        agent: Option<AgentInfo>,
-        pane_id: &str,
-        settled: Settled,
-    ) -> Result<bool> {
-        let config = match config {
-            Some(config) => config,
-            None => load_config(path)?,
-        };
-        let sender = agent.map_or_else(|| Sender::in_pane(pane_id), |agent| agent.sender);
-        let (notify_status, status, done) = match settled {
-            Settled::Done => (NotifyStatus::Done, "done", "finished a turn"),
-            Settled::Blocked => (NotifyStatus::Blocked, "blocked", "is blocked"),
-        };
-        let workspace = !config.scope.workspaces.is_empty() || routes_name_workspaces(&config.route, Backend::Tui);
-        let ids = SenderIds::lookup(&sender, workspace, self.env, &System);
-        if !ids.in_scope(&config.scope) {
-            log(&format!("{pane_id} {status}: skipped (outside nudge's scope)"));
-            return Ok(false);
-        }
-        let sent = self.send_pane(&config, pane_id, notify_status, Trigger::Settled(settled), Some(&ids))?;
-        log(&format!(
-            "{pane_id} {status}: notified webhook (HTTP {})",
-            sent.http_status
-        ));
-        if config.auto.toast {
-            self.toast(&format!("Told the webhook: {} {done}", sent.target));
-        }
-        Ok(true)
+        Ok(())
     }
 }

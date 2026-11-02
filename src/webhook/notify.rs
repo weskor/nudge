@@ -2,12 +2,13 @@
 //! `ping_webhook` (a test).
 use super::deliver::deliver;
 use super::origin::{Origin, sender};
-use super::payload::{Notification, build_notification, message_text};
+use super::payload::{Author, Notification, build_notification, message_text};
 use super::status::{NotifyStatus, Status};
-use crate::config::{Backend, Config, find_webhook, routes_name_workspaces};
+use crate::config::{Config, find_webhook, routes_name_workspaces};
 use crate::env::Env;
 use crate::error::{Error, Result};
-use crate::herdr::{Sender, SenderIds};
+use crate::herdr::{Sender, SenderIds, reply_hint};
+use crate::source::Backend;
 use crate::state::{now_ms, tui_key, update_state};
 
 /// A notification the webhook accepted (`notification.webhook` names it).
@@ -45,7 +46,7 @@ pub(crate) fn notify_webhook(
         Some(webhook) => webhook,
         None => find_webhook(config, ids.route(&config.route).map(|route| route.webhook.as_str()))?,
     };
-    let notification = build_notification(status.into(), message, sender.agent, &webhook.name, origin)?;
+    let notification = build_notification(status.into(), message, author(&sender), &webhook.name, origin)?;
     let http_status = deliver(origin.env, webhook, &notification)?;
     if let Some(pane_id) = origin.env.get("HERDR_PANE_ID") {
         record_self_notified(origin.env, pane_id);
@@ -73,6 +74,16 @@ fn out_of_scope(sender: &Sender) -> Error {
     ))
 }
 
+/// Who a CLI or MCP notification is from: the detected herdr sender.
+fn author(sender: &Sender) -> Author {
+    Author {
+        agent: sender.agent.clone(),
+        reply_hint: reply_hint(sender.agent.as_deref()),
+        backend: Backend::Tui,
+        pane: sender.pane_id.clone(),
+    }
+}
+
 /// Record that the agent in `pane_id` notified the webhook itself, so the herdr plugin doesn't send a duplicate.
 fn record_self_notified(env: &Env, pane_id: &str) {
     let now = now_ms();
@@ -92,11 +103,11 @@ pub(crate) fn ping_webhook(
     origin: Origin<'_>,
 ) -> Result<Sent> {
     let webhook = find_webhook(config, webhook)?;
-    let from_agent = sender(agent, origin).agent;
+    let sender = sender(agent, origin);
     let notification = build_notification(
         Status::Test,
         "nudge test ping. No action needed.",
-        from_agent,
+        author(&sender),
         &webhook.name,
         origin,
     )?;

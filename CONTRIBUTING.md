@@ -39,11 +39,13 @@ Each area is a folder whose `mod.rs` is the facade (submodules are private); eac
 | `src/settings/` | `nudge settings`: rows, keys, rendering, saving and the terminal loop |
 | `src/terminal/` | `ui/`, the full-screen look setup and settings share, and `tty.rs`, plain terminal output and prompts |
 | `src/doctor/` | `nudge doctor` checks |
-| `src/plugin/` | herdr hooks and actions (`nudge plugin …`): status events, actions, send-pane, startup |
-| `src/herdr/` | herdr queries: agents, workspaces, sender detection, scope, plugin registration and logs, the `~/.local/bin/nudge` link |
+| `src/plugin/` | herdr hooks and actions (`nudge plugin …`): the status event (parsed into a `Transition`), actions, startup |
+| `src/source/` | What a notification comes from, backend-neutral: `AgentRef`, `Transition`, `Backend` and the `AgentSource` trait |
+| `src/pipeline/` | The shared path from a status change to a webhook request: rules, scope, route, tail, payload, delivery, cooldown give-back |
+| `src/herdr/` | herdr queries and the TUI's `AgentSource` (`TuiSource`): agents, workspaces, sender detection, plugin registration and logs, the `~/.local/bin/nudge` link |
 | `src/auto/` | Auto-notify rules, redaction and the pane message |
 | `src/webhook/` | The notification payload, sending and signing, and `notify`/`ping` |
-| `src/config/` | Config model, value checks, parsing, reading and migrating, writing and serializing |
+| `src/config/` | Config model, routes, value checks, parsing, reading and migrating, writing and serializing |
 | `src/mcp.rs` | The stdio MCP server |
 | `src/env.rs`, `src/git.rs`, `src/state.rs`, `src/clipboard.rs`, `src/error.rs` | Environment and external commands, git repo/branch, state.json, the clipboard (pbpaste, wl-paste, xclip), errors |
 | `herdr-plugin.toml` | Plugin manifest |

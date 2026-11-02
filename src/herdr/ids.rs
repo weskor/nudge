@@ -4,8 +4,9 @@ use std::path::Path;
 
 use super::sender::Sender;
 use super::workspaces::{pane_workspace, workspace_label};
-use crate::config::{Backend, Route, Scope, resolve};
+use crate::config::{Route, Scope, resolve};
 use crate::env::{Env, Run};
+use crate::source::Backend;
 
 /// A herdr TUI sender's names and ids.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

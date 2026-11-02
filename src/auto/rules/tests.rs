@@ -1,7 +1,10 @@
-use super::{Decision, HerdrStatus, Settled, decide};
+use super::{Decision, Settled, decide};
 use crate::config::Auto;
+use crate::source::{AgentRef, AgentStatus, Backend, Transition};
 use crate::state::{PaneState, State};
 
+/// The herdr pane the tests follow, and its key in state.json.
+const PANE: &str = "w1:p3";
 const P: &str = "tui:w1:p3";
 const T0: i64 = 1_800_000_000_000;
 
@@ -16,15 +19,25 @@ const fn at(seconds: i64) -> i64 {
     T0 + seconds * 1000
 }
 
+/// `pane` changing to `status` at `at_ms`.
+fn change(pane: &str, status: AgentStatus, at_ms: i64, watched: bool) -> Transition {
+    Transition {
+        agent: AgentRef::in_pane(Backend::Tui, pane.to_owned()),
+        status,
+        watched,
+        at_ms,
+    }
+}
+
 /// Feed `(seconds from T0, status)` events; returns each decision.
-fn run(state: &mut State, events: &[(i64, HerdrStatus)], focused: bool) -> Vec<Decision> {
+fn run(state: &mut State, events: &[(i64, AgentStatus)], focused: bool) -> Vec<Decision> {
     events
         .iter()
-        .map(|&(seconds, status)| decide(state, P, status, at(seconds), focused, Auto::default()))
+        .map(|&(seconds, status)| decide(state, &change(PANE, status, at(seconds), focused), Auto::default()))
         .collect()
 }
 
-fn last(state: &mut State, events: &[(i64, HerdrStatus)]) -> Decision {
+fn last(state: &mut State, events: &[(i64, AgentStatus)]) -> Decision {
     run(state, events, false).pop().unwrap()
 }
 
@@ -32,7 +45,7 @@ fn skip(reason: &str) -> Decision {
     Decision::Skip(reason.into())
 }
 
-use HerdrStatus::{Blocked, Done, Idle, Working};
+use AgentStatus::{Blocked, Done, Idle, Working};
 
 #[test]
 fn a_long_turn_ending_in_done_notifies() {
@@ -45,9 +58,13 @@ fn a_long_turn_ending_in_done_notifies() {
 #[test]
 fn a_turn_shorter_than_min_turn_does_not() {
     let mut state = fresh();
-    let _started = decide(&mut state, P, Working, T0, false, Auto::default());
+    let _started = decide(&mut state, &change(PANE, Working, T0, false), Auto::default());
     assert_eq!(
-        decide(&mut state, P, Done, T0 + 120_000 - 1, false, Auto::default()),
+        decide(
+            &mut state,
+            &change(PANE, Done, T0 + 120_000 - 1, false),
+            Auto::default()
+        ),
         skip("turn shorter than 120s")
     );
 }
@@ -60,7 +77,7 @@ fn configured_thresholds_replace_the_defaults() {
         ..Auto::default()
     };
     let mut state = fresh();
-    let mut feed = |seconds, status| decide(&mut state, P, status, at(seconds), false, quick);
+    let mut feed = |seconds, status| decide(&mut state, &change(PANE, status, at(seconds), false), quick);
     let _started = feed(0, Working);
     assert_eq!(feed(9, Done), skip("turn shorter than 10s"));
     let _again = feed(20, Working);
@@ -122,7 +139,7 @@ fn cooldown_is_per_pane() {
     let mut state = fresh();
     let _blocked = run(&mut state, &[(0, Working), (60, Blocked)], false);
     assert_eq!(
-        decide(&mut state, "other:p1", Blocked, at(90), false, Auto::default()),
+        decide(&mut state, &change("other:p1", Blocked, at(90), false), Auto::default()),
         Decision::Notify(Settled::Blocked)
     );
 }

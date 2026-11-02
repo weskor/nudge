@@ -14,7 +14,7 @@ mod time;
 pub(crate) use deliver::deliver;
 pub(crate) use notify::{Sent, notify_webhook, ping_webhook};
 pub(crate) use origin::{Origin, current_dir};
-pub(crate) use payload::{Notification, build_notification};
+pub(crate) use payload::{Author, Notification, build_notification};
 pub(crate) use status::NotifyStatus;
 
 #[cfg(test)]

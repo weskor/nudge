@@ -3,7 +3,7 @@
 use crate::config::{Scope, default_config_path, load_config, write_config};
 use crate::env::System;
 use crate::error::Result;
-use crate::herdr::{herdr_agent, pane_workspace, workspace_label};
+use crate::herdr::{pane_workspace, workspace_label};
 use crate::plugin::Plugin;
 
 impl Plugin<'_> {
@@ -37,8 +37,8 @@ impl Plugin<'_> {
     /// Let only the agent in the focused pane notify.
     pub(super) fn only_agent(&self, pane_id: Option<String>) -> Result<()> {
         let agent = pane_id
-            .and_then(|pane| herdr_agent(&pane, self.env, &self.home, &System))
-            .and_then(|agent| agent.sender.agent);
+            .and_then(|pane| self.source().agent(&pane))
+            .map(|(agent, _)| agent.target().to_owned());
         let Some(name) = agent else {
             self.toast("No agent in this pane");
             return Ok(());

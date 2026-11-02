@@ -6,6 +6,7 @@ use serde::Deserialize;
 use super::query::herdr_json;
 use super::sender::Sender;
 use crate::env::{Env, Run};
+use crate::source::{AgentRef, Backend, WorkspaceRef};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct HerdrAgent {
@@ -61,29 +62,24 @@ pub(super) fn agent_in_pane(pane_id: &str, env: &Env, cwd: &Path, run: &dyn Run)
     herdr_json::<AgentGet>(&["agent", "get", pane_id], env, cwd, run).map(|got| got.result.agent)
 }
 
-/// The herdr agent in a pane, as the plugin needs it.
-#[derive(Debug)]
-pub(crate) struct AgentInfo {
-    pub(crate) sender: Sender,
-    /// The agent's working directory, when herdr knows it.
-    pub(crate) cwd: Option<String>,
-    /// Whether the pane is focused in the herdr client.
-    pub(crate) focused: bool,
-}
-
-/// Look up the herdr agent in `pane_id`; `None` if herdr is unavailable or there is no agent there.
-pub(crate) fn herdr_agent(pane_id: &str, env: &Env, cwd: &Path, run: &dyn Run) -> Option<AgentInfo> {
-    let mut agent = agent_in_pane(pane_id, env, cwd, run)?;
-    let agent_cwd = agent
-        .foreground_cwd
-        .take()
-        .filter(|dir| !dir.is_empty())
-        .or_else(|| agent.cwd.take());
-    Some(AgentInfo {
-        cwd: agent_cwd.filter(|dir| !dir.is_empty()),
-        focused: agent.focused == Some(true),
-        sender: agent.sender(),
-    })
+impl HerdrAgent {
+    /// This agent as the pipeline sees it, and whether its pane is focused in the herdr client. Its working
+    /// directory is the foreground process's, else the agent's.
+    pub(super) fn into_agent_ref(self) -> (AgentRef, bool) {
+        let cwd = self
+            .foreground_cwd
+            .filter(|dir| !dir.is_empty())
+            .or(self.cwd)
+            .filter(|dir| !dir.is_empty());
+        let agent = AgentRef {
+            backend: Backend::Tui,
+            pane: self.pane_id,
+            name: self.name.filter(|name| !name.is_empty()),
+            workspace: self.workspace_id.map(|id| WorkspaceRef { id, name: None }),
+            cwd,
+        };
+        (agent, self.focused == Some(true))
+    }
 }
 
 /// A running agent from `herdr agent list`.

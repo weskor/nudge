@@ -1,7 +1,8 @@
 # Notify, test and list
 
 A user or agent runs `nudge notify` to POST `{id, sent_at, from_agent, cwd, repo, branch, status, message, reply_hint,
-webhook}` to a webhook (`--webhook`, else the sender's route, else the default; see routes.md) with the webhook's
+source, webhook}` (`source` = `{backend: "tui", host, pane}`, `pane` `null` outside a herdr pane) to a webhook
+(`--webhook`, else the sender's route, else the default; see routes.md) with the webhook's
 Authorization header (plus `x-nudge-timestamp` / `x-nudge-signature` when the webhook has a `signing_secret`),
 `nudge test` to send a harmless `status: "test"` ping (the default webhook unless `--webhook`), and `nudge list` to see
 configured webhooks with the default marked `*`. Agents outside the config's `[scope]` are refused (see scope.md).

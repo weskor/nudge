@@ -3,7 +3,8 @@ use toml::Value;
 
 use super::super::model::Webhook;
 use super::super::problems::Problems;
-use super::super::routes::{Backend, Route, Selector};
+use super::super::routes::{Route, Selector};
+use crate::source::Backend;
 
 impl Problems {
     /// The `[[route]]` array; absent means no routes. Each valid route is checked against `webhooks` (when they

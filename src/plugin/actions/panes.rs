@@ -5,7 +5,9 @@ use crate::config::{default_config_path, load_config};
 use crate::env::{Run as _, System};
 use crate::error::{Error, Result};
 use crate::herdr::PLUGIN_ID;
+use crate::pipeline::{locate, send};
 use crate::plugin::Plugin;
+use crate::source::{AgentRef, Backend};
 use crate::webhook::NotifyStatus;
 
 impl Plugin<'_> {
@@ -22,8 +24,14 @@ impl Plugin<'_> {
             NotifyStatus::Question
         };
         // You chose to send this pane, so [scope] doesn't apply; its route does.
-        let config = load_config(&default_config_path(self.env))?;
-        let sent = self.send_pane(&config, &pane_id, status, Trigger::Manual, None)?;
+        let path = default_config_path(self.env);
+        let config = load_config(&path)?;
+        let source = self.source();
+        let agent = source
+            .agent(&pane_id)
+            .map_or_else(|| AgentRef::in_pane(Backend::Tui, pane_id.clone()), |(agent, _)| agent);
+        let agent = locate(agent, &config, false, &source);
+        let sent = send(&agent, status, Trigger::Manual, &source, &config, &self.context(&path))?;
         self.toast(&format!("Sent this pane to the webhook (HTTP {})", sent.http_status));
         Ok(())
     }

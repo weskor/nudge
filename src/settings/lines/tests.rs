@@ -1,5 +1,6 @@
-use crate::config::{Backend, Route, Scope, Selector};
+use crate::config::{Route, Scope, Selector};
 use crate::settings::tests::{screen_text, settings};
+use crate::source::Backend;
 
 #[test]
 fn open_agents_show_their_workspace_and_directory() {

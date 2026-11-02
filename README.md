@@ -214,6 +214,7 @@ POSTed to your webhook with its `Authorization` header and `Content-Type: applic
   "status": "blocked",
   "message": "Need the staging DB password to run migrations.",
   "reply_hint": "reply with: herdr agent prompt api-refactor \"...\"",
+  "source": { "backend": "tui", "host": "laptop", "pane": "w1:p3" },
   "webhook": "main"
 }
 ```
@@ -227,6 +228,7 @@ POSTed to your webhook with its `Authorization` header and `Content-Type: applic
 | `branch` | The current branch; `null` when detached or outside git |
 | `status` | `done`, `blocked`, `question`, or `test` |
 | `message` | The agent's text; for automatic events, a note saying so plus the pane's last lines |
+| `source` | Where it came from: `backend` (`tui` for herdr), `host` (the machine's hostname, for automations that serve several machines) and `pane` (the herdr pane id; `null` when sent from outside a pane) |
 | `webhook` | The name of the configured webhook it was sent to (see [routes](#send-some-agents-to-another-webhook)), for automations that serve several |
 
 <details>
