@@ -1,1 +1,1 @@
-{ "place": "right", "size": 320, "title": "Nudge" }
+{ "place": "right", "size": 320, "title": "Nudge", "overlay": { "width": 340, "height": 640 } }

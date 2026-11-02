@@ -189,11 +189,13 @@ The desktop app tells nudge which terminal you're looking at, and what this mach
 
 [`herdr-app/mods/nudge/`](herdr-app/mods/nudge/) is a panel for the Herdr desktop app. It shows whether nudge is on, where each agent's and space's notifications go and why, whether the watcher runs, and nudge's recent decisions, and it changes them: the switch, auto-notify and away, routes, the default webhook, sending a pane now, starting the watcher or installing the login service. It does everything by running `nudge` (and `hc` to start the watcher), on this computer or on a machine you connected with `hc machine add`, and never reads nudge's files or sees a webhook's URL or secret. It also tells nudge which terminal you're looking at (`nudge core context`), so the watcher skips it. [RECIPE.md](herdr-app/mods/nudge/RECIPE.md) describes it in full.
 
-To use it, copy the folder into the app's mods, then restart Herdr; the panel docks on the right. Add the key bindings from its `keys.json` (`ctrl-shift-y` on/off, `ctrl-shift-s` send the focused pane, `ctrl-shift-r` its route) to `~/.config/herdr-app/keys.json` if you want them:
+To use it, copy the folder into the app's mods:
 
 ```sh
 cp -R herdr-app/mods/nudge ~/.config/herdr-app/mods/
 ```
+
+Herdr's own layouts (the default "Herdr", Terminals, Herdr 98) don't take new panels. To dock it on the right, make your own copy of the layout once and restart Herdr: `herdr-app do layout.clone '{"name":"main"}'` (Herdr shows the copy from then on; your terminals keep running). Without that, open it over the window with `herdr-app do mod.open --name nudge` (the same again closes it). Add the key bindings from its `keys.json` (`ctrl-shift-y` on/off, `ctrl-shift-s` send the focused pane, `ctrl-shift-r` its route) to `~/.config/herdr-app/keys.json` if you want them.
 
 <p align="center"><img src="herdr-app/mods/nudge/preview.png" width="320" alt="The Nudge panel: nudge on, auto-notify on, watching 3 agents; api-refactor blocked and routed to client-a by its workspace, docs-site and review-bot to the default webhook main; recent decisions; the default webhook and Test in the footer"></p>
 
