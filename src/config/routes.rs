@@ -1,28 +1,7 @@
 //! `[[route]]`: the webhook one pane's or one workspace's notifications go to, and which route applies to a sender.
 use std::fmt;
 
-/// Where an agent runs: the herdr TUI (`tui`) or herdr-core (`core`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Backend {
-    Tui,
-    Core,
-}
-
-impl Backend {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Tui => "tui",
-            Self::Core => "core",
-        }
-    }
-
-    /// `tui` or `core`; `None` for anything else.
-    pub(crate) fn parse(text: &str) -> Option<Self> {
-        [Self::Tui, Self::Core]
-            .into_iter()
-            .find(|backend| backend.as_str() == text)
-    }
-}
+use crate::source::Backend;
 
 /// What a route matches, by name or id like `[scope]`.
 #[derive(Clone, Debug, PartialEq, Eq)]

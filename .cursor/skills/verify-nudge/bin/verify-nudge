@@ -935,6 +935,14 @@ class Normalizer:
             return {self.text(k): self.value(v, t1, epochs) for k, v in obj.items()}
         return obj
 
+    @staticmethod
+    def source_host(body):
+        """A notification's `source.host` is this machine's hostname, which differs per machine: <HOST>. Any other
+        value stays raw so the diff shows it."""
+        source = body.get("source") if isinstance(body, dict) else None
+        if isinstance(source, dict) and source.get("host") == socket.gethostname():
+            source["host"] = "<HOST>"
+
     def record(self, rec, t1):
         rec = dict(rec)
         files = rec.pop("files", None)
@@ -942,12 +950,15 @@ class Normalizer:
         if "webhook" in rec:
             rec["webhook"] = [self.webhook_request(r) for r in rec["webhook"]]
         rec = self.value(rec, t1)
+        for req in rec.get("webhook", []):
+            self.source_host(req.get("body"))
         # JSON text inside MCP tool results is compared as data too.
         for response in rec.get("responses_by_id", {}).values():
             for item in (response.get("result") or {}).get("content") or []:
                 try:
                     item["text_json"] = json.loads(item["text"])
                     del item["text"]
+                    self.source_host(item["text_json"])
                 except (KeyError, TypeError, ValueError):
                     pass
         # doctor's "Recent:" lines end with a relative age ("just now", "5m ago", "371d ago"); it changes daily.
@@ -1021,6 +1032,9 @@ def contract_checks(rec):
             problems.append(f"{path} body sent_at {body.get('sent_at', '<missing>')!r} is not YYYY-MM-DDTHH:MM:SSZ")
         elif received is not None and abs(stamp - received) > 60:
             problems.append(f"{path} body sent_at {body['sent_at']!r} is not within 60 s of the request")
+        source = body.get("source")
+        if not (isinstance(source, dict) and source.get("backend") in ("tui", "core") and source.get("host") == socket.gethostname()):
+            problems.append(f"{path} body source {source!r} is not {{backend: tui|core, host: this machine's hostname, ...}}")
     for msg_id, response in sorted(rec.get("responses_by_id", {}).items()):
         for item in (response.get("result") or {}).get("content") or []:
             try:
@@ -2607,6 +2621,7 @@ def cmd_parity(argv):
                            "<PORT>/<OFFLINE_PORT> = fake webhook / closed port", "state.json epoch ms: <now>, <now-Nms> (seeded), <epoch-ms>",
                            "herdr_calls sorted (some are concurrent)", "JSON stdout and MCP responses compared as sorted-key JSON; MCP responses keyed by id",
                            "doctor 'Recent:' line ages -> <ago>", "lowercase UUID v4 -> <uuid>; YYYY-MM-DDTHH:MM:SSZ -> <sent_at>",
+                           "notification source.host equal to this machine's hostname -> <HOST>",
                            "webhook x-nudge-timestamp within 60 s -> <ts>; well-formed x-nudge-signature -> sha256=<hmac> "
                            "(validity is the request's \"signature\" verdict); received_unix dropped",
                            "PTY steps with `screen` expectations: rendered screens (`screens`, highlighted rows '> ') and the "

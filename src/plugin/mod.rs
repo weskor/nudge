@@ -7,16 +7,17 @@
 //! Decisions and failures go to stderr, which herdr keeps in `herdr plugin log list`.
 //! This file owns the entry: argument dispatch, exit code, and the [`Plugin`] every entrypoint runs on.
 mod actions;
-mod send_pane;
 mod status;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 
-use crate::env::{Env, Run as _, System};
+use crate::env::{Env, System};
 use crate::error::{Error, Result};
-use crate::herdr::{nudge_root, refresh_command_link};
+use crate::herdr::{TuiSource, nudge_root, refresh_command_link};
+use crate::pipeline::Context;
+use crate::source::AgentSource as _;
 
 const USAGE: &str = "usage: nudge plugin event | action <id> | startup";
 
@@ -36,11 +37,27 @@ impl Plugin<'_> {
         serde_json::from_str(self.env.get(name)?).ok()
     }
 
+    /// herdr, as the pipeline's source of agents, their output and toasts.
+    fn source(&self) -> TuiSource<'_> {
+        TuiSource {
+            env: self.env,
+            home: &self.home,
+            run: &System,
+        }
+    }
+
+    /// The pipeline's context, with the config at `config_path`.
+    fn context<'a>(&'a self, config_path: &'a Path) -> Context<'a> {
+        Context {
+            env: self.env,
+            run: &System,
+            home: &self.home,
+            config_path,
+        }
+    }
+
     fn toast(&self, body: &str) {
-        let _shown = System.run(
-            &[self.env.herdr(), "notification", "show", "nudge", "--body", body],
-            &self.home,
-        );
+        self.source().toast(body);
     }
 
     fn run(&self, args: &[String]) -> Result<()> {

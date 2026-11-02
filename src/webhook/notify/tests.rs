@@ -59,6 +59,7 @@ fn posts_the_notification_to_the_default_webhook_with_its_authorization_header()
         "status": "blocked",
         "message": "Need the staging DB password.",
         "reply_hint": "reply with: herdr agent prompt api-refactor \"...\"",
+        "source": { "backend": "tui", "host": crate::source::host_name(), "pane": "w1:p1" },
         "webhook": "bridge",
     });
     assert_eq!(sent.http_status, 202);

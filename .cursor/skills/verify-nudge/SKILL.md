@@ -165,13 +165,15 @@ state epoch-ms values as `<now>` / `<now-Nms>` (values the harness seeded) / `<e
 end of doctor's `Recent:` lines (`just now`, `5m ago`, `371d ago`) as `<ago>`, any lowercase UUID v4 as `<uuid>` and any
 `YYYY-MM-DDTHH:MM:SSZ` as `<sent_at>` (a malformed `id`/`sent_at` stays raw so the diff shows it), a webhook
 `x-nudge-timestamp` within 60 s of receipt as `<ts>`, a well-formed `x-nudge-signature` as `sha256=<hmac>` (whether it
-verified is the request's `signature` field), `received_unix` dropped, and fake herdr calls sorted (nudge issues some
+verified is the request's `signature` field), `received_unix` dropped, a notification's `source.host` equal to this
+machine's hostname as `<HOST>`, and fake herdr calls sorted (nudge issues some
 concurrently). The version in `user-agent` is kept. Each scenario lists `check_failures`: unexpected exit code,
 expectation not seen in a PTY, missing MCP response, a webhook secret (Authorization token or signing secret) in stdout,
 stderr, PTY output, an MCP response, a webhook body or a herdr call, harness error, and these contract problems:
 a `/signed` request whose signature is `invalid`/`missing`, `x-nudge-*` headers sent to a webhook without
 `signing_secret`, an `x-nudge-timestamp` that is not unix seconds within 60 s, a webhook body without a lowercase UUID v4
-`id` or a `sent_at` in that format within 60 s, and an MCP `notify_webhook` result whose `id`/`sent_at` is missing or is
+`id`, a `sent_at` in that format within 60 s, or a `source` with `backend` `tui`/`core` and this machine's `host`, and an
+MCP `notify_webhook` result whose `id`/`sent_at` is missing or is
 not the request the webhook received. Steps may also assert `sends=N` (requests the webhook got), `toasts=[…]` (exact
 `notification show nudge --body` bodies), `has=TEXT|[…]` / `lacks=[…]` (in / not in the output, PTY screens included),
 `scope_is=(workspaces, agents)` (the config's `[scope]` after the step), `config_keys={key: value}` (top-level config

@@ -30,7 +30,9 @@ the pane on screen and auto-notify being off no longer stop a notification. Afte
   turn` and `[scope]` still skip. Without `away` (absent key) the rules are unchanged.
 - `event-payload` body: `id` (UUID v4), `sent_at`, `from_agent` = herdr agent name (else pane id), `cwd` = agent cwd
   (else HOME), git repo/branch of that cwd, message lead + `Last terminal output (secrets redacted):` + tail, or
-  `No terminal output captured.`; signed (`x-nudge-*`) when the default webhook has a `signing_secret`.
+  `No terminal output captured.`; `source` = `{backend: "tui", host, pane}`; signed (`x-nudge-*`) when the webhook
+  has a `signing_secret`. The event becomes a backend-neutral `Transition` and runs through the shared pipeline
+  (`src/pipeline/`), which asks herdr about the agent once.
 - `event-redaction` Bearer/Basic/Token values, `*KEY*/*TOKEN*/*SECRET*/*PASSWORD*` assignments, `sk-`, `ghp_`,
   `AKIA…`, JWTs, private-key blocks and long mixed tokens become `[REDACTED]`; hex SHAs stay. The whole capture is
   redacted before it's cut to the tail, and the base64 lines before a lone `-----END … PRIVATE KEY-----` (its BEGIN
@@ -53,7 +55,7 @@ Preconditions:
 
 - **Turn starts.** Run `$VN run --cwd home --env "HERDR_PLUGIN_EVENT_JSON=$(E working)" -- plugin event`. Exit 0, empty stderr, no request; `files.state.json.panes.p_1.working_since` is `<now>`.
 - **Long turn (no sleeping).** Move the turn start back: `$VN seed-state '{"auto": true, "panes": {"p_1": {"working_since": {"ago": 180000}}}}'`.
-- **Done after a long turn.** Run `$VN run --cwd home --env "HERDR_PLUGIN_EVENT_JSON=$(E done)" -- plugin event`. stderr `[nudge] p_1 done: notified webhook (HTTP 200)`; `webhook[0].body` has `id: "<uuid>"`, `sent_at: "<sent_at>"`, `from_agent: "claude-1"`, `status: "done"`, message starting `Agent finished a turn (auto-detected by herdr; …)`, the last 40 lines (from `step 22`), every planted secret as `[REDACTED]`, the commit SHA intact; state has `last_auto_at: <now>` and no `working_since`; herdr calls are `agent get p_1` (twice), `pane read p_1 …` and the toast `notification show nudge --body Told the webhook: claude-1 finished a turn`.
+- **Done after a long turn.** Run `$VN run --cwd home --env "HERDR_PLUGIN_EVENT_JSON=$(E done)" -- plugin event`. stderr `[nudge] p_1 done: notified webhook (HTTP 200)`; `webhook[0].body` has `id: "<uuid>"`, `sent_at: "<sent_at>"`, `from_agent: "claude-1"`, `status: "done"`, `source: {backend: "tui", host: "<HOST>", pane: "p_1"}`, message starting `Agent finished a turn (auto-detected by herdr; …)`, the last 40 lines (from `step 22`), every planted secret as `[REDACTED]`, the commit SHA intact; state has `last_auto_at: <now>` and no `working_since`; herdr calls are `agent get p_1`, `pane read p_1 …` and the toast `notification show nudge --body Told the webhook: claude-1 finished a turn`.
 - **Cooldown.** Repeat with `$(E blocked)`. stderr `skipped (cooldown)`, no request.
 - **Blocked.** Fresh state `{"auto": true}`, event `blocked`. Notified with the `Agent is waiting for approval or input` lead.
 - **Focused / off / self-notified.** Use a fixture with `"focused": true` (skip `you are looking at this pane`), state `{}` (skip `auto-notify is off`), or run `$VN run --env HERDR_PANE_ID=p_1 -- notify done` during a turn (skip `agent already notified the webhook this turn`).
