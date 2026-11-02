@@ -15,6 +15,8 @@ pub(crate) enum Error {
     Setup(String),
     /// The user pressed Ctrl-C at a prompt.
     Cancelled,
+    /// nudge's global switch is off (`nudge off`), so nothing was sent.
+    Off,
     /// Anything else: file system, herdr.
     Other(String),
 }
@@ -27,6 +29,7 @@ impl fmt::Display for Error {
             }
             Self::Webhook(error) => f.write_str(&error.message),
             Self::Cancelled => f.write_str("cancelled"),
+            Self::Off => f.write_str("nudge is off: nothing was sent. Turn it on with nudge on"),
         }
     }
 }

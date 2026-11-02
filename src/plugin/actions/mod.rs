@@ -25,6 +25,7 @@ impl Plugin<'_> {
             .or_else(|| self.env.get("HERDR_PANE_ID").map(str::to_owned))
             .filter(|id| !id.is_empty());
         match action {
+            "on" | "off" | "switch" => self.switch_nudge(action),
             "enable" | "disable" | "toggle" => self.switch_auto(action),
             "away" | "away-on" | "away-off" => self.switch_away(action),
             "send-pane" => self.send_focused_pane(pane_id, context.focused_pane_status.as_deref()),

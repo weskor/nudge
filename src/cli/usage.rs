@@ -8,6 +8,7 @@ const USAGE: &str = "Usage:
                [--yes] [--no-auto-notify] [--no-install-command]
   nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
   nudge test   [--webhook NAME] [--agent NAME]
+  nudge on | off
   nudge doctor [--ping]
   nudge settings
   nudge list   [--json]
@@ -26,6 +27,8 @@ const USAGE: &str = "Usage:
            reply_hint} to the webhook. Message \"-\" reads stdin. --status
            defaults to done. Agents outside the config's [scope] are refused.
   test     Send a status \"test\" ping.
+  on, off  Turn nudge on or off on this machine. While off, nothing is sent:
+           notify and test fail (exit 1), and auto-notify skips.
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
   settings Change auto-notify, who can notify and the default webhook in a
@@ -36,7 +39,7 @@ const USAGE: &str = "Usage:
   --agent  herdr agent the webhook should reply to. Default: $NUDGE_AGENT, else the
            agent in this herdr pane, else the only agent working in this directory.
 
-Exit codes: 0 ok, 1 error, 2 usage.
+Exit codes: 0 ok, 1 error (including \"nudge is off\"), 2 usage.
 Config: $NUDGE_CONFIG or ~/.config/nudge/config.toml";
 
 pub(crate) const EXIT_ERROR: u8 = 1;

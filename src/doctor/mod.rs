@@ -11,7 +11,7 @@ use crate::state::state_dir;
 use crate::terminal::tty::{Mark, Style, wait_for_key};
 use check::Level;
 use config::check_config;
-use local::{check_clipboard, check_command};
+use local::{check_clipboard, check_command, check_switch};
 use plugin::check_plugin;
 
 /// Run every check and print them with a summary; exits 1 when something failed. `pane`: wait for a key before
@@ -27,7 +27,8 @@ pub(crate) fn doctor(ping: bool, pane: bool, env: &Env) -> Result<u8> {
         ))
     );
     println!();
-    let mut checks = check_config(ping, env)?;
+    let mut checks = vec![check_switch(env)];
+    checks.extend(check_config(ping, env)?);
     checks.extend(check_plugin(env));
     checks.extend([check_command(env), check_clipboard(env)]);
     for check in &checks {

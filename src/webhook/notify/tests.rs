@@ -181,7 +181,7 @@ fn records_the_notifying_pane_and_failures_record_nothing() {
     };
     let before = crate::state::now_ms();
     let _sent = notify_webhook(&config(&ok.base), None, NotifyStatus::Done, "x", None, origin).unwrap();
-    let recorded = update_state(&env, |state| state.panes["w1:p1"].self_notified_at).unwrap();
+    let recorded = update_state(&env, |state| state.panes["tui:w1:p1"].self_notified_at).unwrap();
     assert!(recorded.unwrap() >= before);
 
     let failing = FakeWebhook::start(|_| (500, "nope".into()));
@@ -194,6 +194,33 @@ fn records_the_notifying_pane_and_failures_record_nothing() {
     };
     let _failed = notify_webhook(&config(&failing.base), None, NotifyStatus::Done, "x", None, origin).unwrap_err();
     assert!(update_state(&failed_env, |state| state.panes.is_empty()).unwrap());
+}
+
+#[test]
+fn while_nudge_is_off_notify_and_ping_send_nothing_and_say_so() {
+    let hook = FakeWebhook::start(|_| (200, String::new()));
+    let state = tempfile::tempdir().unwrap();
+    let (env, run) = (env(&state, true), herdr_and_git());
+    update_state(&env, |state| state.on = false).unwrap();
+    let origin = Origin {
+        env: &env,
+        cwd: "/home/user/src/api",
+        run: &run,
+    };
+    let config = config(&hook.base);
+    let notified = notify_webhook(&config, None, NotifyStatus::Done, "x", None, origin);
+    assert!(matches!(notified, Err(Error::Off)), "{notified:?}");
+    let pinged = ping_webhook(&config, None, None, origin);
+    assert!(matches!(pinged, Err(Error::Off)), "{pinged:?}");
+    assert!(hook.requests().is_empty());
+    assert!(
+        update_state(&env, |state| state.panes.is_empty()).unwrap(),
+        "nothing sent, nothing recorded"
+    );
+
+    update_state(&env, |state| state.on = true).unwrap();
+    let _sent = notify_webhook(&config, None, NotifyStatus::Done, "x", None, origin).unwrap();
+    assert_eq!(hook.requests().len(), 1);
 }
 
 #[test]

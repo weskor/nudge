@@ -1,13 +1,13 @@
 //! The two ways to send: `notify_webhook` (an agent reporting in, within `[scope]`) and `ping_webhook` (a test).
+use super::deliver::deliver;
 use super::origin::{Origin, sender};
 use super::payload::{Notification, build_notification, message_text};
-use super::send::post_to_webhook;
 use super::status::{NotifyStatus, Status};
 use crate::config::{Config, find_webhook};
 use crate::env::Env;
 use crate::error::{Error, Result};
 use crate::herdr::{Sender, in_scope};
-use crate::state::{now_ms, update_state};
+use crate::state::{now_ms, tui_key, update_state};
 
 /// A notification the webhook accepted.
 #[derive(Debug, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub(crate) fn notify_webhook(
         return Err(out_of_scope(&sender));
     }
     let notification = build_notification(status.into(), message, sender.agent, origin)?;
-    let http_status = post_to_webhook(webhook, &notification)?;
+    let http_status = deliver(origin.env, webhook, &notification)?;
     if let Some(pane_id) = origin.env.get("HERDR_PANE_ID") {
         record_self_notified(origin.env, pane_id);
     }
@@ -69,7 +69,7 @@ fn record_self_notified(env: &Env, pane_id: &str) {
     let now = now_ms();
     // Best effort: a missing record only risks one duplicate automatic notification.
     update_state(env, |state| {
-        state.panes.entry(pane_id.to_owned()).or_default().self_notified_at = Some(now);
+        state.panes.entry(tui_key(pane_id)).or_default().self_notified_at = Some(now);
     })
     .ok();
 }
@@ -85,7 +85,7 @@ pub(crate) fn ping_webhook(
     let webhook = find_webhook(config, webhook)?;
     let from_agent = sender(agent, origin).agent;
     let notification = build_notification(Status::Test, "nudge test ping. No action needed.", from_agent, origin)?;
-    let http_status = post_to_webhook(webhook, &notification)?;
+    let http_status = deliver(origin.env, webhook, &notification)?;
     Ok(Sent {
         webhook: webhook.name.clone(),
         http_status,

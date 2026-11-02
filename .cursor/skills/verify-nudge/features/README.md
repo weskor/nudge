@@ -53,9 +53,10 @@ four H2 sections in this order: `Sub-features`, `How to get to it (user POV)`, `
 
 - [Notify, test and list](./notify.md): send a notification or test ping to a webhook; agent, git and stdin detection; id/sent_at; request signing; webhook errors; listing webhooks.
 - [Setup](./setup.md): connect a webhook scripted (flags/stdin, `--signing-secret`) or interactively in a terminal (clipboard, typing, hidden header, re-asks, Ctrl-C).
-- [Doctor](./doctor.md): health report for config, scope, webhook ping, herdr plugin, auto-notify, away mode, command link, clipboard.
+- [Doctor](./doctor.md): health report for the global switch, config, scope, webhook ping, herdr plugin, auto-notify, away mode, command link, clipboard.
 - [Plugin auto-notify](./plugin-auto-notify.md): `pane.agent_status_changed` events become webhook notifications under the turn/focus/cooldown rules (`[auto]` settings, away mode), with redaction and a "Told the webhook" toast.
-- [Plugin actions and startup](./plugin-actions.md): toggle/enable/disable, away/away-on/away-off, send-pane, setup/status/settings overlays, scope actions, startup command-link repoint.
+- [Plugin actions and startup](./plugin-actions.md): toggle/enable/disable, away/away-on/away-off, send-pane, setup/status/settings overlays, scope actions, startup command-link repoint. The on/off/switch actions are in [Global switch](./switch.md).
+- [Global switch](./switch.md): `nudge on` / `nudge off` and the `on` / `off` / `switch` actions; while off every entry point fails or skips and nothing is sent; `tui:` pane keys in state.json.
 - [Scope](./scope.md): `[scope]` limits which workspaces/agents may notify (events, notify, MCP); only-workspace / only-agent / all-agents actions; doctor's scope line.
 - [Settings](./settings.md): the full-screen `nudge settings` editor (auto-notify, away mode, `[auto]` values, who can notify, default webhook, test pings, save/discard) and its herdr `settings` action.
 - [MCP server](./mcp.md): `nudge mcp` with `list_webhooks` and `notify_webhook`.

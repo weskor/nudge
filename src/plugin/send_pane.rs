@@ -7,7 +7,7 @@ use crate::config::{Config, find_webhook};
 use crate::env::{Run as _, System};
 use crate::error::Result;
 use crate::herdr::herdr_agent;
-use crate::webhook::{NotifyStatus, Origin, build_notification, post_to_webhook};
+use crate::webhook::{NotifyStatus, Origin, build_notification, deliver};
 
 /// What the webhook accepted from [`Plugin::send_pane`].
 #[derive(Debug)]
@@ -60,7 +60,7 @@ impl Plugin<'_> {
             run: &System,
         };
         let notification = build_notification(status.into(), &message, Some(target.clone()), origin)?;
-        let http_status = post_to_webhook(webhook, &notification)?;
+        let http_status = deliver(self.env, webhook, &notification)?;
         Ok(PaneSent { http_status, target })
     }
 }

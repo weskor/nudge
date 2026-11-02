@@ -25,7 +25,18 @@ pub(crate) struct PaneState {
     pub(crate) self_notified_at: Option<i64>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+impl PaneState {
+    /// `self`, with each field it doesn't have taken from `older`.
+    fn or(self, older: &Self) -> Self {
+        Self {
+            working_since: self.working_since.or(older.working_since),
+            last_auto_at: self.last_auto_at.or(older.last_auto_at),
+            self_notified_at: self.self_notified_at.or(older.self_notified_at),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct State {
     /// Automatic notifications from the herdr plugin. Off until turned on (setup asks), since they send
     /// terminal output.
@@ -35,8 +46,70 @@ pub(crate) struct State {
     /// `away` herdr action or in `nudge settings`; absent from the file while off.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) away: bool,
+    /// nudge's global switch (`nudge on` / `nudge off`): while off, no webhook request leaves this machine. On by
+    /// default; absent from the file while on.
+    #[serde(default = "switched_on", skip_serializing_if = "is_on")]
+    pub(crate) on: bool,
+    /// Per-pane state, keyed by [`tui_key`] (herdr TUI panes).
     #[serde(default)]
     pub(crate) panes: BTreeMap<String, PaneState>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            auto: false,
+            away: false,
+            on: true,
+            panes: BTreeMap::new(),
+        }
+    }
+}
+
+const fn switched_on() -> bool {
+    true
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_on(on: &bool) -> bool {
+    *on
+}
+
+/// The prefix of a herdr TUI pane's key in [`State::panes`]; each backend has its own, so their ids can't collide.
+const TUI_PREFIX: &str = "tui:";
+/// Prefixes of backends that keep state here. A key without one is from before nudge had backends: a TUI pane.
+const BACKEND_PREFIXES: [&str; 2] = [TUI_PREFIX, "core:"];
+
+/// The [`State::panes`] key of a herdr TUI pane, e.g. `tui:w1:p3`.
+pub(crate) fn tui_key(pane_id: &str) -> String {
+    format!("{TUI_PREFIX}{pane_id}")
+}
+
+impl State {
+    /// Give keys saved before nudge had backends (`w1:p3`) their backend prefix (`tui:w1:p3`).
+    ///
+    /// When `w1:p3` and `tui:w1:p3` both exist, `w1:p3` was written later, by an older nudge that never saw the
+    /// `tui:` entry (a rollback, or an older `nudge` command beside a newer plugin): this nudge rewrites every key it
+    /// reads. Its fields win; the ones it never set (it started that entry from scratch) keep the `tui:` values, so
+    /// e.g. a turn the plugin tracked survives an older `nudge notify` recording `self_notified_at`.
+    fn with_backend_keys(mut self) -> Self {
+        let (unprefixed, mut panes): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.panes)
+            .into_iter()
+            .partition(|(key, _)| !BACKEND_PREFIXES.iter().any(|prefix| key.starts_with(prefix)));
+        for (key, pane) in unprefixed {
+            let key = tui_key(&key);
+            let pane = match panes.remove(&key) {
+                Some(twin) => pane.or(&twin),
+                None => pane,
+            };
+            panes.insert(key, pane);
+        }
+        self.panes = panes;
+        self
+    }
 }
 
 const LOCK_RETRIES: u32 = 100;
@@ -60,11 +133,12 @@ pub(crate) fn state_dir(env: &Env) -> PathBuf {
         .join("nudge")
 }
 
-/// Missing or corrupt state starts fresh; it only holds timestamps and a toggle.
+/// Missing or corrupt state starts fresh (nudge on, auto-notify off); it only holds timestamps and switches.
 fn read_state(path: &Path) -> State {
     fs::read_to_string(path)
         .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
+        .and_then(|text| serde_json::from_str::<State>(&text).ok())
+        .map(State::with_backend_keys)
         .unwrap_or_default()
 }
 

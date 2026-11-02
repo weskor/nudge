@@ -1,8 +1,17 @@
-//! Checks on this machine: the `nudge` command on PATH and the clipboard tools setup uses.
+//! Checks on this machine: nudge's global switch, the `nudge` command on PATH and the clipboard tools setup uses.
 use super::check::{Check, Level};
 use crate::clipboard::Desktop;
 use crate::env::Env;
 use crate::herdr::command_link;
+use crate::state::current_state;
+
+pub(super) fn check_switch(env: &Env) -> Check {
+    if current_state(env).on {
+        Check::new(Level::Ok, "Nudge on")
+    } else {
+        Check::new(Level::Warn, "Nudge off: nothing is sent").fix("nudge on")
+    }
+}
 
 pub(super) fn check_command(env: &Env) -> Check {
     if let Some(path) = env.which("nudge") {

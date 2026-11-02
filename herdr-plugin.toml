@@ -38,6 +38,21 @@ title = "Nudge: send this pane to the webhook"
 command = ["sh", "bin/nudge", "plugin", "action", "send-pane"]
 
 [[actions]]
+id = "switch"
+title = "Nudge: switch nudge on or off"
+command = ["sh", "bin/nudge", "plugin", "action", "switch"]
+
+[[actions]]
+id = "on"
+title = "Nudge: turn nudge on"
+command = ["sh", "bin/nudge", "plugin", "action", "on"]
+
+[[actions]]
+id = "off"
+title = "Nudge: turn nudge off (nothing is sent)"
+command = ["sh", "bin/nudge", "plugin", "action", "off"]
+
+[[actions]]
 id = "toggle"
 title = "Nudge: toggle auto-notify"
 command = ["sh", "bin/nudge", "plugin", "action", "toggle"]

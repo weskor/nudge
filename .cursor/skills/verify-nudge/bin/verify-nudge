@@ -577,11 +577,13 @@ class Sandbox:
         os.chmod(path, 0o600)
 
     def edit_state(self, pane, key, ago):
+        """Set herdr pane `pane`'s `key` in state.json, under its current key `tui:<pane>`. (Seeded states may use
+        the old unprefixed keys: nudge reads those as `tui:` keys.)"""
         path = os.path.join(self.state_dir, "state.json")
         state = json.load(open(path))
         stamp = now_ms() - ago
         self.seeded[stamp] = f"<now-{ago}ms>"
-        state.setdefault("panes", {}).setdefault(pane, {})[key] = stamp
+        state.setdefault("panes", {}).setdefault(f"tui:{pane}", {})[key] = stamp
         with open(path, "w") as f:
             json.dump(state, f)
 
@@ -2189,6 +2191,56 @@ def scenarios():
         cmd(["doctor"], expect=0, has=["! Auto-notify off\n    → herdr plugin action invoke nudge.enable\n"
                                        + "\n".join(away_doctor) + "\n"]))
     add("doctor-away-no-herdr", config(), state({"away": True}), cmd(["doctor"], expect=0, lacks=["Away mode"]))
+
+    # ---- the global switch: state.json `on` (absent while on). While off no request leaves the machine: notify,
+    # test, MCP notify and setup's test ping fail (exit 1), send-pane fails with a toast, auto-notify skips (logged,
+    # no cooldown) even in away mode. Seeds use old unprefixed pane keys, which nudge rewrites as `tui:` keys.
+    is_off = "nudge is off: nothing was sent. Turn it on with nudge on"
+    off_toast = "Nudge off: nothing is sent from this machine"
+    add("switch-cli", config(),
+        cmd(["off"], expect=0, sends=0, state_keys={"on": False}, has="nudge is off: nothing is sent from this machine"),
+        cmd(["off"], expect=0, state_keys={"on": False}),
+        cmd(["on"], expect=0, sends=0, state_keys={"on": None}, has="nudge is on"),
+        cmd(["on"], expect=0, state_keys={"on": None}),
+        cmd(["off", "extra"], expect=2, state_keys={"on": None}))
+    add("switch-actions", herdr(AGENT_HERDR), state({"auto": True}),
+        action("switch", sends=0, toasts=[off_toast], state_auto=True, state_keys={"on": False}),
+        action("switch", toasts=["Nudge on"], state_keys={"on": None}),
+        action("off", toasts=[off_toast], state_keys={"on": False}),
+        action("off", toasts=[off_toast], state_keys={"on": False}),
+        action("on", toasts=["Nudge on"], state_auto=True, state_keys={"on": None}),
+        action("on", toasts=["Nudge on"], state_keys={"on": None}))
+    add("switch-off-notify-test", config(), state({"on": False}),
+        cmd(["notify", "hi"], expect=1, sends=0, has=is_off),
+        cmd(["notify", "--webhook", "research", "--status", "blocked", "hi"], env={"HERDR_PANE_ID": "p_1"}, expect=1,
+            sends=0, has=is_off, state_keys={"panes": None}),
+        cmd(["test"], expect=1, sends=0, has=is_off),
+        cmd(["on"], expect=0),
+        cmd(["notify", "hi"], expect=0, sends=1),
+        cmd(["test"], expect=0, sends=1))
+    add("switch-off-mcp", config(), herdr(fixture(NO_AGENTS)), state({"on": False}),
+        mcp([("list_webhooks", {}), ("notify_webhook", {"message": "hi"})], sends=0, has=is_off))
+    add("switch-off-send-pane", config(), herdr(PANE_HERDR), state({"on": False}),
+        action("send-pane", {"focused_pane_id": "p_1"}, expect=1, sends=0, toasts=["Nudge is off: nothing was sent"],
+               has=f"failed: {is_off}"),
+        action("on", toasts=["Nudge on"]),
+        action("send-pane", {"focused_pane_id": "p_1"}, sends=1))
+    add("switch-off-event", config(), herdr(PANE_HERDR),
+        state({"auto": True, "away": True, "on": False, "panes": {"p_1": {"working_since": {"ago": 600000}}}}),
+        event("blocked", sends=0, toasts=[], has="p_1 blocked: skipped (nudge is off)"),
+        event("done", sends=0, toasts=[], has="p_1 done: skipped (nudge is off)"),
+        action("on", toasts=["Nudge on"]),
+        event("blocked", sends=1, has="p_1 blocked: notified webhook (HTTP 200)"))
+    add("switch-off-doctor", config(), state({"on": False}),
+        cmd(["doctor"], expect=0, has="! Nudge off: nothing is sent\n    → nudge on\n"),
+        cmd(["doctor", "--ping"], expect=0, sends=0, has="! Webhook not tested: nudge is off\n    → nudge on\n"),
+        cmd(["on"], expect=0),
+        cmd(["doctor"], expect=0, has="✓ Nudge on\n", lacks=["Nudge off"]))
+    add("switch-off-setup-yes", state({"on": False}),
+        cmd(["setup", "--yes", "--url", URL, "--authorization", GOOD, "--no-install-command"], expect=1, sends=0,
+            has=is_off),
+        cmd(["setup", "--yes", "--url", URL, "--authorization", GOOD, "--no-install-command", "--no-test"], expect=0,
+            sends=0, state_keys={"on": False}))
 
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per
