@@ -173,15 +173,16 @@ Before this change, a config has no `[[route]]` tables, and it keeps working unc
 {
   "id": "…", "sent_at": "…", "from_agent": "api-refactor", "cwd": "…", "repo": "…", "branch": "…",
   "status": "blocked", "message": "…",
-  "reply_hint": "reply with: hc send api-refactor \"...\"",
-  "source": { "backend": "core", "host": "laptop", "terminal": "t7", "workspace": "client-a" },
+  "reply_hint": "reply with: hc send t7 \"...\"",
+  "source": { "backend": "core", "host": "laptop", "pane": "t7" },
   "webhook": "client-a"
 }
 ```
 
 - `source` and `webhook` are new; existing fields keep their meaning. `source.host` is the machine's hostname, so an automation serving several machines knows where to reply.
+- **One `source` shape for both backends** (settled in slice 4): `{backend, host, pane}`, where `pane` is the TUI pane id (`w1:p3`) or the core terminal address (`t7`, `box/t7`), and `null` when `nudge notify` runs outside both. An earlier draft had `terminal` and `workspace` for core. They were dropped: one key is simpler for automations that serve both backends, the address already carries the machine (`box/t7`), and the workspace would cost the TUI two herdr calls on every send (core only knows a space id until the app context arrives in slice 6). The reply target is in `from_agent` and `reply_hint`.
 - The TUI's `reply_hint` stays `herdr agent prompt …`.
-- For core, it's `hc send <address> "..."`. `hc send` refuses a blocked agent (exit 9), the same way `herdr agent prompt` answers `agent_blocked` today. The webhook instructions template already escalates auto-detected `blocked` events, so it applies unchanged.
+- For core, it's `hc send <address> "..."`. `hc send` refuses a blocked agent (exit 9), the same way `herdr agent prompt` answers `agent_blocked` today. The webhook instructions template already escalates auto-detected `blocked` events, so it applies unchanged; it now says to run the command in `reply_hint`.
 
 ## Shape
 
@@ -335,8 +336,7 @@ pub(crate) enum Backend { Tui, Core }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentRef {
     pub(crate) backend: Backend,
-    /// Core machine (`box`), None for this computer and for the TUI.
-    pub(crate) machine: Option<String>,
+    // (No `machine` field: a connected machine's terminal address already names it, `box/t7`.)
     /// TUI pane id (`w1:p3`) or core address (`t7`, `box/t7`).
     pub(crate) pane: String,
     /// Agent name (TUI) or terminal name (core), if any.
