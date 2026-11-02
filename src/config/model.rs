@@ -28,6 +28,16 @@ impl fmt::Debug for Webhook {
     }
 }
 
+impl Webhook {
+    /// The host its URL points at, to show where it goes without the path or query (either may hold a token).
+    pub(crate) fn host(&self) -> String {
+        url::Url::parse(&self.url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+}
+
 /// `[auto]`: when the herdr plugin notifies the webhook on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Auto {

@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 
-use super::{default_config_path, load_config, read_and_migrate, read_config};
+use super::{default_config_path, load_config, peek_config, read_and_migrate, read_config};
 use crate::config::parse::parse_config;
 use crate::config::serialize::serialize_config;
 use crate::config::tests::{VALID, config_error, config_of, webhook};
@@ -61,6 +61,21 @@ fn an_old_format_config_is_rewritten_once_keeping_every_setting() {
 
     assert_eq!(read_and_migrate(&path).unwrap(), Some((expected, None)));
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
+fn peeking_understands_an_old_format_config_without_rewriting_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, OLD_FORMAT).unwrap();
+    let peeked = peek_config(&path).unwrap().unwrap();
+    assert_eq!(peeked.default_webhook.as_deref(), Some("research"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), OLD_FORMAT);
+    assert_eq!(
+        Some(peeked),
+        read_config(&path).unwrap(),
+        "the same config the migration saves"
+    );
 }
 
 #[test]

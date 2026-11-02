@@ -13,7 +13,7 @@ mod write;
 
 pub(crate) use check::{check_authorization, check_webhook_name, check_webhook_url, validate_webhook};
 pub(crate) use model::{Auto, Config, Scope, Webhook, seconds_in_words};
-pub(crate) use read::{default_config_path, load_config, read_config};
+pub(crate) use read::{default_config_path, load_config, peek_config, read_config};
 pub(crate) use routes::{Route, Selector, remove_route, resolve, routes_name_workspaces, set_route};
 pub(crate) use select::{default_webhook_name, find_webhook, upsert_webhook};
 pub(crate) use write::write_config;

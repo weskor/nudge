@@ -180,21 +180,9 @@ fn remove(config: &mut Config, selector: &Selector, backend: Option<Backend>) ->
 fn list_routes(config: &Config, json: bool) {
     let default = default_webhook_name(config);
     if json {
-        let routes: Vec<serde_json::Value> = config
-            .route
-            .iter()
-            .map(|route| {
-                let mut row =
-                    serde_json::json!({ route.selector.key(): route.selector.name(), "webhook": route.webhook });
-                if let (Some(backend), Some(row)) = (route.backend, row.as_object_mut()) {
-                    row.insert("backend".into(), backend.as_str().into());
-                }
-                row
-            })
-            .collect();
         println!(
             "{}",
-            serde_json::json!({ "default_webhook": default, "routes": routes })
+            serde_json::json!({ "default_webhook": default, "routes": config.route })
         );
         return;
     }

@@ -681,6 +681,10 @@ class Sandbox:
         unit = os.path.join(self.home, ".config", "systemd", "user", "nudge-watch.service")
         if os.path.exists(unit):
             out["login_service"] = open(unit).read().split("\n")
+        # The desktop app's context (`nudge core context`), only while it exists.
+        app_context = os.path.join(self.state_dir, "context.json")
+        if os.path.exists(app_context):
+            out["app_context"] = json.loads(open(app_context).read())
         return out
 
     # ---- drivers
@@ -964,7 +968,19 @@ class Normalizer:
         rec.pop("raw_output", None)  # screen-mode PTY steps: kept for the secret check only
         if "webhook" in rec:
             rec["webhook"] = [self.webhook_request(r) for r in rec["webhook"]]
+        # JSON stdout (list --json, status --json) is compared as data, not bytes.
+        if rec.get("stdout"):
+            try:
+                rec["stdout_json"] = json.loads(rec["stdout"])
+                del rec["stdout"]
+            except ValueError:
+                pass
         rec = self.value(rec, t1)
+        if "stdout_json" in rec:
+            rec["stdout_json"] = self.value(rec["stdout_json"], t1, epochs=True)
+            # `nudge status --json` names this machine.
+            if isinstance(rec["stdout_json"], dict) and rec["stdout_json"].get("host") == socket.gethostname():
+                rec["stdout_json"]["host"] = "<HOST>"
         for req in rec.get("webhook", []):
             self.source_host(req.get("body"))
         # JSON text inside MCP tool results is compared as data too.
@@ -980,13 +996,6 @@ class Normalizer:
         for key in ("stdout", "output"):
             if isinstance(rec.get(key), str):
                 rec[key] = RECENT_AGE.sub(r"\1<ago>\3", rec[key])
-        # JSON stdout (list --json) is compared as data, not bytes.
-        if rec.get("stdout"):
-            try:
-                rec["stdout_json"] = json.loads(rec["stdout"])
-                del rec["stdout"]
-            except ValueError:
-                pass
         for key in ("stdout", "stderr", "output", "stdin"):
             if isinstance(rec.get(key), str) and "\n" in rec[key]:
                 rec[key] = rec[key].split("\n")
@@ -994,6 +1003,8 @@ class Normalizer:
             files = self.value(files, t1, epochs=False)
             if files.get("state"):
                 files["state"]["json"] = self.value(files["state"]["json"], t1, epochs=True)
+            if files.get("app_context"):
+                files["app_context"] = self.value(files["app_context"], t1, epochs=True)
             if files.get("config"):
                 files["config"]["text"] = files["config"]["text"].split("\n")
             rec["files"] = files
@@ -2440,7 +2451,48 @@ def scenarios():
         cmd(["notify", "unknown terminal"], env={"HC_TERMINAL_ID": "t9"}, expect=0, sources=[["core", "t9"]], sent_to=["main"]))
     add("core-cli", cmd(["core"], expect=2), cmd(["core", "frob"], expect=2), cmd(["core", "send"], expect=2),
         cmd(["core", "send", "a", "b"], expect=2), cmd(["core", "watch", "--blocked"], expect=2),
-        cmd(["core", "send", "t1", "--once"], expect=2))
+        cmd(["core", "send", "t1", "--once"], expect=2), cmd(["core", "context"], expect=2),
+        cmd(["core", "context", "{}", "{}"], expect=2))
+
+    # ---- the desktop app's context (`nudge core context '<json>'`): focus (a terminal is watched when the context
+    # names it, the window is active and the context arrived under 90 s ago; away overrides) and space names for routes
+    # and scope. nudge stamps `at` itself; an old or future context is written to context.json directly.
+    # `app_context` in `files` is context.json.
+    def app_context(terminal="t1", active=True, spaces=(), **extra):
+        body = {"terminal": terminal, "window_active": active, "spaces": [{"id": i, "name": n} for i, n in spaces], **extra}
+        return cmd(["core", "context", json.dumps(body)], expect=0)
+
+    def stored_context(at):
+        return write("home/.local/state/nudge/context.json",
+                     json.dumps({"terminal": "t1", "window_active": True, "spaces": [], "at": at}))
+
+    looking = "t1 done: skipped (you are looking at this pane)"
+    year_2100 = 4102444800000
+    add("core-context", app_context(spaces=[("s1", "client")], at=year_2100),
+        cmd(["core", "context", "not json"], expect=2, has="core context takes JSON {terminal, window_active, spaces: [{id, name}]}"),
+        cmd(["core", "context", '{"terminal": "t1", "window_active": "yes", "spaces": []}'], expect=2),
+        cmd(["core", "context", '{"terminal": "t1", "spaces": []}'], expect=2),
+        cmd(["core", "context", "{}", "--once"], expect=2))
+    add("core-watch-focus", config(), core_stream, state({"auto": True}), app_context(),
+        cmd(watch_once, expect=0, sends=2, sources=[["core", "t2"], ["core", "t3"]], has=looking))
+    add("core-watch-focus-stale", config(), core_stream, state({"auto": True}), stored_context(1700000000000),
+        cmd(watch_once, expect=0, sends=3, lacks=[looking]))
+    add("core-watch-focus-future", config(), core_stream, state({"auto": True}), stored_context(year_2100),
+        cmd(watch_once, expect=0, sends=3, lacks=[looking]))
+    add("core-watch-focus-inactive", config(), core_stream, state({"auto": True}), app_context(active=False),
+        cmd(watch_once, expect=0, sends=3, lacks=[looking]))
+    add("core-watch-focus-away", config(), core_stream, state({"auto": True, "away": True}), app_context(),
+        cmd(watch_once, expect=0, sends=3, lacks=[looking]))
+    named = app_context(terminal=None, spaces=[("s1", "client"), ("s2", "docs")])
+    add("core-watch-space-names", config(extra=route("research", workspace="client") + route("signed", workspace="docs")),
+        hc(fixture(core_events(core_status("t1", "done", 2), core_status("t4", "done", 3), core_status("t2", "blocked", 4)), *core_reads)),
+        state({"auto": True}), named,
+        cmd(watch_once, expect=0, sent_to=["research", "signed", "main"], sources=[["core", "t1"], ["core", "t4"], ["core", "t2"]]))
+    add("core-watch-space-scope", config(extra=scope(workspaces=["client"])), core_stream, state({"auto": True}), named,
+        cmd(watch_once, expect=0, sources=[["core", "t1"]], has=["t2 blocked: skipped (outside nudge's scope)"]))
+    add("core-notify-space-name", config(extra=route("research", workspace="client")), hc(fixture(*core_get)), named,
+        cmd(["notify", "from a core terminal"], env={"HC_TERMINAL_ID": "t1"}, expect=0, sent_to=["research"]),
+        cmd(["core", "send", "t1"], expect=0, sent_to=["research"]))
 
     # ---- the login service (`nudge core service`), on Linux: a systemd user unit, driven through fake `systemctl` and
     # `loginctl` (never the real ones: without a fixture the fakes exit 1). `login_service` in `files` is the unit's text.
@@ -2471,6 +2523,25 @@ def scenarios():
         cmd(["core", "service", "install"], expect=1, has="nudge: `systemctl --user daemon-reload` failed"))
     add("core-service-cli", cmd(["core", "service"], expect=2), cmd(["core", "service", "frob"], expect=2),
         cmd(["core", "service", "install", "--once"], expect=2), cmd(["core", "service", "status", "extra"], expect=2))
+
+    # ---- `nudge status --json`: what the desktop panel draws. Webhooks by name and host only (the secret scan runs on
+    # every step); the watcher runs only while its lock names a live process, so after `core watch --once` it's off
+    # but its terminals and decisions stay; routes use the app's space names.
+    add("status-json", config(extra=route("research", workspace="client") + route("signed", pane="t2")),
+        state({"auto": True}),
+        cmd(["status", "--json"], expect=0, lacks=["http://", "/hook"]),
+        app_context(terminal="t9", spaces=[("s1", "client"), ("s2", "docs")]), core_stream,
+        cmd(watch_once, expect=0, sent_to=["research", "signed", "main"]),
+        cmd(["status", "--json"], expect=0, has=['"via": "workspace"', '"space_name": "client"', '"running": false'],
+            lacks=["http://", "/hook"]),
+        cmd(["status"], expect=2, has="nudge status --json"), cmd(["status", "--json", "extra"], expect=2))
+    add("status-json-service", config(), systemd, cmd(["core", "service", "install"], expect=0),
+        cmd(["status", "--json"], expect=0, has=['"installed": true', '"running": true']))
+    add("status-json-no-config", cmd(["status", "--json"], expect=0, has=['"webhooks": []', '"config_error": null']))
+    add("status-json-broken-config", raw_config("[[webhook]\nname = "), cmd(["status", "--json"], expect=0, has='"config_error": "'))
+    add("status-json-old-config", raw_config(OLD_FORMAT_CONFIG),
+        cmd(["status", "--json"], expect=0, config_unchanged=1, has=['"default_webhook": "main"', '"name": "research"'],
+            lacks=["updated"]))
 
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per

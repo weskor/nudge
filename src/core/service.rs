@@ -3,6 +3,8 @@
 use std::fs::{self, DirBuilder};
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use super::unit_file::{LABEL, ServiceKind, UNIT, service_file};
 use crate::env::{Env, Run, System};
 use crate::error::{Error, Result};
@@ -10,13 +12,7 @@ use crate::herdr::command_link;
 
 /// `nudge core service <action>` on this machine, with its service manager.
 pub(crate) fn service(action: ServiceAction, env: &Env) -> Result<u8> {
-    let service = Service {
-        kind: ServiceKind::CURRENT,
-        env,
-        run: &System,
-        uid: rustix::process::getuid().as_raw(),
-    };
-    service.act(action, &nudge_command(env)?)
+    Service::here(env, &System).act(action, &nudge_command(env)?)
 }
 
 /// The command the service runs: `~/.local/bin/nudge` when it exists (herdr keeps it pointing at the current
@@ -46,7 +42,36 @@ pub(crate) struct Service<'a> {
     pub(crate) uid: u32,
 }
 
-impl Service<'_> {
+/// The login service as `status` reports it.
+#[derive(Debug, Serialize)]
+pub(crate) struct ServiceState {
+    pub(crate) installed: bool,
+    pub(crate) running: bool,
+    pub(crate) path: PathBuf,
+}
+
+impl<'a> Service<'a> {
+    /// This machine's service, for this user.
+    pub(crate) fn here(env: &'a Env, run: &'a dyn Run) -> Self {
+        Self {
+            kind: ServiceKind::CURRENT,
+            env,
+            run,
+            uid: rustix::process::getuid().as_raw(),
+        }
+    }
+
+    /// Whether it's installed and running, and where its file is.
+    pub(crate) fn state(&self) -> ServiceState {
+        let path = self.kind.path(self.env);
+        let installed = path.exists();
+        ServiceState {
+            running: installed && self.running(),
+            installed,
+            path,
+        }
+    }
+
     /// Run a service-manager command from `/`; its output, or `None` if it failed.
     fn manager(&self, args: &[&str]) -> Option<String> {
         self.run.run(args, Path::new("/"))
@@ -89,14 +114,13 @@ impl Service<'_> {
                 println!("Removed the login service ({shown}).");
             }
             ServiceAction::Status => {
-                let state = if !path.exists() {
-                    "not installed"
-                } else if self.running() {
-                    "installed, running"
-                } else {
-                    "installed, not running"
+                let state = self.state();
+                let words = match (state.installed, state.running) {
+                    (false, _) => "not installed",
+                    (true, true) => "installed, running",
+                    (true, false) => "installed, not running",
                 };
-                println!("Login service: {state}\n  {shown}");
+                println!("Login service: {words}\n  {shown}");
             }
         }
         Ok(0)

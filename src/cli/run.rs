@@ -5,9 +5,10 @@ use super::core::core;
 use super::list::list;
 use super::route::{route, set_default};
 use super::send::{notify, ping};
+use super::status::status;
 use super::switch::switch;
 use super::usage::answer_info;
-use crate::env::Env;
+use crate::env::{Env, System};
 use crate::error::{Error, Result};
 use crate::setup::{SetupOptions, setup};
 use crate::{doctor, mcp, plugin, settings};
@@ -57,6 +58,10 @@ fn dispatch(command: &str, rest: &[String], args: Args, env: &Env) -> Result<u8>
             no_args(rest, "list")?;
             list(args.json, env)?;
             Ok(0)
+        }
+        "status" => {
+            no_args(rest, "status")?;
+            status(args.json, env, &System)
         }
         "mcp" => {
             no_args(rest, "mcp")?;

@@ -7,6 +7,7 @@ use std::path::Path;
 
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
+use rustix::process::{Pid, test_kill_process};
 
 use crate::error::{Error, Result};
 
@@ -46,6 +47,19 @@ pub(crate) fn lock_watch(path: &Path) -> Result<Locked> {
             Ok(Locked::Elsewhere(pid.trim().parse().ok()))
         }
         Err(error) => Err(Error::Other(format!("could not lock {}: {error}", path.display()))),
+    }
+}
+
+/// The pid of the running watcher: the one the lock file at `path` names, if that process is alive. It reads the
+/// file without taking the lock, so asking never stops a watcher from starting.
+pub(crate) fn watcher_pid(path: &Path) -> Option<u32> {
+    let pid: u32 = fs::read_to_string(path).ok()?.trim().parse().ok()?;
+    let alive = Pid::from_raw(i32::try_from(pid).ok()?)?;
+    // EPERM: it exists, under another user.
+    match test_kill_process(alive) {
+        Ok(()) => Some(pid),
+        Err(error) if error == Errno::PERM => Some(pid),
+        Err(_) => None,
     }
 }
 

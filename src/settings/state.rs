@@ -47,10 +47,7 @@ fn webhook_rows(config: &Config) -> Vec<WebhookRow> {
         .iter()
         .map(|webhook| WebhookRow {
             name: webhook.name.clone(),
-            host: url::Url::parse(&webhook.url)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .unwrap_or_default(),
+            host: webhook.host(),
             signed: webhook.signing_secret.is_some(),
         })
         .collect()

@@ -179,7 +179,11 @@ nudge core send t7           # send a core terminal's output now (--blocked to m
 
 On Linux the service is `~/.config/systemd/user/nudge-watch.service`; on macOS, `~/Library/LaunchAgents/dev.nudge.watch.plist`. It runs `~/.local/bin/nudge core watch` (or this binary, without that link), restarts it if it fails, and keeps the absolute entries of the `PATH` you installed it with, so `hc` is found. Running `install` again restarts a running watcher on the new file. On a Linux server, a user service stops when you log out unless lingering is on; `install` tells you when it's off and how to turn it on (`loginctl enable-linger <you>`), but doesn't change it.
 
-The watcher applies the same rules as the herdr plugin (turn length, cooldown, scope, routes, away, `nudge off`) to each terminal that reports its status: `blocked` and `error` notify, a long `done` notifies. Terminals that already exist when it starts are only recorded, never notified, so a restart doesn't replay old events. Only one watcher runs per machine; a second one says so and exits. Each machine watches its own terminals; `[core] watch = "connected"` also watches connected machines' terminals (`box/t7`). Events from core terminals carry `source.backend: "core"`, and their `reply_hint` is `hc send <terminal> "..."`. `nudge notify` run inside a core terminal is from that terminal. The watcher records what it's doing in `~/.local/state/nudge/watch.json`. It doesn't know which terminal you're looking at yet, so it notifies even for the one on screen.
+The watcher applies the same rules as the herdr plugin (turn length, cooldown, scope, routes, away, `nudge off`) to each terminal that reports its status: `blocked` and `error` notify, a long `done` notifies. Terminals that already exist when it starts are only recorded, never notified, so a restart doesn't replay old events. Only one watcher runs per machine; a second one says so and exits. Each machine watches its own terminals; `[core] watch = "connected"` also watches connected machines' terminals (`box/t7`). Events from core terminals carry `source.backend: "core"`, and their `reply_hint` is `hc send <terminal> "..."`. `nudge notify` run inside a core terminal is from that terminal. The watcher records what it's doing in `~/.local/state/nudge/watch.json`.
+
+The desktop app tells nudge which terminal you're looking at, and what this machine's spaces are called, with `nudge core context '<json>'` (`{terminal, window_active, spaces: [{id, name}]}`; nudge stamps it with the time it arrives, by its own clock, stores it in `~/.local/state/nudge/context.json` and refuses malformed JSON). A terminal counts as watched, so it isn't notified, only when the context names it, the window is active and the context arrived under 90 s ago; [away mode](#away-mode) overrides. With no context, or an old one (the app closed, the laptop asleep), nothing counts as watched. Space names from the context let [routes](#send-some-agents-to-another-webhook) and `[scope]` match a space by its name as well as its id.
+
+`nudge status --json` prints what a panel needs to draw this machine's nudge: the switch, auto-notify and away, the webhooks by name and host, the routes, the watcher (running or not, connected, started by), the login service, the app's context, the spaces and followed terminals with the webhook each notifies and why (`pane`, `workspace` or `default`), and the watcher's recent decisions. It never includes a URL, header or secret, and it changes no file (an old-format config is read, not rewritten).
 
 ### Notifications written by the agent
 
@@ -323,6 +327,7 @@ A config with routes is still read by older nudge versions, but they ignore the 
 | --- | --- |
 | `~/.config/nudge/config.toml` | Webhooks (URL, Authorization header, optional description and signing secret), `[auto]`, `[scope]` and `[[route]]` |
 | `~/.local/state/nudge/state.json` | The on/off switch, the auto-notify and away toggles, and per-pane timestamps |
+| `~/.local/state/nudge/watch.json`, `context.json` | What the herdr-core watcher is doing; the desktop app's focus and space names |
 | `~/.local/bin/nudge` | Optional link to the plugin's `nudge` command; kept current across plugin updates |
 
 | Environment variable | Effect |
@@ -346,10 +351,11 @@ nudge default <webhook>
 nudge route  ls [--json]
 nudge route  set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
 nudge route  rm  (--pane NAME | --workspace NAME) [--backend tui|core]
-nudge core   watch [--once] | send <terminal> [--blocked] | service install|remove|status
+nudge core   watch [--once] | send <terminal> [--blocked] | service install|remove|status | context '<json>'
 nudge doctor [--ping]
 nudge settings
 nudge list   [--json]
+nudge status --json
 nudge mcp
 ```
 
