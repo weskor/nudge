@@ -24,6 +24,8 @@ pub(super) struct Args {
     pub(super) ping: bool,
     pub(super) pane: bool,
     pub(super) json: bool,
+    pub(super) once: bool,
+    pub(super) blocked: bool,
     pub(super) help: bool,
     pub(super) version: bool,
 }
@@ -76,6 +78,8 @@ pub(super) fn parse_args(argv: Vec<String>) -> Result<Args> {
             Long("ping") => parsed.ping = true,
             Long("pane") => parsed.pane = true,
             Long("json") => parsed.json = true,
+            Long("once") => parsed.once = true,
+            Long("blocked") => parsed.blocked = true,
             Long("help") | Short('h') => parsed.help = true,
             Long("version") | Short('v') => parsed.version = true,
             Value(positional) => parsed.positionals.push(utf8(positional)?),

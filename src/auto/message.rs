@@ -61,6 +61,9 @@ pub(crate) fn auto_message(trigger: Trigger, raw: &str, lines: usize) -> String 
         Trigger::Settled(Settled::Blocked) => {
             "Agent is waiting for approval or input (auto-detected by herdr; this message was not written by the agent)."
         }
+        Trigger::Settled(Settled::Error) => {
+            "Agent reported an error (auto-detected by herdr; this message was not written by the agent)."
+        }
         Trigger::Manual => {
             "The user asked you to look at this agent (sent from herdr; this message was not written by the agent)."
         }

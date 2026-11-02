@@ -1,6 +1,7 @@
 //! Run one `nudge` invocation: hand plugin entrypoints to the plugin, answer help and version, else dispatch the
 //! command.
 use super::args::{Args, no_args, parse_args};
+use super::core::core;
 use super::list::list;
 use super::route::{route, set_default};
 use super::send::{notify, ping};
@@ -43,6 +44,7 @@ fn dispatch(command: &str, rest: &[String], args: Args, env: &Env) -> Result<u8>
         "on" => switch(true, rest, env),
         "off" => switch(false, rest, env),
         "default" => set_default(rest, env),
+        "core" => core(rest, &args, env),
         "doctor" => {
             no_args(rest, "doctor")?;
             doctor::doctor(args.ping, args.pane, env)

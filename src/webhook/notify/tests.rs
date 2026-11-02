@@ -1,9 +1,67 @@
-use crate::config::{Route, Selector};
+use crate::config::{Route, Scope, Selector};
+use crate::env::Env;
+use crate::env::tests::FakeRun;
 use crate::error::Error;
+use crate::source::Backend;
 use crate::state::update_state;
 use crate::webhook::status::{NotifyStatus, Status};
 use crate::webhook::tests::{FakeWebhook, config, env, herdr_and_git, webhook_error};
 use crate::webhook::{Origin, notify_webhook, ping_webhook};
+
+#[test]
+fn notify_inside_a_core_terminal_is_from_that_terminal_along_its_route() {
+    let hook = FakeWebhook::start(|_| (200, String::new()));
+    let state = tempfile::tempdir().unwrap();
+    let env = Env::from([
+        ("HC_TERMINAL_ID", "t7"),
+        ("NUDGE_STATE_DIR", state.path().to_str().unwrap()),
+    ]);
+    let terminal = r#"{"address":"t7","name":"api","labels":{"herdr.space":"s1"}}"#;
+    let run = FakeRun::new([("hc get t7 --json", terminal)]);
+    let origin = Origin {
+        env: &env,
+        cwd: "/srv/api",
+        run: &run,
+    };
+    let mut config = config(&hook.base);
+    config.route = vec![Route {
+        selector: Selector::Workspace("s1".into()),
+        webhook: "research".into(),
+        backend: Some(Backend::Core),
+    }];
+    let sent = notify_webhook(&config, None, NotifyStatus::Done, "shipped", None, origin).unwrap();
+    let body: serde_json::Value = serde_json::from_str(&hook.requests()[0].body).unwrap();
+    assert_eq!(
+        (&body["from_agent"], &body["reply_hint"], &body["webhook"]),
+        (
+            &"api".into(),
+            &"reply with: hc send t7 \"...\"".into(),
+            &"research".into()
+        )
+    );
+    assert_eq!(
+        body["source"],
+        serde_json::json!({ "backend": "core", "host": crate::source::host_name(), "pane": "t7" })
+    );
+    assert_eq!(sent.notification.webhook, "research");
+    let recorded = update_state(&env, |state| state.panes["core:t7"].self_notified_at).unwrap();
+    assert!(
+        recorded.is_some(),
+        "the watcher won't send a second notification for this turn"
+    );
+
+    config.scope = Scope {
+        workspaces: vec!["s2".into()],
+        agents: Vec::new(),
+    };
+    let refused = notify_webhook(&config, None, NotifyStatus::Done, "x", None, origin).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains(r#"agent "api" in workspace "s1" is outside nudge's scope"#),
+        "{refused}"
+    );
+}
 
 #[test]
 fn notify_follows_the_senders_route_unless_a_webhook_is_named_and_ping_ignores_routes() {

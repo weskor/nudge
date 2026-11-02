@@ -38,6 +38,12 @@ toast = true             # herdr toast when one is sent
 workspaces = ["api"]     # herdr workspace names (or ids)
 agents = ["reviewer"]    # herdr agent names (or pane ids)
 
+# Optional: the herdr-core watcher (`nudge core watch`). Each machine's watcher handles only its
+# own terminals ("own", the default). "connected" also handles connected machines' terminals
+# (box/t7), for a machine that can't run nudge; nobody watches them while this one sleeps.
+[core]
+watch = "own"
+
 # Optional: send one pane's or one workspace's notifications to a webhook other than the default.
 # The most specific wins: a pane route, then a workspace route, then default_webhook. Routes of
 # each kind are tried in file order. Set them with `nudge route set`; list them with `nudge route ls`.

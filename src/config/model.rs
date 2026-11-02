@@ -98,6 +98,14 @@ impl Scope {
     }
 }
 
+/// `[core]`: the herdr-core watcher (`nudge core watch`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CoreSettings {
+    /// `watch = "connected"`: also notify for connected machines' terminals (`box/t7`), for a machine that can't run
+    /// nudge. By default (`"own"`) each machine's watcher handles only its own terminals.
+    pub(crate) watch_connected: bool,
+}
+
 /// A config as read from disk. `Default` is the empty config `nudge setup` starts from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Config {
@@ -107,6 +115,7 @@ pub(crate) struct Config {
     pub(crate) scope: Scope,
     /// `[[route]]` tables in file order: which webhook a pane's or a workspace's notifications go to.
     pub(crate) route: Vec<Route>,
+    pub(crate) core: CoreSettings,
 }
 
 #[cfg(test)]

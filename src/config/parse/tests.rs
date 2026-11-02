@@ -169,3 +169,25 @@ fn rejects_bad_routes_naming_each() {
         "a backend makes it a different route"
     );
 }
+
+#[test]
+fn core_watch_is_own_unless_connected_and_saved_only_when_connected() {
+    let own = parse_config(&format!("{VALID}\n[core]\nwatch = \"own\"\n"), "cfg").unwrap();
+    assert!(!own.core.watch_connected);
+    assert!(!serialize_config(&own).contains("[core]"), "the default isn't written");
+    let connected = parse_config(&format!("{VALID}{ROUTES}\n[core]\nwatch = \"connected\"\n"), "cfg").unwrap();
+    assert!(connected.core.watch_connected);
+    let saved = serialize_config(&connected);
+    assert!(saved.contains("[core]\nwatch = \"connected\"\n"), "{saved}");
+    assert_eq!(parse_config(&saved, "saved").unwrap(), connected);
+    let message = config_error(parse_config(
+        &format!("{VALID}\n[core]\nwatch = \"all\"\nlinger = true\n"),
+        "cfg",
+    ));
+    for expected in [
+        r#"core.watch: must be "own" or "connected""#,
+        "core.linger: unknown setting",
+    ] {
+        assert!(message.contains(expected), "missing {expected:?} in\n{message}");
+    }
+}

@@ -43,6 +43,7 @@ Each area is a folder whose `mod.rs` is the facade (submodules are private); eac
 | `src/source/` | What a notification comes from, backend-neutral: `AgentRef`, `Transition`, `Backend` and the `AgentSource` trait |
 | `src/pipeline/` | The shared path from a status change to a webhook request: rules, scope, route, tail, payload, delivery, cooldown give-back |
 | `src/herdr/` | herdr queries and the TUI's `AgentSource` (`TuiSource`): agents, workspaces, sender detection, plugin registration and logs, the `~/.local/bin/nudge` link |
+| `src/core/` | The herdr-core backend: `hc events` parsing, the watcher (`nudge core watch`, its lock and `watch.json`), `CoreSource` over `hc`, `nudge core send`, and the sender inside a core terminal |
 | `src/auto/` | Auto-notify rules, redaction and the pane message |
 | `src/webhook/` | The notification payload, sending and signing, and `notify`/`ping` |
 | `src/config/` | Config model, routes, value checks, parsing, reading and migrating, writing and serializing |

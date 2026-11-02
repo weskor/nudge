@@ -1,0 +1,63 @@
+# herdr-core backend
+
+`nudge core watch` is one long-running watcher per machine for herdr-core terminals. It takes an advisory lock on
+`watch.lock` in the state dir (a second watcher prints `nudge core watch is already running (pid N)` and exits 0),
+runs `hc events --json`, and reads its first line as a snapshot: each terminal's status is recorded (a working
+terminal's turn starts at its `status_ms`) without notifying. Each later `status` event becomes a `Transition` for the
+shared pipeline (the same rules, scope, routes, redaction and switch as the TUI plugin): `blocked` and `error` notify
+(an error is sent as `status: "blocked"` with the lead `Agent reported an error (auto-detected by herdr; …)`), `done`
+after the shortest turn notifies, the cooldown applies. `finished` / `removed` drop the terminal's state; `missed`
+reconciles like the snapshot. Only this core's own terminals (`t7`) are handled unless `[core] watch = "connected"`
+(then `box/t7` too). No terminal counts as watched yet (focus comes from the desktop app in a later slice). When the
+stream ends it reconnects with backoff (1, 2, 5, 10, 30 s, then every 30 s), forever; `--once` exits when the stream
+ends instead (exit 1 if no snapshot came). It writes `watch.json` (pid, start, how started, connected, last seq, the
+terminals with their space and webhook, the last 20 decisions; no secrets) after every line. Payloads from core have
+`source: {backend: "core", host, pane: "<address>"}` and `reply_hint: reply with: hc send <address> "..."`.
+
+`nudge core send <terminal> [--blocked]` sends a core terminal's output to its webhook now (question, or blocked),
+following its route, ignoring scope. `nudge notify` inside a core terminal (`$HC_TERMINAL_ID`, and no
+`$HERDR_PANE_ID`) is from that terminal: `hc get <id> --json` names it (`--agent` / `$NUDGE_AGENT` rename it), routes
+and scope match it by name, address or space id, and `self_notified_at` is recorded under `core:<id>` so the watcher
+doesn't send a duplicate.
+
+## Sub-features
+
+- `core-watch` snapshot silence, done/blocked/error notify, another machine's terminal skipped, a malformed line
+  logged (`skipped a line from hc events: not JSON`) and skipped, `hc events ended` on stream end.
+- `core-watch-connected` `[core] watch = "connected"` handles `box/t7` too.
+- `core-watch-routes` a pane route by terminal name, a workspace route by space id, a `backend = "tui"` route that
+  doesn't apply to core.
+- `core-watch-scope`, `core-watch-off`, `core-watch-auto-off` skip with `skipped (outside nudge's scope)`,
+  `skipped (nudge is off)`, `skipped (auto-notify is off)`.
+- `core-watch-no-core` `--once` with no snapshot: exit 1, `hc events ended before its first snapshot: is herdr-core
+  running?`.
+- `core-send` question / `--blocked`, an unknown terminal (exit 1), nudge off (exit 1).
+- `core-notify` notify and test inside a core terminal; an unknown `$HC_TERMINAL_ID` still counts as that terminal.
+- `core-cli` usage errors (exit 2).
+- Unit-tested only: the lock (second watcher), the backoff schedule, `missed` reconcile, `removed` forgetting,
+  `watch.json` contents.
+
+## How to get to it (user POV)
+
+- `nudge core watch` (in a core terminal, a login service later, or by hand); `nudge core send t7`; `nudge notify` from
+  an agent in a core terminal.
+
+## Driving it with verify-nudge
+
+Preconditions:
+
+- `$VN seed-config`; `$VN seed-state '{"auto": true}'`.
+- A fake `hc` fixture at `<RUN>/hc.json` (same rule shape as herdr's; parity uses the `hc(...)` op). `hc events --json`
+  is one rule whose `stdout` is the snapshot line and the event lines joined by newlines; add `read <t> --lines 200`
+  and `get <t> --json` rules as needed. Calls are logged to `<RUN>/hc-calls.jsonl` and appear as `hc_calls`.
+
+- **Watch.** `$VN run -- core watch --once`: stderr `[nudge] t1 done: notified webhook (HTTP 200)` lines; `webhook[]`
+  bodies with `source.backend: "core"`; `files.state_dir_entries` include `watch.json` and `watch.lock`.
+- **Send.** `$VN run -- core send t1`: `Sent t1 to the webhook (HTTP 200).`
+- **Notify.** `$VN run --env HC_TERMINAL_ID=t1 -- notify hi`: `source.pane: "t1"`, state `core:t1.self_notified_at`.
+- **Proof.** `webhook` bodies (status, from_agent, reply_hint, source, webhook), stderr decisions, `hc_calls`.
+
+## Gotchas
+
+- Without `--once` the watcher never exits; drive it with `--once` in the sandbox.
+- The fake stream ends right after its last line, so `--once` exits 0 once the snapshot came.

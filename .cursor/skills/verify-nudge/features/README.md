@@ -61,3 +61,4 @@ four H2 sections in this order: `Sub-features`, `How to get to it (user POV)`, `
 - [Routes and the default webhook](./routes.md): `[[route]]` pane > workspace > default for events, send-pane, notify and MCP; the body's `webhook` field; `nudge route ls|set|rm`, `nudge default`; settings lists routes.
 - [Settings](./settings.md): the full-screen `nudge settings` editor (auto-notify, away mode, `[auto]` values, who can notify, default webhook, test pings, save/discard) and its herdr `settings` action.
 - [MCP server](./mcp.md): `nudge mcp` with `list_webhooks` and `notify_webhook`.
+- [herdr-core backend](./core.md): `nudge core watch` over `hc events` (snapshot silence, done/blocked/error, own vs connected terminals, routes, scope, the switch), `watch.json`, `nudge core send`, and `nudge notify` inside a core terminal.

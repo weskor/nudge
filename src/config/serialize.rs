@@ -26,6 +26,9 @@ pub(super) fn serialize_config(config: &Config) -> String {
     }
     lines.extend(auto_table(config.auto));
     lines.extend(scope_table(&config.scope));
+    if config.core.watch_connected {
+        lines.extend(["[core]".to_owned(), "watch = \"connected\"".to_owned(), String::new()]);
+    }
     for route in &config.route {
         lines.extend(route_table(route));
     }

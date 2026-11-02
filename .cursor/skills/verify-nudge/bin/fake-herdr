@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Fake `herdr` for verify-nudge. Never talks to a real herdr server.
+"""Fake `herdr` (and `hc`, herdr-core's CLI) for verify-nudge. Never talks to a real herdr server or core.
 
-Installed as <RUN>/fakebin/herdr (an sh wrapper that runs this file with VERIFY_NUDGE_FAKE set to the
-wrapper's path); <RUN> is derived from it, so every sandbox has its own fixture and call log:
+Installed as <RUN>/fakebin/herdr and <RUN>/fakebin/hc (sh wrappers that run this file with VERIFY_NUDGE_FAKE set to
+the wrapper's path); <RUN> and the tool (the wrapper's name) are derived from it, so every sandbox has its own
+fixture and call log per tool:
 
-  <RUN>/herdr.json         fixture (missing = behaves like herdr is not installed: exit 1)
-  <RUN>/herdr-calls.jsonl  one JSON line per call: {"argv": [...], "exit": N}
+  <RUN>/<tool>.json         fixture (missing = behaves like the tool is not installed: exit 1)
+  <RUN>/<tool>-calls.jsonl  one JSON line per call: {"argv": [...], "exit": N}
 
 Fixture shape:
   {"rules": [
@@ -16,21 +17,24 @@ Fixture shape:
    "default_exit": 1}
 
 Rules are tried in order; "argv" must match exactly, "prefix" matches the leading arguments.
-"stdout" may be a string or JSON (serialized compactly); "{RUN}" inside it is replaced by <RUN>.
+"stdout" may be a string or JSON (serialized compactly); "{RUN}" inside it is replaced by <RUN>. A multi-line string
+is printed as is (`hc events --json` is one JSON document per line).
 "exit" defaults to 0. No matching rule: exit default_exit (1) with a note on stderr.
 """
 import json
 import os
 import sys
 
-run = os.path.dirname(os.path.dirname(os.path.abspath(os.environ.get("VERIFY_NUDGE_FAKE") or sys.argv[0])))
+wrapper = os.path.abspath(os.environ.get("VERIFY_NUDGE_FAKE") or sys.argv[0])
+run = os.path.dirname(os.path.dirname(wrapper))
+tool = os.path.basename(wrapper)
 args = sys.argv[1:]
-fixture_path = os.path.join(run, "herdr.json")
+fixture_path = os.path.join(run, f"{tool}.json")
 
 
 def log(code):
     line = json.dumps({"argv": args, "exit": code}, ensure_ascii=False) + "\n"
-    fd = os.open(os.path.join(run, "herdr-calls.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    fd = os.open(os.path.join(run, f"{tool}-calls.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
         os.write(fd, line.encode())
     finally:
@@ -42,7 +46,7 @@ try:
         fixture = json.load(f)
 except FileNotFoundError:
     log(1)
-    sys.stderr.write("fake herdr: no fixture (acting as if herdr is not installed)\n")
+    sys.stderr.write(f"fake {tool}: no fixture (acting as if {tool} is not installed)\n")
     sys.exit(1)
 
 for rule in fixture.get("rules", []):
@@ -67,5 +71,5 @@ for rule in fixture.get("rules", []):
 
 code = int(fixture.get("default_exit", 1))
 log(code)
-sys.stderr.write("fake herdr: no rule for " + json.dumps(args) + "\n")
+sys.stderr.write(f"fake {tool}: no rule for " + json.dumps(args) + "\n")
 sys.exit(code)
