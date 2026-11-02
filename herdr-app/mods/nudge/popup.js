@@ -60,7 +60,8 @@ export function defaultOptions(status, machine) {
 
 /**
  * The footer menu. `tab` options open a terminal tab running `argv` on that machine; `nudge` options
- * exec nudge there; `folder` opens nudge's config folder (this computer only).
+ * exec nudge there; `confirm` asks first (the app's confirm dialog), then runs the panel's `command`;
+ * `folder` opens nudge's config folder (this computer only).
  */
 export function footerOptions(status, machine) {
   const installed = status.core?.service?.installed;
@@ -68,11 +69,48 @@ export function footerOptions(status, machine) {
     { id: "setup", label: "Add a webhook…", action: "tab", argv: ["nudge", "setup"], on: machine },
     { id: "settings", label: "Edit settings…", action: "tab", argv: ["nudge", "settings"], on: machine },
     installed
-      ? { id: "service", label: "Remove service", action: "nudge", argv: ["core", "service", "remove"], on: machine }
+      ? { id: "service", label: "Remove service…", action: "confirm", argv: null, on: machine, confirm: removeServiceConfirm(machine) }
       : { id: "service", label: "Install service…", action: "tab", argv: ["nudge", "core", "service", "install"], on: machine },
   ];
   if (machine === THIS_COMPUTER) options.push({ id: "folder", label: "Open config folder", action: "folder", argv: null, on: null });
   return options;
+}
+
+/** The confirm dialog's props before removing the login service: Enter runs `nudge.remove-service`. */
+export function removeServiceConfirm(machine) {
+  const where = machine === THIS_COMPUTER ? "this computer" : machine;
+  return {
+    title: "Remove the login service?",
+    detail: `nudge stops watching ${where}'s terminals now and at login, until you install it again or run nudge core watch.`,
+    command: { name: "nudge.remove-service" },
+  };
+}
+
+/** The toast after removing the login service. */
+export function serviceToast(result, machine) {
+  const where = machine === THIS_COMPUTER ? "" : ` on ${machine}`;
+  if (result && result.code === 0) return { level: "success", title: `Removed the login service${where}` };
+  return { level: "error", title: `Couldn't remove the login service${where}`, body: firstLine(result) };
+}
+
+/**
+ * The toast when Start didn't leave a watcher running: hc's own error, or where to look when the
+ * terminal started and its watcher stopped at once (`result.stdout` is hc's JSON for that terminal).
+ */
+export function startToast(result, machine) {
+  const title = "The watcher didn't start";
+  if (!result) return { level: "error", title, body: "hc not found" };
+  if (result.code !== 0) return { level: "error", title, body: firstLine(result) };
+  let address = "nudge-watch";
+  try { address = JSON.parse(result.stdout).address ?? address; } catch { /* keep the name */ }
+  // hc names a connected machine's terminal `box/t3`, which reads from here; a bare one needs --on.
+  const on = machine === THIS_COMPUTER || address.includes("/") ? "" : ` --on ${machine}`;
+  return { level: "error", title, body: `It stopped right away; hc read ${address}${on} shows why` };
+}
+
+/** The first line nudge or hc printed, with any URL hidden; "nudge not found" when it didn't run. */
+function firstLine(result) {
+  return result ? (result.stderr || result.stdout).trim().split("\n")[0].replace(/https?:\/\/\S+/g, "…") : "nudge not found";
 }
 
 /** The machine picker: this computer and each connected machine, the picked one ticked, with its note. */
@@ -97,6 +135,5 @@ export function sendToast(result, row) {
 
 /** The toast when the big switch fails and flips back. */
 export function switchToast(result, wanted) {
-  const why = result ? (result.stderr || result.stdout).trim().split("\n")[0].replace(/https?:\/\/\S+/g, "…") : "nudge not found";
-  return { level: "error", title: `Couldn't turn nudge ${wanted ? "on" : "off"}`, body: why };
+  return { level: "error", title: `Couldn't turn nudge ${wanted ? "on" : "off"}`, body: firstLine(result) };
 }

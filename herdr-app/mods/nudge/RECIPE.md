@@ -12,10 +12,10 @@ Top to bottom, in the theme's colors (`chrome` background, `border` lines, `fore
 - **Off line**, only when off: "Off: nothing is sent from this computer" (or "from box"), muted.
 - **Config line**, only when nudge reports a config error, in the `blocked` color.
 - **Auto-notify** and **I'm away** rows, each with a small `on` / `off` pill (accent when on).
-- **Watching** row: `● 2 agents · service running` or `● 2 agents · started here` in the `working` color when nudge's watcher runs there; `○ Not watching` with a **Start** button when it doesn't (and nudge is on).
-- **Agents**: one row per agent on the picked machine: a status glyph in its status color, its name, its status word, and where its notifications go with the reason, `→ client-a (pane)`, `→ client-a (workspace)` or `→ main (default)`, then `⋯`.
+- **Watching** row: `● 2 agents · service running` or `● 2 agents · started here` in the `working` color when nudge's watcher runs there (agents: terminals that report a status, not plain shells or the watcher itself); `○ Not watching` with a **Start** button when it doesn't (and nudge is on).
+- **Agents**: one row per agent on the picked machine: a status glyph in its status color, its name (the terminal's name, else its tab's name unless Herdr numbered it, else its title, else its address), its status word, and where its notifications go with the reason, `→ client-a (pane)`, `→ client-a (workspace)` or `→ main (default)`, then `⋯`.
 - **Workspaces**: one row per space on that machine, with its `→ webhook (reason)` and `⋯`.
-- **Recent**: nudge's last decisions, newest first: time, agent and status, and what nudge did (`sent`, `you were watching`, or nudge's own reason).
+- **Recent**: nudge's last decisions, newest first: time, agent (named as in Agents) and status, and what nudge did (`sent`, `you were watching`, or nudge's own reason).
 - **Footer** (40 px): `Default webhook: main ⋯`, `· 3 webhooks`, a **Test** button and a `⋯` menu.
 
 When nudge isn't installed on the picked machine, the panel shows the machine button and "nudge not found", and nothing else.
@@ -30,26 +30,29 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 - **"Send this pane now"** runs `nudge core send <address>` there (`--blocked` for a blocked agent) and toasts the result: sent, "Nudge is off: nothing was sent", or "nudge couldn't reach client-a".
 - **`Default webhook: main ⋯`** opens the webhooks with the default ticked; picking one runs `nudge default <name>`.
 - **Test** runs `nudge test`; "✓ sent" appears beside it, or a toast when it fails.
-- **Footer `⋯`**: "Add a webhook…" and "Edit settings…" open a terminal tab on the picked machine running `nudge setup` / `nudge settings` (secrets are typed only there). "Install service…" opens a tab running `nudge core service install` (it may print a `loginctl enable-linger` hint on a server); "Remove service" runs `nudge core service remove`. "Open config folder" (this computer only) opens `~/.config/nudge`.
-- **Start** runs `hc run --bg --name nudge-watch --label nudge=watch -- nudge core watch` (with `--on <machine>` for a connected one).
-- **Keys** (from `keys.json`, `global` section): `ctrl-shift-y` turns this computer's nudge on or off (`nudge.toggle`), `ctrl-shift-u` sends the focused pane now (`nudge.send`), `ctrl-shift-r` opens the route popup for the focused pane (`nudge.route`). They reach the panel while it's shown.
-- **Refresh**: this computer's status is read once on load and whenever `~/.local/state/nudge` changes; a connected machine's every 10 s, only while it's picked.
-- **Focus**: so nudge skips the agent you're looking at, the panel tells the machine owning the focused terminal with `nudge core context '{"terminal":"t7","window_active":true,"spaces":[...]}'`, tells the machine that had focus before `"terminal": null`, repeats it to the focus owner every 30 s, and sends a machine its spaces when they change. Closing the app sends `"terminal": null`, best effort.
+- **Footer `⋯`**: "Add a webhook…" and "Edit settings…" open a terminal tab on the picked machine running `nudge setup` / `nudge settings` (secrets are typed only there). "Install service…" opens a tab running `nudge core service install` (it may print a `loginctl enable-linger` hint on a server). "Remove service…" asks first, in Herdr's confirm dialog ("Remove the login service?", naming the machine); Confirm runs `nudge core service remove` there and toasts the result. "Open config folder" (this computer only) opens `~/.config/nudge`.
+- **Start** runs `hc run --bg --name nudge-watch --label nudge=watch -- nudge core watch` (with `--on <machine>` for a connected one). If no watcher runs 2.5 s later, a toast says "The watcher didn't start" and which `hc read` shows why.
+- **Keys** (from `keys.json`, `global` section): `ctrl-shift-y` turns this computer's nudge on or off (`nudge.toggle`), `ctrl-shift-s` sends the focused pane now (`nudge.send`), `ctrl-shift-r` opens the route popup for the focused pane (`nudge.route`). They reach the panel while it's shown. None of them is a Herdr key, and `ctrl-shift-u` is avoided: on Linux it starts Unicode input in fcitx5 and IBus.
+- **Refresh**: this computer's status is read once on load and whenever `~/.local/state/nudge` changes; a connected machine's every 10 s, only while it's picked. The config isn't watched: a change made outside the panel shows at the next state change, at the latest with the 30 s focus heartbeat.
+- **Focus**: so nudge skips the agent you're looking at, the panel tells the machine owning the focused terminal with `nudge core context '{"terminal":"t7","window_active":true,"spaces":[...]}'`, tells the machine that had focus before `"terminal": null`, repeats it to the focus owner every 30 s, and sends a machine its spaces when they change. Quitting the app sends `"terminal": null`, best effort.
 
 ## Built from
 
 - `mod.json`: `{ "place": "right", "size": 320, "title": "Nudge" }`.
 - `main.js`: the panel's `View`. `popup-view.js`: the popups, opened as `openOverlay({ mod: "nudge", kind: "popup", props: { popup: "route" | "default" | "footer" | "machines", ... } })`; the popup tells the panel what changed through `setShared("nudge.machine")` and `setShared("nudge.bump")`.
 - `rows.js` and `popup.js`: pure functions (rows, route reasons, the context plan, popup options with the exact `nudge` argv each runs), tested with `bun test`.
-- `herdr` functions: `agents`, `terminals`, `spaces`, `machines`, `focused`, `window`, `exec`, `hc`, `notify`, `openOverlay`, `closeOverlay`, `props`, `shared`, `setShared`, `run` (`tab.new`, `space.new`), `nextCommand`, `watchFolder`, `home`, `theme`.
+- `herdr` functions: `agents`, `terminals`, `spaces`, `machines`, `focused`, `window`, `exec`, `hc`, `notify`, `openOverlay` (its popups, and Herdr's own `confirm` dialog with `command: { name: "nudge.remove-service" }`), `closeOverlay`, `props`, `shared`, `setShared`, `run` (`tab.new`, `space.new`), `nextCommand`, `watchFolder`, `home`, `theme`.
 - Programs: `nudge` (`status --json`, `on`, `off`, `auto`, `away`, `default`, `route set|rm`, `test`, `core send`, `core context`, `core service remove`) and `hc run`.
+- `preview.png`: `herdr-app shot` of the panel in a sandboxed window (its own `HERDR_APP_HOME`, `HC_SESSION` and home, on a virtual display), cropped to the panel.
 
 ## Watch out
 
 - **It runs programs**: `nudge` and `hc`, here and on connected machines (`exec(..., { on })`), and it **changes nudge's settings** there (on/off, auto, away, routes, default webhook, the login service). It reads no files and writes none itself; nudge writes its own.
 - It only ever reads `nudge status --json`, which lists webhooks by name and host, never URLs or secrets. Toasts never repeat nudge's error text for a failed send.
 - `exec` rejects when `nudge` isn't installed there; the panel shows "nudge not found" for that machine.
-- An older nudge without `status --json` shows its error line instead of the panel.
+- An older nudge without `status --json` shows "This nudge has no `nudge status --json`; update nudge there" instead of the panel.
+- **Start** runs `nudge` in a herdr-core terminal, so it uses the core's PATH, which can differ from the app's: an older nudge first on the core's PATH starts and stops at once (the toast says where to look).
+- The panel docks on the right the first time Herdr starts with the folder in place: after copying it, restart Herdr.
 - `herdr-app check` renders only the first, loading state.
 
 ## Done when
@@ -59,9 +62,12 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 - The machine picker switches machines, and a machine without nudge says "nudge not found".
 - A route popup sets a route and the row shows its reason; "Use workspace / default" removes it; the default webhook popup changes the default.
 - With nudge not installed, the panel says so and offers nothing else.
+- "Remove service…" asks before it runs; Cancel runs nothing.
+- Start with no working nudge on the core's PATH toasts "The watcher didn't start".
+- Quitting the app leaves `"terminal": null` in the focused machine's `context.json`.
 
 ## Install by hand
 
-1. Copy `mods/nudge/` into `~/.config/herdr-app/mods/nudge/`, leaving `RECIPE.md` and `keys.json` out.
+1. Copy `mods/nudge/` into `~/.config/herdr-app/mods/nudge/`, leaving `RECIPE.md`, `keys.json` and `preview.png` out.
 2. Merge the `global` entries of `keys.json` into `~/.config/herdr-app/keys.json`, keeping any key you already use.
-3. Run `herdr-app check ~/.config/herdr-app/mods/nudge`.
+3. Run `herdr-app check ~/.config/herdr-app/mods/nudge`, then restart Herdr.

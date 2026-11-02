@@ -8,7 +8,7 @@ import {
   nextCommand, watchFolder, home, theme, props, shared,
 } from "herdr";
 import * as R from "./rows.js";
-import { sendOption, sendToast, switchToast } from "./popup.js";
+import { sendOption, sendToast, serviceToast, startToast, switchToast } from "./popup.js";
 import { nudge, bump, initPopup, renderPopup } from "./popup-view.js";
 
 const key = (m) => m ?? "";
@@ -73,6 +73,7 @@ export default class Nudge extends View {
       return this.flip(cx, null, "on");
     }
     if (name === "open") return this.load(cx, this.picked());
+    if (name === "remove-service") return this.removeService(cx);
     const address = focused()?.terminal;
     if (!address || (name !== "send" && name !== "route")) return;
     const m = R.splitAddress(address).machine;
@@ -107,12 +108,21 @@ export default class Nudge extends View {
     openOverlay({ mod: "nudge", kind: "popup", width: 260, height: 320, props: { popup: kind, ...extra } });
   }
 
+  // `hc run --bg` only says the terminal started; the watcher can still stop at once (an old nudge on the
+  // core's PATH, no config), so look again and say why when it isn't running.
   startWatcher(cx, m) {
     cx.spawn(async (cx) => {
-      await hc(R.watchStartArgs(m)).catch(() => null);
-      await cx.sleep(1500);
+      const result = await hc(R.watchStartArgs(m)).catch(() => null);
+      await cx.sleep(2500);
       await this.load(cx, m);
+      if (!this.status(m)?.core?.watcher?.running) notify(startToast(result, m));
     });
+  }
+
+  async removeService(cx) {
+    const m = this.picked();
+    notify(serviceToast(await nudge(["core", "service", "remove"], m), m));
+    await this.load(cx, m);
   }
 
   test(cx, m, status) {
@@ -143,6 +153,7 @@ export default class Nudge extends View {
     const head = R.header(state, m);
     if (state.kind !== "ok") return root.child(this.top(t, m, null)).child(this.line(t, head.text, t.muted));
     const s = state.status;
+    const agentList = R.agentRows(agents(), terminals(), s, m);
     return root
       .child(this.top(t, m, s))
       .when(head.kind === "off", (el) => el.child(this.line(t, head.text, t.muted)))
@@ -152,11 +163,11 @@ export default class Nudge extends View {
       .child(this.watching(t, m, s))
       .child(v_flex().id("nudge-body").flex_1().min_h(0).overflow_y_scrollbar()
         .child(this.section(t, "Agents"))
-        .children(this.rowsOrEmpty(t, R.agentRows(agents(), terminals(), s, m).map((r) => this.routeRow(t, r, s)), "No agents"))
+        .children(this.rowsOrEmpty(t, agentList.map((r) => this.routeRow(t, r, s)), "No agents"))
         .child(this.section(t, "Workspaces"))
         .children(this.rowsOrEmpty(t, R.spaceRows(spaces(), s, m).map((r) => this.routeRow(t, r, s)), "No workspaces"))
         .child(this.section(t, "Recent"))
-        .children(this.rowsOrEmpty(t, R.recentRows(s).map((d, i) => this.recent(t, d, i)), "Nothing yet")))
+        .children(this.rowsOrEmpty(t, R.recentRows(s, agentList).map((d, i) => this.recent(t, d, i)), "Nothing yet")))
       .child(this.footer(t, m, s));
   }
 

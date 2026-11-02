@@ -3,7 +3,7 @@
 // The options and the argv they run come from popup.js; this file only draws and runs them.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, notify, props, closeOverlay, setShared, run, spaces, machines, home, theme } from "herdr";
+import { exec, notify, props, closeOverlay, openOverlay, setShared, run, spaces, machines, home, theme } from "herdr";
 import { routeOptions, defaultOptions, footerOptions, machineOptions, sendToast, SSH_NOTE } from "./popup.js";
 import { machineList, readStatus, tabCommand } from "./rows.js";
 
@@ -49,6 +49,9 @@ async function choose(item, cx) {
     const c = tabCommand(spaces(), item.on, item.argv, "nudge");
     run(c.name, c.args);
   } else if (item.action === "folder") cx.open_url(`file://${home()}/.config/nudge`);
+  else if (item.action === "confirm") {
+    openOverlay({ mod: "confirm", kind: "dialog", modal: true, width: 380, height: 170, props: item.confirm });
+  }
   else if (item.argv) {
     const result = await nudge(item.argv, item.on);
     if (item.action === "send") notify(sendToast(result, p.routeFor));
