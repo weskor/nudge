@@ -48,9 +48,10 @@ except ImportError:
     tomllib = None
 
 BIN_DIR = os.path.dirname(os.path.realpath(__file__))
-# Fakes run by fake-herdr besides herdr itself: herdr-core's CLI and the service managers `nudge core service`
-# drives. Each has <RUN>/<tool>.json (no fixture: exit 1, never the real tool) and records <tool>_calls when called.
-OPTIONAL_FAKES = ("hc", "systemctl", "loginctl", "launchctl")
+# Fakes run by fake-herdr besides herdr itself: herdr-core's CLI, the service managers `nudge core service`
+# drives, and the Herdr desktop app's CLI `nudge panel install` asks. Each has <RUN>/<tool>.json (no fixture: exit 1,
+# never the real tool) and records <tool>_calls when called.
+OPTIONAL_FAKES = ("hc", "systemctl", "loginctl", "launchctl", "herdr-app")
 SKILL_DIR = os.path.dirname(BIN_DIR)
 REPO = os.path.realpath(os.path.join(SKILL_DIR, "..", "..", ".."))
 EVIDENCE_ROOT = os.path.join(REPO, ".verify")
@@ -685,6 +686,17 @@ class Sandbox:
         app_context = os.path.join(self.state_dir, "context.json")
         if os.path.exists(app_context):
             out["app_context"] = json.loads(open(app_context).read())
+        # The Herdr desktop app's home (`nudge panel install`), only while it exists: the panel's files, and for
+        # each layout whether it shows the panel.
+        app_home = os.path.join(self.home, ".config", "herdr-app")
+        if os.path.isdir(app_home):
+            mod = os.path.join(app_home, "mods", "nudge")
+            layouts = os.path.join(app_home, "layouts")
+            out["herdr_app"] = {
+                "mod_files": sorted(os.listdir(mod)) if os.path.isdir(mod) else None,
+                "layouts": {name: '"mod": "nudge"' in open(os.path.join(layouts, name)).read()
+                            for name in sorted(os.listdir(layouts))} if os.path.isdir(layouts) else None,
+            }
         return out
 
     # ---- drivers
@@ -2551,6 +2563,28 @@ def scenarios():
     add("status-json-old-config", raw_config(OLD_FORMAT_CONFIG),
         cmd(["status", "--json"], expect=0, config_unchanged=1, has=['"default_webhook": "main"', '"name": "research"'],
             lacks=["updated"]))
+
+    # ---- `nudge panel install`: the panel's files into the Herdr app's home, then docked through a fake `herdr-app`
+    # (never the real window). `herdr_app` in `files` lists the mod's files and which layouts show the panel.
+    layouts_dir = "home/.config/herdr-app/layouts/"
+    shipped = json.dumps({"id": "root", "type": "row", "children": [{"id": "work", "type": "block", "content": {"tab": "active"}}]})
+    own = json.dumps({"id": "root", "type": "row", "cloned_from": {"name": "main"}, "children": []})
+    with_panel = json.dumps({"id": "root", "type": "row", "cloned_from": {"name": "main"},
+                             "children": [{"id": "nudge-panel", "type": "block", "content": {"mod": "nudge"}}]}, indent=2)
+    status = lambda name: rule(["status"], {"layout": name, "errors": []})
+    add("panel-install-closed",
+        cmd(["panel", "install"], expect=0, has=["Installed the Nudge panel in ", "Herdr's window isn't open"]),
+        cmd(["panel", "install"], expect=0, has="Already installed: the Nudge panel"))
+    add("panel-install-own-layout", write(layouts_dir + "mine.json", own), fake("herdr-app", fixture(status("mine"))),
+        cmd(["panel", "install"], expect=0, has='Docked it on the right of your layout "mine".'),
+        cmd(["panel", "install"], expect=0, has='It\'s docked in your layout "mine".'))
+    switch = rule(["do", "layout.switch", "--name", "main-nudge"], {"ok": True})
+    add("panel-install-shows-the-copy", write(layouts_dir + "main.json", shipped), write(layouts_dir + "main-nudge.json", with_panel),
+        fake("herdr-app", fixture(status("main"), switch)),
+        cmd(["panel", "install"], expect=0, has='Docked it on the right of "main-nudge", your copy of Herdr\'s "main" layout'))
+    add("panel-install-copy-refused", write(layouts_dir + "main.json", shipped), fake("herdr-app", fixture(status("main"))),
+        cmd(["panel", "install"], expect=1, has='nudge: Herdr couldn\'t copy the layout "main"'))
+    add("panel-cli", cmd(["panel"], expect=2), cmd(["panel", "frob"], expect=2), cmd(["panel", "install", "extra"], expect=2))
 
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per

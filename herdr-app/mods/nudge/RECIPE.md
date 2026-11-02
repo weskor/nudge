@@ -52,7 +52,7 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 - `exec` rejects when `nudge` isn't installed there; the panel shows "nudge not found" for that machine.
 - An older nudge without `status --json` shows "This nudge has no `nudge status --json`; update nudge there" instead of the panel.
 - **Start** runs `nudge` in a herdr-core terminal, so it uses the core's PATH, which can differ from the app's: an older nudge first on the core's PATH starts and stops at once (the toast says where to look).
-- Herdr's own layouts take no new panels: Herdr docks the panel on the right only while a layout of your own is shown, the first time it sees the folder. On the default layout, clone it (`herdr-app do layout.clone '{"name":"main"}'`) and restart Herdr; or open the panel over the window with `herdr-app do mod.open --name nudge`.
+- Herdr's own layouts take no new panels: Herdr docks a new mod only while a layout of your own is shown. `nudge panel install` handles it: on one of Herdr's layouts it makes your copy with Herdr's `layout.clone` (`main-nudge` for the default) and adds the panel to the copy, live.
 - `herdr-app check` renders only the first, loading state.
 
 ## Done when
@@ -66,9 +66,13 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 - Start with no working nudge on the core's PATH toasts "The watcher didn't start".
 - Quitting the app leaves `"terminal": null` in the focused machine's `context.json`.
 
+## Install with nudge
+
+With Herdr open, run `nudge panel install`. It writes the five files above into `~/.config/herdr-app/mods/nudge/` (only those that differ) and docks the panel on the right of the window without restarting anything. On one of Herdr's own layouts it first runs `herdr-app do layout.clone` (copy named `<layout>-nudge`, with your sizes and shown panels) and shows the copy; on a layout of your own it adds the panel to it. Running it again changes nothing. With Herdr closed it installs the files and says to run it again once Herdr is open.
+
 ## Install by hand
 
 1. Copy `mods/nudge/` into `~/.config/herdr-app/mods/nudge/`, leaving `RECIPE.md`, `keys.json` and `preview.png` out.
 2. Merge the `global` entries of `keys.json` into `~/.config/herdr-app/keys.json`, keeping any key you already use.
 3. Run `herdr-app check ~/.config/herdr-app/mods/nudge`.
-4. To dock it, show a layout of your own (on the default one: `herdr-app do layout.clone '{"name":"main"}'`) and restart Herdr. To use it without docking, `herdr-app do mod.open --name nudge` opens it over the window and closes it again.
+4. To dock it, show a layout of your own (on the default one: `herdr-app do layout.clone '{"name":"main"}'`) and add `{ "id": "nudge-panel", "type": "block", "content": { "mod": "nudge" }, "size": { "px": 320 } }` as the last child of its root row. Or open it over the window with `herdr-app do mod.open --name nudge`.

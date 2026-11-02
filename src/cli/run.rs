@@ -11,7 +11,7 @@ use super::usage::answer_info;
 use crate::env::{Env, System};
 use crate::error::{Error, Result};
 use crate::setup::{SetupOptions, setup};
-use crate::{doctor, mcp, plugin, settings};
+use crate::{doctor, mcp, panel, plugin, settings};
 
 /// Run the command line `words` (without the program name); returns the exit code.
 pub(crate) fn run(words: Vec<String>, env: &Env) -> Result<u8> {
@@ -48,6 +48,10 @@ fn dispatch(command: &str, rest: &[String], args: Args, env: &Env) -> Result<u8>
         "away" => toggle(Toggle::Away, rest, env),
         "default" => set_default(rest, env),
         "core" => core(rest, &args, env),
+        "panel" => match rest {
+            [action] if action == "install" => panel::install(env, &System),
+            _ => Err(Error::Usage("panel takes install".into())),
+        },
         "doctor" => {
             no_args(rest, "doctor")?;
             doctor::doctor(args.ping, args.pane, env)

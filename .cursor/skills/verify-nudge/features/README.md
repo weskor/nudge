@@ -62,3 +62,4 @@ four H2 sections in this order: `Sub-features`, `How to get to it (user POV)`, `
 - [Settings](./settings.md): the full-screen `nudge settings` editor (auto-notify, away mode, `[auto]` values, who can notify, default webhook, test pings, save/discard) and its herdr `settings` action.
 - [MCP server](./mcp.md): `nudge mcp` with `list_webhooks` and `notify_webhook`.
 - [herdr-core backend](./core.md): `nudge core watch` over `hc events` (snapshot silence, done/blocked/error, own vs connected terminals, routes, scope, the switch), `watch.json`, `nudge core send`, and `nudge notify` inside a core terminal.
+- [Desktop panel install](./panel.md): `nudge panel install`, the panel's files into Herdr's mods and docked in the open window (Herdr's own layout copied with `layout.clone` first), through a fake `herdr-app`.
