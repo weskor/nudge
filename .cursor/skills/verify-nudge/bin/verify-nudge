@@ -48,6 +48,9 @@ except ImportError:
     tomllib = None
 
 BIN_DIR = os.path.dirname(os.path.realpath(__file__))
+# Fakes run by fake-herdr besides herdr itself: herdr-core's CLI and the service managers `nudge core service`
+# drives. Each has <RUN>/<tool>.json (no fixture: exit 1, never the real tool) and records <tool>_calls when called.
+OPTIONAL_FAKES = ("hc", "systemctl", "loginctl", "launchctl")
 SKILL_DIR = os.path.dirname(BIN_DIR)
 REPO = os.path.realpath(os.path.join(SKILL_DIR, "..", "..", ".."))
 EVIDENCE_ROOT = os.path.join(REPO, ".verify")
@@ -518,8 +521,9 @@ class Sandbox:
         os.makedirs(os.path.join(self.run, "runtime"), mode=0o700, exist_ok=True)
         # sh wrappers run the fakes with this interpreter, so the sandbox PATH needs no python3 of its own.
         # VERIFY_NUDGE_FAKE tells the fake which <RUN>/fakebin entry was invoked.
-        for name, target in (("herdr", "fake-herdr"), ("hc", "fake-herdr"), ("wl-paste", "fake-clipboard"),
-                             ("xclip", "fake-clipboard")):
+        fakes = [("herdr", "fake-herdr"), ("wl-paste", "fake-clipboard"), ("xclip", "fake-clipboard")]
+        fakes += [(tool, "fake-herdr") for tool in OPTIONAL_FAKES]
+        for name, target in fakes:
             path = os.path.join(self.run, "fakebin", name)
             if not os.path.lexists(path):
                 with open(path, "w") as f:
@@ -630,15 +634,17 @@ class Sandbox:
 
     def _logs(self):
         return (("requests", self.requests_file), ("herdr", os.path.join(self.run, "herdr-calls.jsonl")),
-                ("clipboard", os.path.join(self.run, "clipboard-calls.jsonl")), ("hc", os.path.join(self.run, "hc-calls.jsonl")))
+                ("clipboard", os.path.join(self.run, "clipboard-calls.jsonl")),
+                *((tool, os.path.join(self.run, f"{tool}-calls.jsonl")) for tool in OPTIONAL_FAKES))
 
     def side_effects(self):
-        requests, herdr, clipboard, hc = (self._since(path, key) for key, path in self._logs())
+        requests, herdr, clipboard, *optional = (self._since(path, key) for key, path in self._logs())
         # herdr calls can run concurrently (agent get + pane read), so their order is not behavior.
         herdr = sorted((c["argv"] for c in herdr), key=lambda a: json.dumps(a))
         effects = {"webhook": requests, "herdr_calls": herdr, "clipboard_calls": clipboard}
-        if hc:  # only herdr-core scenarios call it; others keep their transcript shape
-            effects["hc_calls"] = [c["argv"] for c in hc]
+        for tool, calls in zip(OPTIONAL_FAKES, optional):
+            if calls:  # only scenarios that call it record it; others keep their transcript shape
+                effects[f"{tool}_calls"] = [c["argv"] for c in calls]
         return effects
 
     def files(self):
@@ -671,6 +677,10 @@ class Sandbox:
             out["command_link"] = {"type": "file"}
         else:
             out["command_link"] = None
+        # The login service's unit (`nudge core service install`), only while it exists.
+        unit = os.path.join(self.home, ".config", "systemd", "user", "nudge-watch.service")
+        if os.path.exists(unit):
+            out["login_service"] = open(unit).read().split("\n")
         return out
 
     # ---- drivers
@@ -1532,7 +1542,12 @@ def herdr(fix):
 
 def hc(fix):
     """The fake `hc` (herdr-core) fixture, same shape as herdr's; `hc events --json` is a rule with multi-line stdout."""
-    return {"do": "hc", "fixture": fix}
+    return fake("hc", fix)
+
+
+def fake(tool, fix):
+    """The fixture of one of OPTIONAL_FAKES (hc, systemctl, loginctl, launchctl), same shape as herdr's."""
+    return {"do": "fake", "tool": tool, "fixture": fix}
 
 
 def clip(text):
@@ -2427,6 +2442,33 @@ def scenarios():
         cmd(["core", "send", "a", "b"], expect=2), cmd(["core", "watch", "--blocked"], expect=2),
         cmd(["core", "send", "t1", "--once"], expect=2))
 
+    # ---- the login service (`nudge core service`), on Linux: a systemd user unit, driven through fake `systemctl` and
+    # `loginctl` (never the real ones: without a fixture the fakes exit 1). `login_service` in `files` is the unit's text.
+    user = {"USER": "tester"}
+    systemd = fake("systemctl", fixture(rule(["--user", "daemon-reload"]), rule(["--user", "enable", "--now", "nudge-watch.service"]),
+                                        rule(["--user", "is-active", "nudge-watch.service"], "active"),
+                                        rule(["--user", "disable", "--now", "nudge-watch.service"])))
+    unit_path = "/home/.config/systemd/user/nudge-watch.service"  # under the sandbox; `has` matches raw output
+    add("core-service", systemd, fake("loginctl", fixture(rule(["show-user", "tester", "--property=Linger", "--value"], "no"))),
+        cmd(["core", "service", "status"], expect=0, has="Login service: not installed"),
+        cmd(["core", "service", "install"], env=user, expect=0,
+            has=["Installed the login service: ", unit_path + "\nIt runs `", "core watch` at login and restarts it if it fails.",
+                 "! Lingering is off for tester", "loginctl enable-linger tester"]),
+        cmd(["core", "service", "status"], expect=0, has=["Login service: installed, running\n  ", unit_path]),
+        cmd(["core", "service", "remove"], expect=0, has=["Removed the login service (", unit_path + ")."]),
+        cmd(["core", "service", "remove"], expect=0, has="The login service isn't installed."),
+        cmd(["core", "service", "status"], expect=0, has="Login service: not installed"))
+    add("core-service-command-link", systemd, link("{NUDGE_ROOT}/bin/nudge"),
+        cmd(["core", "service", "install"], expect=0, has="/home/.local/bin/nudge core watch` at login", lacks=["Lingering"]))
+    add("core-service-fails", fake("systemctl", fixture(rule(["--user", "daemon-reload"]))),
+        cmd(["core", "service", "install"], env=user, expect=1,
+            has="nudge: `systemctl --user enable --now nudge-watch.service` failed"),
+        cmd(["core", "service", "status"], expect=0, has="Login service: installed, not running"))
+    add("core-service-no-systemd",
+        cmd(["core", "service", "install"], expect=1, has="nudge: `systemctl --user daemon-reload` failed"))
+    add("core-service-cli", cmd(["core", "service"], expect=2), cmd(["core", "service", "frob"], expect=2),
+        cmd(["core", "service", "install", "--once"], expect=2), cmd(["core", "service", "status", "extra"], expect=2))
+
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per
     # webhook. settings_herdr() lists workspaces api-work, web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4
@@ -2619,9 +2661,9 @@ def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
         elif do == "herdr":
             sb.write_herdr(op["fixture"])
             setup_log.append("herdr fixture: " + ("none (not installed)" if op["fixture"] is None else f"{len(op['fixture']['rules'])} rules"))
-        elif do == "hc":
-            sb.write_herdr(op["fixture"], tool="hc")
-            setup_log.append(f"hc fixture: {len(op['fixture']['rules'])} rules")
+        elif do == "fake":
+            sb.write_herdr(op["fixture"], tool=op["tool"])
+            setup_log.append(f"{op['tool']} fixture: {len(op['fixture']['rules'])} rules")
         elif do == "clip":
             sb.clip(subst(op["text"]))
             setup_log.append("clipboard set")

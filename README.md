@@ -170,9 +170,14 @@ The line under the list explains the row under the cursor. The workspace and age
 For agents running in [herdr-core](https://herdr.dev) terminals (the `hc` command, and the Herdr desktop app), run one watcher per machine:
 
 ```sh
-nudge core watch          # follows `hc events`; reconnects when herdr-core restarts
-nudge core send t7        # send a core terminal's output now (--blocked to mark it blocked)
+nudge core service install   # start the watcher now and at every login (systemd user unit / launchd agent)
+nudge core service status    # installed? running?
+nudge core service remove    # stop it and delete the unit
+nudge core watch             # or run it yourself: follows `hc events`, reconnects when herdr-core restarts
+nudge core send t7           # send a core terminal's output now (--blocked to mark it blocked)
 ```
+
+On Linux the service is `~/.config/systemd/user/nudge-watch.service`; on macOS, `~/Library/LaunchAgents/dev.nudge.watch.plist`. It runs `~/.local/bin/nudge core watch` (or this binary, without that link), restarts it if it fails, and keeps the `PATH` you installed it with, so `hc` is found. On a Linux server, a user service stops when you log out unless lingering is on; `install` tells you when it's off and how to turn it on (`loginctl enable-linger <you>`), but doesn't change it.
 
 The watcher applies the same rules as the herdr plugin (turn length, cooldown, scope, routes, away, `nudge off`) to each terminal that reports its status: `blocked` and `error` notify, a long `done` notifies. Terminals that already exist when it starts are only recorded, never notified, so a restart doesn't replay old events. Only one watcher runs per machine; a second one says so and exits. Each machine watches its own terminals; `[core] watch = "connected"` also watches connected machines' terminals (`box/t7`). Events from core terminals carry `source.backend: "core"`, and their `reply_hint` is `hc send <terminal> "..."`. `nudge notify` run inside a core terminal is from that terminal. The watcher records what it's doing in `~/.local/state/nudge/watch.json`. It doesn't know which terminal you're looking at yet, so it notifies even for the one on screen.
 
@@ -341,7 +346,7 @@ nudge default <webhook>
 nudge route  ls [--json]
 nudge route  set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
 nudge route  rm  (--pane NAME | --workspace NAME) [--backend tui|core]
-nudge core   watch [--once] | send <terminal> [--blocked]
+nudge core   watch [--once] | send <terminal> [--blocked] | service install|remove|status
 nudge doctor [--ping]
 nudge settings
 nudge list   [--json]

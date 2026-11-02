@@ -34,13 +34,24 @@ doesn't send a duplicate.
 - `core-send` question / `--blocked`, an unknown terminal (exit 1), nudge off (exit 1).
 - `core-notify` notify and test inside a core terminal; an unknown `$HC_TERMINAL_ID` still counts as that terminal.
 - `core-cli` usage errors (exit 2).
+- `core-service` (Linux: a systemd user unit, through fake `systemctl` / `loginctl`) `status` says `Login service:
+  not installed`; `install` writes `~/.config/systemd/user/nudge-watch.service` (`ExecStart="<nudge>" core watch`,
+  `Restart=on-failure`, `RestartSec=10`, `Environment="PATH=<PATH at install>"`, `WantedBy=default.target`), runs
+  `systemctl --user daemon-reload` and `enable --now nudge-watch.service`, and with `$USER` set asks
+  `loginctl show-user <user> --property=Linger --value`: `no` prints `! Lingering is off for <user> …
+  loginctl enable-linger <user>`; `status` then asks `systemctl --user is-active` (`installed, running` /
+  `installed, not running`); `remove` runs `disable --now`, deletes the unit and reloads; removing again says
+  `The login service isn't installed.`
+- `core-service-command-link` with `~/.local/bin/nudge` present, the unit runs that link instead of the binary.
+- `core-service-fails` / `core-service-no-systemd` a failing `systemctl` step is exit 1 naming the command.
+- `core-service-cli` usage errors.
 - Unit-tested only: the lock (second watcher), the backoff schedule, `missed` reconcile, `removed` forgetting,
-  `watch.json` contents.
+  `watch.json` contents, the launchd agent (plist text, `launchctl bootout` / `bootstrap gui/<uid>` / `print`).
 
 ## How to get to it (user POV)
 
-- `nudge core watch` (in a core terminal, a login service later, or by hand); `nudge core send t7`; `nudge notify` from
-  an agent in a core terminal.
+- `nudge core service install` (or `nudge core watch` in a core terminal or by hand); `nudge core send t7`;
+  `nudge notify` from an agent in a core terminal.
 
 ## Driving it with verify-nudge
 
@@ -56,6 +67,9 @@ Preconditions:
 - **Send.** `$VN run -- core send t1`: `Sent t1 to the webhook (HTTP 200).`
 - **Notify.** `$VN run --env HC_TERMINAL_ID=t1 -- notify hi`: `source.pane: "t1"`, state `core:t1.self_notified_at`.
 - **Proof.** `webhook` bodies (status, from_agent, reply_hint, source, webhook), stderr decisions, `hc_calls`.
+- **Service.** `$VN run --env USER=tester -- core service install` with `systemctl.json` / `loginctl.json` fixtures in
+  `<RUN>` (no fixture: the fake exits 1, so the real service managers are never reached); `files.login_service` is
+  the unit's text while it exists; `systemctl_calls` / `loginctl_calls` the commands.
 
 ## Gotchas
 

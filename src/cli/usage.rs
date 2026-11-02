@@ -12,7 +12,7 @@ const USAGE: &str = "Usage:
   nudge default <webhook>
   nudge route  ls [--json] | set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
                | rm (--pane NAME | --workspace NAME) [--backend tui|core]
-  nudge core   watch [--once] | send <terminal> [--blocked]
+  nudge core   watch [--once] | send <terminal> [--blocked] | service install|remove|status
   nudge doctor [--ping]
   nudge settings
   nudge list   [--json]
@@ -43,7 +43,9 @@ const USAGE: &str = "Usage:
            terminal is blocked, errors, or is done after a long turn; one per
            machine, reconnecting forever (--once: until the stream ends).
            send: send a core terminal's output to its webhook now (as a
-           question, or --blocked).
+           question, or --blocked). service: run watch at every login (a
+           systemd user unit on Linux, a launchd agent on macOS); status
+           says whether it's installed and running.
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
   settings Change auto-notify, who can notify and the default webhook in a
