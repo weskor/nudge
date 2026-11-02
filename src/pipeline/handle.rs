@@ -70,6 +70,7 @@ fn notify(
     let (status, done) = match settled {
         Settled::Done => (NotifyStatus::Done, "finished a turn"),
         Settled::Blocked => (NotifyStatus::Blocked, "is blocked"),
+        Settled::Error => (NotifyStatus::Blocked, "reported an error"),
     };
     let sent = send(&agent, status, Trigger::Settled(settled), source, &config, ctx)?;
     if config.auto.toast {

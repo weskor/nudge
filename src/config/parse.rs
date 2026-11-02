@@ -1,5 +1,6 @@
 //! Parsing config TOML into a [`Config`], checking the schema and reporting every problem at once.
 mod auto;
+mod core;
 mod routes;
 mod scope;
 mod webhooks;
@@ -33,12 +34,14 @@ impl Problems {
         let auto = self.auto(raw.get("auto"));
         let scope = self.scope(raw.get("scope"));
         let routes = self.routes(raw.get("route"), webhooks.as_deref());
+        let core = self.core(raw.get("core"));
         let config = Config {
             default_webhook: default_webhook?,
             webhook: webhooks?,
             auto,
             scope,
             route: routes?,
+            core,
         };
         if let Some(name) = &config.default_webhook
             && !config.webhook.iter().any(|webhook| &webhook.name == name)

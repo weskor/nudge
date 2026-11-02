@@ -165,6 +165,17 @@ The most specific route wins: a pane route, then a workspace route, then the def
 
 The line under the list explains the row under the cursor. The workspace and agent lists only appear when you pick "Only these", and each agent shows its workspace and directory. `t` sends a test ping to the webhook under the cursor. Nothing changes until you press `s`; `q` twice throws edits away. Webhooks show only their host, never the URL path or secrets.
 
+### herdr-core terminals
+
+For agents running in [herdr-core](https://herdr.dev) terminals (the `hc` command, and the Herdr desktop app), run one watcher per machine:
+
+```sh
+nudge core watch          # follows `hc events`; reconnects when herdr-core restarts
+nudge core send t7        # send a core terminal's output now (--blocked to mark it blocked)
+```
+
+The watcher applies the same rules as the herdr plugin (turn length, cooldown, scope, routes, away, `nudge off`) to each terminal that reports its status: `blocked` and `error` notify, a long `done` notifies. Terminals that already exist when it starts are only recorded, never notified, so a restart doesn't replay old events. Only one watcher runs per machine; a second one says so and exits. Each machine watches its own terminals; `[core] watch = "connected"` also watches connected machines' terminals (`box/t7`). Events from core terminals carry `source.backend: "core"`, and their `reply_hint` is `hc send <terminal> "..."`. `nudge notify` run inside a core terminal is from that terminal. The watcher records what it's doing in `~/.local/state/nudge/watch.json`. It doesn't know which terminal you're looking at yet, so it notifies even for the one on screen.
+
 ### Notifications written by the agent
 
 Agents (or you) can send their own message, which gives the webhook's automation more to go on:
@@ -228,7 +239,7 @@ POSTed to your webhook with its `Authorization` header and `Content-Type: applic
 | `branch` | The current branch; `null` when detached or outside git |
 | `status` | `done`, `blocked`, `question`, or `test` |
 | `message` | The agent's text; for automatic events, a note saying so plus the pane's last lines |
-| `source` | Where it came from: `backend` (`tui` for herdr), `host` (the machine's hostname, for automations that serve several machines) and `pane` (the herdr pane id; `null` when sent from outside a pane) |
+| `source` | Where it came from: `backend` (`tui` for herdr, `core` for herdr-core), `host` (the machine's hostname, for automations that serve several machines) and `pane` (the herdr pane id, or the herdr-core terminal address; `null` when sent from outside a pane) |
 | `webhook` | The name of the configured webhook it was sent to (see [routes](#send-some-agents-to-another-webhook)), for automations that serve several |
 
 <details>
@@ -296,6 +307,9 @@ agents = ["reviewer"]    # herdr agent names (or pane ids)
 workspace = "client-a"   # or pane = "api-refactor" (agent name or pane id)
 webhook = "client-a"
 # backend = "tui"       # optional: only herdr ("tui") or only herdr-core ("core")
+
+[core]                   # nudge core watch; leave out for the default
+watch = "own"            # this machine's terminals; "connected" also handles connected machines'
 ```
 
 A config with routes is still read by older nudge versions, but they ignore the routes, and drop them if they save the config (setup, settings, the scope actions). Keep every machine that shares a config on the same version.
@@ -327,6 +341,7 @@ nudge default <webhook>
 nudge route  ls [--json]
 nudge route  set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
 nudge route  rm  (--pane NAME | --workspace NAME) [--backend tui|core]
+nudge core   watch [--once] | send <terminal> [--blocked]
 nudge doctor [--ping]
 nudge settings
 nudge list   [--json]

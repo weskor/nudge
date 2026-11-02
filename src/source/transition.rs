@@ -8,6 +8,8 @@ pub(crate) enum AgentStatus {
     Working,
     Blocked,
     Done,
+    /// The program reported an error (herdr-core); handled like `Blocked`, with its own lead line.
+    Error,
     Unknown,
 }
 
@@ -18,6 +20,7 @@ impl AgentStatus {
             Self::Working => "working",
             Self::Blocked => "blocked",
             Self::Done => "done",
+            Self::Error => "error",
             Self::Unknown => "unknown",
         }
     }
@@ -25,7 +28,7 @@ impl AgentStatus {
     /// Whether this status ends a turn in a way worth telling the webhook about.
     pub(crate) const fn settles(self) -> bool {
         match self {
-            Self::Blocked | Self::Done => true,
+            Self::Blocked | Self::Done | Self::Error => true,
             Self::Idle | Self::Working | Self::Unknown => false,
         }
     }

@@ -218,3 +218,12 @@ fn nudge_off_skips_even_away_mode_but_keeps_tracking_turns() {
         "the turn that began while off counts once nudge is on"
     );
 }
+
+#[test]
+fn an_error_settles_like_blocked_without_ending_the_turn() {
+    let mut state = fresh();
+    let decisions = run(&mut state, &[(0, Working), (5, AgentStatus::Error)], false);
+    assert_eq!(decisions[1], Decision::Notify(Settled::Error), "no shortest-turn rule");
+    assert_eq!(state.panes[P].working_since, Some(at(0)), "the turn goes on");
+    assert_eq!(last(&mut state, &[(10, AgentStatus::Error)]), skip("cooldown"));
+}

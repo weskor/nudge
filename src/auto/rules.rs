@@ -8,6 +8,8 @@ use crate::state::{PaneState, State};
 pub(crate) enum Settled {
     Done,
     Blocked,
+    /// The program reported an error: notified like `Blocked`, with its own lead line.
+    Error,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +78,7 @@ fn track_turn(pane: &mut PaneState, status: AgentStatus, now: i64) -> Result<Set
             Ok(Settled::Done)
         }
         AgentStatus::Blocked => Ok(Settled::Blocked),
+        AgentStatus::Error => Ok(Settled::Error),
     }
 }
 

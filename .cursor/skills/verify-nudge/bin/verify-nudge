@@ -518,7 +518,8 @@ class Sandbox:
         os.makedirs(os.path.join(self.run, "runtime"), mode=0o700, exist_ok=True)
         # sh wrappers run the fakes with this interpreter, so the sandbox PATH needs no python3 of its own.
         # VERIFY_NUDGE_FAKE tells the fake which <RUN>/fakebin entry was invoked.
-        for name, target in (("herdr", "fake-herdr"), ("wl-paste", "fake-clipboard"), ("xclip", "fake-clipboard")):
+        for name, target in (("herdr", "fake-herdr"), ("hc", "fake-herdr"), ("wl-paste", "fake-clipboard"),
+                             ("xclip", "fake-clipboard")):
             path = os.path.join(self.run, "fakebin", name)
             if not os.path.lexists(path):
                 with open(path, "w") as f:
@@ -587,8 +588,9 @@ class Sandbox:
         with open(path, "w") as f:
             json.dump(state, f)
 
-    def write_herdr(self, fix):
-        path = os.path.join(self.run, "herdr.json")
+    def write_herdr(self, fix, tool="herdr"):
+        """The fake `herdr` (or, with tool="hc", the fake `hc`) fixture; None removes it (not installed)."""
+        path = os.path.join(self.run, f"{tool}.json")
         if fix is None:
             if os.path.exists(path):
                 os.remove(path)
@@ -628,13 +630,16 @@ class Sandbox:
 
     def _logs(self):
         return (("requests", self.requests_file), ("herdr", os.path.join(self.run, "herdr-calls.jsonl")),
-                ("clipboard", os.path.join(self.run, "clipboard-calls.jsonl")))
+                ("clipboard", os.path.join(self.run, "clipboard-calls.jsonl")), ("hc", os.path.join(self.run, "hc-calls.jsonl")))
 
     def side_effects(self):
-        requests, herdr, clipboard = (self._since(path, key) for key, path in self._logs())
+        requests, herdr, clipboard, hc = (self._since(path, key) for key, path in self._logs())
         # herdr calls can run concurrently (agent get + pane read), so their order is not behavior.
         herdr = sorted((c["argv"] for c in herdr), key=lambda a: json.dumps(a))
-        return {"webhook": requests, "herdr_calls": herdr, "clipboard_calls": clipboard}
+        effects = {"webhook": requests, "herdr_calls": herdr, "clipboard_calls": clipboard}
+        if hc:  # only herdr-core scenarios call it; others keep their transcript shape
+            effects["hc_calls"] = [c["argv"] for c in hc]
+        return effects
 
     def files(self):
         def mode(path):
@@ -992,7 +997,7 @@ def secret_leaks(rec):
     texts += ["\n".join(s["lines"]) for s in rec.get("screens", [])]
     texts += [json.dumps(r, ensure_ascii=False) for r in rec.get("responses_by_id", {}).values()]
     texts += [json.dumps(r.get("body"), ensure_ascii=False) for r in rec.get("webhook", [])]
-    texts += [json.dumps(c, ensure_ascii=False) for c in rec.get("herdr_calls", [])]
+    texts += [json.dumps(c, ensure_ascii=False) for c in rec.get("herdr_calls", []) + rec.get("hc_calls", [])]
     return [m for m in SECRET_MARKERS for t in texts if isinstance(t, str) and m in t]
 
 
@@ -1422,6 +1427,7 @@ def step_assertions(rec, op, config_before=None):
     config_mode=MODE     the config file's permission bits, e.g. "600"
     herdr_has=[ARGV...]  each of these herdr calls was made (exact argv)
     sent_to=[NAME...]    the `webhook` field of each request the webhook received, in order (which webhook it went to)
+    sources=[[B, P]...]  each request body's `source` backend and pane, in order (e.g. [["core", "t1"]])
     config_unchanged=1   the config text is byte-for-byte what it was before the step"""
     problems = []
     cfg = (rec.get("files") or {}).get("config")
@@ -1452,6 +1458,9 @@ def step_assertions(rec, op, config_before=None):
     sent_to = [(r.get("body") or {}).get("webhook") for r in rec.get("webhook", []) if isinstance(r.get("body"), dict)]
     if op.get("sent_to") is not None and sent_to != op["sent_to"]:
         problems.append(f"requests went to {sent_to}, expected {op['sent_to']}")
+    sources = [[((r.get("body") or {}).get("source") or {}).get(k) for k in ("backend", "pane")] for r in rec.get("webhook", [])]
+    if op.get("sources") is not None and sources != op["sources"]:
+        problems.append(f"request sources {sources}, expected {op['sources']}")
     for argv in op.get("herdr_has") or []:
         if argv not in rec.get("herdr_calls", []):
             problems.append(f"no herdr call {argv}")
@@ -1519,6 +1528,11 @@ def state(obj):
 
 def herdr(fix):
     return {"do": "herdr", "fixture": fix}
+
+
+def hc(fix):
+    """The fake `hc` (herdr-core) fixture, same shape as herdr's; `hc events --json` is a rule with multi-line stdout."""
+    return {"do": "hc", "fixture": fix}
 
 
 def clip(text):
@@ -2353,6 +2367,66 @@ def scenarios():
         cmd(["default", "research"], expect=0,
             config_keys={"route": [{"pane": "claude-1", "webhook": "research"}, {"workspace": "api-work", "webhook": "signed"}]}))
 
+    # ---- herdr-core. `nudge core watch --once` follows a fake `hc events --json` (a snapshot line, then events, then
+    # the stream ends). Snapshot terminals never notify; box/t7 (another machine) is skipped unless
+    # [core] watch = "connected"; an error is sent as blocked. Plus `nudge core send` and `nudge notify` inside a core
+    # terminal ($HC_TERMINAL_ID).
+    def term(address, status=None, name=None, space=None, since_ms=None):
+        record = {"address": address, "state": "live", "cwd": "{RUN}/repo", "labels": {"herdr.space": space} if space else {}}
+        record.update({k: v for k, v in (("name", name), ("status_ms", since_ms)) if v is not None})
+        if status:
+            record["status"] = {"state": status}
+        return record
+
+    def core_status(terminal, word, seq):
+        data = {"status": {"state": word}, "records": {}, "reported": True}
+        return json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "status", "terminal": terminal, "data": data, "seq": seq}})
+
+    def core_events(*lines):
+        return rule(["events", "--json"], "\n".join([json.dumps({"seq": 1, "terminals": core_terms}), *lines]))
+
+    long_ago = now_ms() - 600000
+    core_terms = [term("t1", "working", "api", "s1", long_ago), term("t2", "idle"), term("t4", "working", None, "s2", long_ago),
+                  term("box/t7", "working")]
+    core_reads = [rule(["read", t, "--lines", "200"], PANE_TEXT) for t in ("t1", "t2", "t3", "t4", "box/t7")]
+    heartbeat = json.dumps({"jsonrpc": "2.0", "method": "heartbeat", "params": {"seq": 9}})
+    core_stream = hc(fixture(core_events(core_status("t1", "done", 2), core_status("t2", "blocked", 3), core_status("t3", "error", 4),
+                                         core_status("box/t7", "blocked", 5), "garbage", heartbeat), *core_reads))
+    watch_once = ["core", "watch", "--once"]
+    add("core-watch", config(), core_stream, state({"auto": True}),
+        cmd(watch_once, expect=0, sends=3, sources=[["core", "t1"], ["core", "t2"], ["core", "t3"]], sent_to=["main"] * 3,
+            has=["t1 done: notified webhook (HTTP 200)", "t2 blocked: notified webhook (HTTP 200)",
+                 "t3 error: notified webhook (HTTP 200)", "skipped a line from hc events: not JSON", "hc events ended"],
+            lacks=["box/t7"]))
+    add("core-watch-connected", config(extra='[core]\nwatch = "connected"\n'), core_stream, state({"auto": True}),
+        cmd(watch_once, expect=0, sends=4, sources=[["core", "t1"], ["core", "t2"], ["core", "t3"], ["core", "box/t7"]]))
+    add("core-watch-routes", config(extra=route("research", pane="api") + route("signed", workspace="s2") + route("broken", pane="t2", backend="tui")),
+        hc(fixture(core_events(core_status("t1", "done", 2), core_status("t4", "done", 3), core_status("t2", "blocked", 4)), *core_reads)),
+        state({"auto": True}),
+        cmd(watch_once, expect=0, sent_to=["research", "signed", "main"], sources=[["core", "t1"], ["core", "t4"], ["core", "t2"]]))
+    add("core-watch-scope", config(extra=scope(workspaces=["s1"])), core_stream, state({"auto": True}),
+        cmd(watch_once, expect=0, sources=[["core", "t1"]], has=["t2 blocked: skipped (outside nudge's scope)"]))
+    add("core-watch-off", config(), core_stream, state({"auto": True, "on": False}),
+        cmd(watch_once, expect=0, sends=0, has=["t1 done: skipped (nudge is off)", "t3 error: skipped (nudge is off)"]))
+    add("core-watch-auto-off", config(), core_stream,
+        cmd(watch_once, expect=0, sends=0, has=["t2 blocked: skipped (auto-notify is off)"]))
+    add("core-watch-no-core", config(), hc(fixture()),
+        cmd(watch_once, expect=1, sends=0, has="hc events ended before its first snapshot: is herdr-core running?"))
+    core_get = [rule(["get", "t1", "--json"], term("t1", "blocked", "api", "s1")), rule(["read", "t1", "--lines", "200"], PANE_TEXT)]
+    add("core-send", config(), hc(fixture(*core_get)),
+        cmd(["core", "send", "t1"], expect=0, sends=1, sources=[["core", "t1"]], has="Sent t1 to the webhook (HTTP 200)."),
+        cmd(["core", "send", "t1", "--blocked"], expect=0, sends=1),
+        cmd(["core", "send", "t9"], expect=1, sends=0, has='herdr-core has no terminal "t9" (see hc ls)'),
+        cmd(["off"], expect=0), cmd(["core", "send", "t1"], expect=1, sends=0, has=is_off))
+    add("core-notify", config(extra=route("research", workspace="s1", backend="core")), hc(fixture(*core_get)),
+        cmd(["notify", "from a core terminal"], env={"HC_TERMINAL_ID": "t1"}, expect=0, sources=[["core", "t1"]], sent_to=["research"]),
+        cmd(["notify", "--agent", "renamed", "named"], env={"HC_TERMINAL_ID": "t1"}, expect=0, sources=[["core", "t1"]]),
+        cmd(["test"], env={"HC_TERMINAL_ID": "t1"}, expect=0, sources=[["core", "t1"]], sent_to=["main"]),
+        cmd(["notify", "unknown terminal"], env={"HC_TERMINAL_ID": "t9"}, expect=0, sources=[["core", "t9"]], sent_to=["main"]))
+    add("core-cli", cmd(["core"], expect=2), cmd(["core", "frob"], expect=2), cmd(["core", "send"], expect=2),
+        cmd(["core", "send", "a", "b"], expect=2), cmd(["core", "watch", "--blocked"], expect=2),
+        cmd(["core", "send", "t1", "--once"], expect=2))
+
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per
     # webhook. settings_herdr() lists workspaces api-work, web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4
@@ -2545,6 +2619,9 @@ def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
         elif do == "herdr":
             sb.write_herdr(op["fixture"])
             setup_log.append("herdr fixture: " + ("none (not installed)" if op["fixture"] is None else f"{len(op['fixture']['rules'])} rules"))
+        elif do == "hc":
+            sb.write_herdr(op["fixture"], tool="hc")
+            setup_log.append(f"hc fixture: {len(op['fixture']['rules'])} rules")
         elif do == "clip":
             sb.clip(subst(op["text"]))
             setup_log.append("clipboard set")

@@ -12,6 +12,7 @@ const USAGE: &str = "Usage:
   nudge default <webhook>
   nudge route  ls [--json] | set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
                | rm (--pane NAME | --workspace NAME) [--backend tui|core]
+  nudge core   watch [--once] | send <terminal> [--blocked]
   nudge doctor [--ping]
   nudge settings
   nudge list   [--json]
@@ -27,9 +28,10 @@ const USAGE: &str = "Usage:
            --authorization-file - reads the header from stdin.
            --signing-secret makes nudge sign every request (x-nudge-signature).
   notify   Send {id, sent_at, from_agent, cwd, repo, branch, status, message,
-           reply_hint, webhook} to the webhook: --webhook, else the agent's route,
-           else the default. Message \"-\" reads stdin. --status defaults to done.
-           Agents outside the config's [scope] are refused.
+           reply_hint, source, webhook} to the webhook: --webhook, else the agent's
+           route, else the default. Message \"-\" reads stdin. --status defaults to
+           done. Agents outside the config's [scope] are refused. Inside a
+           herdr-core terminal ($HC_TERMINAL_ID) the agent is that terminal.
   test     Send a status \"test\" ping (to the default webhook unless --webhook).
   on, off  Turn nudge on or off on this machine. While off, nothing is sent:
            notify and test fail (exit 1), and auto-notify skips.
@@ -37,6 +39,11 @@ const USAGE: &str = "Usage:
   route    Send one pane's or workspace's notifications to another webhook. Most
            specific wins: pane (agent name or pane id), then workspace (label or
            id), then the default. See nudge route --help.
+  core     herdr-core. watch: follow `hc events` and notify the webhook when a
+           terminal is blocked, errors, or is done after a long turn; one per
+           machine, reconnecting forever (--once: until the stream ends).
+           send: send a core terminal's output to its webhook now (as a
+           question, or --blocked).
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
   settings Change auto-notify, who can notify and the default webhook in a

@@ -3,6 +3,7 @@ mod auto;
 mod cli;
 mod clipboard;
 mod config;
+mod core;
 mod doctor;
 mod env;
 mod error;
