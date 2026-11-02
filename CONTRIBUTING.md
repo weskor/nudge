@@ -28,6 +28,8 @@ CI runs all five on Linux, and clippy and the tests on macOS too. The lint set i
 
 The last command drives the real binary through every user journey in the harness's scenario list, each in a sandbox with a fake webhook, fake herdr and fake clipboard. See [`.cursor/skills/verify-nudge`](.cursor/skills/verify-nudge/SKILL.md). To check that a change keeps behavior, run it before and after and `diff -u` the two transcripts.
 
+The Herdr desktop panel mod (`herdr-app/mods/nudge/`) has its own checks. `bun test herdr-app/test` tests its pure helpers (`rows.js`, `popup.js`) against recorded samples, and runs in CI. `scripts/check-mod.sh` loads the mod once with `herdr-app check`, in a sandbox with stub `nudge` and `hc`, so it never touches your nudge state, your terminals or the running app. It skips when `herdr-app` isn't installed, so run it by hand in a mod PR. Never test a mod change by installing it into `~/.config/herdr-app/mods`.
+
 ## Layout
 
 Each area is a folder whose `mod.rs` is the facade (submodules are private); each file owns one thing and says so in its first `//!` line. Unit tests sit next to their module in `tests.rs` (`foo.rs` → `foo/tests.rs`).
@@ -52,6 +54,8 @@ Each area is a folder whose `mod.rs` is the facade (submodules are private); eac
 | `herdr-plugin.toml` | Plugin manifest |
 | `scripts/install.sh` | herdr build step: download and verify the release binary |
 | `.cursor/skills/verify-nudge/` | Verification skill and harness (also at `.claude/skills/`) |
+| `herdr-app/mods/nudge/`, `herdr-app/test/` | The Herdr desktop app panel (`main.js` and `popup-view.js` draw; `rows.js` and `popup.js` are pure helpers) and its `bun test`s |
+| `scripts/check-mod.sh` | `herdr-app check` of the panel mod, sandboxed |
 
 ## Tests
 

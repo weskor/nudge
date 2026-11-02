@@ -2271,6 +2271,15 @@ def scenarios():
         cmd(["on"], expect=0, sends=0, state_keys={"on": None}, has="nudge is on"),
         cmd(["on"], expect=0, state_keys={"on": None}),
         cmd(["off", "extra"], expect=2, state_keys={"on": None}))
+    # `nudge auto on|off` / `nudge away on|off`: the herdr actions' toggles from the command line (the desktop panel's
+    # rows); idempotent, independent of each other and of the switch.
+    add("toggle-cli",
+        cmd(["auto", "on"], expect=0, has="Auto-notify on", state_auto=True, state_keys={"away": None}),
+        cmd(["auto", "on"], expect=0, state_auto=True),
+        cmd(["away", "on"], expect=0, has="Away: the webhook hears from every agent", state_auto=True, state_keys={"away": True}),
+        cmd(["auto", "off"], expect=0, has="Auto-notify off", state_auto=False, state_keys={"away": True}),
+        cmd(["away", "off"], expect=0, has="Back: nudge stays quiet", state_keys={"away": None, "on": None}),
+        cmd(["auto"], expect=2), cmd(["away", "maybe"], expect=2), cmd(["auto", "on", "extra"], expect=2, state_auto=False))
     add("switch-actions", herdr(AGENT_HERDR), state({"auto": True}),
         action("switch", sends=0, toasts=[off_toast], state_auto=True, state_keys={"on": False}),
         action("switch", toasts=["Nudge on"], state_keys={"on": None}),

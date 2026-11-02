@@ -1,0 +1,101 @@
+{
+  "version": "0.11.1",
+  "host": "laptop",
+  "on": true,
+  "auto": false,
+  "away": false,
+  "config_error": null,
+  "default_webhook": "main",
+  "webhooks": [
+    {
+      "name": "main",
+      "host": "hooks.example.com",
+      "signed": false
+    },
+    {
+      "name": "client-a",
+      "host": "client.example.com",
+      "signed": true
+    }
+  ],
+  "routes": [
+    {
+      "pane": "api-refactor",
+      "webhook": "client-a"
+    },
+    {
+      "workspace": "client-a",
+      "webhook": "client-a",
+      "backend": "core"
+    }
+  ],
+  "core": {
+    "watcher": {
+      "running": false,
+      "pid": null,
+      "started_by": "service",
+      "started_at": 1793622290952,
+      "connected": false,
+      "last_event_at": 1793625885952
+    },
+    "service": {
+      "installed": false,
+      "running": false,
+      "path": "/home/me/.config/systemd/user/nudge-watch.service"
+    },
+    "context": {
+      "terminal": "t5",
+      "window_active": true,
+      "at": 1793625890955,
+      "fresh": true
+    },
+    "spaces": [
+      {
+        "id": "s1",
+        "name": "client-a",
+        "webhook": "client-a",
+        "via": "workspace"
+      },
+      {
+        "id": "s2",
+        "name": "nudge",
+        "webhook": "main",
+        "via": "default"
+      }
+    ],
+    "terminals": [
+      {
+        "address": "t3",
+        "name": "api-refactor",
+        "status": "blocked",
+        "space": "s1",
+        "space_name": "client-a",
+        "webhook": "client-a",
+        "via": "pane"
+      },
+      {
+        "address": "t5",
+        "name": "docs-site",
+        "status": "working",
+        "space": "s2",
+        "space_name": "nudge",
+        "webhook": "main",
+        "via": "default"
+      }
+    ],
+    "decisions": [
+      {
+        "at": 1793625290952,
+        "terminal": "t3",
+        "status": "blocked",
+        "outcome": "notified webhook (HTTP 200)"
+      },
+      {
+        "at": 1793624690952,
+        "terminal": "t5",
+        "status": "done",
+        "outcome": "skipped (you are looking at this pane)"
+      }
+    ]
+  }
+}

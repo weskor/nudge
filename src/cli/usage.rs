@@ -9,6 +9,7 @@ const USAGE: &str = "Usage:
   nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
   nudge test   [--webhook NAME] [--agent NAME]
   nudge on | off
+  nudge auto on|off | away on|off
   nudge default <webhook>
   nudge route  ls [--json] | set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
                | rm (--pane NAME | --workspace NAME) [--backend tui|core]
@@ -37,6 +38,9 @@ const USAGE: &str = "Usage:
   test     Send a status \"test\" ping (to the default webhook unless --webhook).
   on, off  Turn nudge on or off on this machine. While off, nothing is sent:
            notify and test fail (exit 1), and auto-notify skips.
+  auto     Automatic notifications from terminal output (herdr action
+           nudge.toggle); off until turned on.
+  away     Away mode: the pane on screen notifies too (nudge.away).
   default  Make a configured webhook the default.
   route    Send one pane's or workspace's notifications to another webhook. Most
            specific wins: pane (agent name or pane id), then workspace (label or

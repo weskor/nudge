@@ -1,0 +1,53 @@
+{
+  "version": "0.11.1",
+  "host": "box",
+  "on": true,
+  "auto": true,
+  "away": false,
+  "config_error": null,
+  "default_webhook": "ops",
+  "webhooks": [
+    {
+      "name": "ops",
+      "host": "ops.example.com",
+      "signed": true
+    }
+  ],
+  "routes": [],
+  "core": {
+    "watcher": {
+      "running": true,
+      "pid": 4242,
+      "started_by": "service",
+      "started_at": 1793622290952,
+      "connected": true,
+      "last_event_at": 1793625885952
+    },
+    "service": {
+      "installed": true,
+      "running": true,
+      "path": "/home/me/.config/systemd/user/nudge-watch.service"
+    },
+    "context": null,
+    "spaces": [
+      {
+        "id": "s1",
+        "name": "gpu",
+        "webhook": "ops",
+        "via": "default"
+      }
+    ],
+    "terminals": [
+      {
+        "address": "t7",
+        "name": "trainer",
+        "status": "working",
+        "space": "s1",
+        "space_name": "gpu",
+        "webhook": "ops",
+        "via": "default"
+      }
+    ],
+    "decisions": []
+  }
+}

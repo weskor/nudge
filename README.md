@@ -76,7 +76,7 @@ The plugin listens to herdr's agent status changes. It notifies your default web
 | The agent didn't send its own `nudge notify` during the turn | Its own message says more than terminal output |
 | No automatic notification for that pane in the last 5 minutes | Rate limit, and a brake on reply loops |
 | The agent is in [scope](#choose-which-agents-can-notify) | You decide which agents may reach the webhook |
-| Auto-notify is on | Off until you turn it on |
+| Auto-notify is on | Off until you turn it on (`nudge.toggle`, or `nudge auto on`) |
 
 The event carries the last 40 lines of the pane, with credentials replaced by `[REDACTED]`. When it's sent, herdr shows a toast ("Told the webhook: api-refactor is blocked"). Every decision, including skipped events and why, is in `herdr plugin log list --plugin nudge`, and `nudge doctor` shows the most recent ones.
 
@@ -84,7 +84,7 @@ The 2 minutes, 5 minutes, 40 lines and the toast are [settings](#settings).
 
 ### Away mode
 
-nudge counts the pane that's focused in herdr as one you're watching, even if you walked away and left the window open. Before you leave, run `nudge.away-on` (or `nudge.away` to toggle, or tick it in [settings](#settings)): until you run `nudge.away-off`, every agent's `blocked` and long `done` reach the webhook, including the pane on screen, and even with auto-notify off. The other rules (turn length, cooldown, scope) still apply. `nudge doctor` shows when away mode is on.
+nudge counts the pane that's focused in herdr as one you're watching, even if you walked away and left the window open. Before you leave, run `nudge.away-on` (or `nudge.away` to toggle, `nudge away on` in a terminal, or tick it in [settings](#settings)): until you run `nudge.away-off` (or `nudge away off`), every agent's `blocked` and long `done` reach the webhook, including the pane on screen, and even with auto-notify off. The other rules (turn length, cooldown, scope) still apply. `nudge doctor` shows when away mode is on.
 
 A keybinding makes it one keystroke:
 
@@ -184,6 +184,18 @@ The watcher applies the same rules as the herdr plugin (turn length, cooldown, s
 The desktop app tells nudge which terminal you're looking at, and what this machine's spaces are called, with `nudge core context '<json>'` (`{terminal, window_active, spaces: [{id, name}]}`; nudge stamps it with the time it arrives, by its own clock, stores it in `~/.local/state/nudge/context.json` and refuses malformed JSON). A terminal counts as watched, so it isn't notified, only when the context names it, the window is active and the context arrived under 90 s ago; [away mode](#away-mode) overrides. With no context, or an old one (the app closed, the laptop asleep), nothing counts as watched. Space names from the context let [routes](#send-some-agents-to-another-webhook) and `[scope]` match a space by its name as well as its id.
 
 `nudge status --json` prints what a panel needs to draw this machine's nudge: the switch, auto-notify and away, the webhooks by name and host, the routes, the watcher (running or not, connected, started by), the login service, the app's context, the spaces and followed terminals with the webhook each notifies and why (`pane`, `workspace` or `default`), and the watcher's recent decisions. It never includes a URL, header or secret, and it changes no file (an old-format config is read, not rewritten).
+
+### The Herdr desktop app panel
+
+[`herdr-app/mods/nudge/`](herdr-app/mods/nudge/) is a panel for the Herdr desktop app. It shows whether nudge is on, where each agent's and space's notifications go and why, whether the watcher runs, and nudge's recent decisions, and it changes them: the switch, auto-notify and away, routes, the default webhook, sending a pane now, starting the watcher or installing the login service. It does everything by running `nudge` (and `hc` to start the watcher), on this computer or on a machine you connected with `hc machine add`, and never reads nudge's files or sees a webhook's URL or secret. It also tells nudge which terminal you're looking at (`nudge core context`), so the watcher skips it. [RECIPE.md](herdr-app/mods/nudge/RECIPE.md) describes it in full.
+
+To use it, copy the folder into the app's mods and add the key bindings from its `keys.json` to `~/.config/herdr-app/keys.json` if you want them:
+
+```sh
+cp -R herdr-app/mods/nudge ~/.config/herdr-app/mods/
+```
+
+It needs this version of nudge (with `nudge status --json`) on every machine it should show; a machine without it shows "nudge not found".
 
 ### Notifications written by the agent
 
@@ -347,6 +359,7 @@ nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE | --authorizati
 nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
 nudge test   [--webhook NAME] [--agent NAME]
 nudge on | off
+nudge auto on|off | away on|off
 nudge default <webhook>
 nudge route  ls [--json]
 nudge route  set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
