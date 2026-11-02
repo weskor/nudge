@@ -4,7 +4,7 @@
 //! restarts.
 use std::path::Path;
 
-use super::layout::{self, Node};
+use super::edit;
 use super::record::{self, Made};
 use super::window::{self, Window};
 use crate::env::Run;
@@ -33,14 +33,13 @@ pub(super) fn dock(home: &Path, record: &Path, window: Window<'_>) -> Result<Doc
         Window::Open { run, layout } => (run, layout),
     };
     let layouts = home.join("layouts");
-    let mut current = window::read_layout(&layouts, &name)?;
+    let (text, current) = window::read_layout(&layouts, &name)?;
     if current.shows_panel() {
         return Ok(Docked::Already(name));
     }
     if current.is_own() {
-        current.dock_panel()?;
-        window::write_layout(&layouts, &name, &current)?;
-        let block = layout::to_line(&Node::panel_block())?;
+        window::write_layout(&layouts, &name, &edit::dock(&text)?)?;
+        let block = edit::block_line()?;
         return Ok(Docked::Added { name, block });
     }
     let copy = format!("{name}-nudge");
@@ -53,10 +52,9 @@ pub(super) fn dock(home: &Path, record: &Path, window: Window<'_>) -> Result<Doc
     } else {
         clone(run, &layouts, record, &name, &copy)?;
     }
-    let mut copied = window::read_layout(&layouts, &copy)?;
+    let (text, copied) = window::read_layout(&layouts, &copy)?;
     if !copied.shows_panel() {
-        copied.dock_panel()?;
-        window::write_layout(&layouts, &copy, &copied)?;
+        window::write_layout(&layouts, &copy, &edit::dock(&text)?)?;
     }
     Ok(Docked::Copied { name: copy, from: name })
 }
@@ -69,7 +67,7 @@ fn clone(run: &dyn Run, layouts: &Path, record: &Path, name: &str, copy: &str) -
         &["do", "layout.clone", &args],
         &format!("copy the layout \"{name}\""),
     )?;
-    let as_cloned = window::read_layout(layouts, copy)?.canonical()?;
+    let as_cloned = window::read_layout(layouts, copy)?.1.canonical()?;
     let mut made = record::load(record);
     made.made.insert(
         copy.to_owned(),

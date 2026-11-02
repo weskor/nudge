@@ -26,6 +26,7 @@ Parity:
 Session selection: $VERIFY_NUDGE_SESSION, else the id in <repo>/.verify/current.
 """
 import calendar
+import hashlib
 import json
 import os
 import re
@@ -687,15 +688,18 @@ class Sandbox:
         if os.path.exists(app_context):
             out["app_context"] = json.loads(open(app_context).read())
         # The Herdr desktop app's home (`nudge panel install`), only while it exists: the panel's files, and for
-        # each layout whether it shows the panel.
+        # each layout whether it shows the panel and a hash of its bytes (install then remove must give them back).
         app_home = os.path.join(self.home, ".config", "herdr-app")
         if os.path.isdir(app_home):
             mod = os.path.join(app_home, "mods", "nudge")
             layouts = os.path.join(app_home, "layouts")
+            texts = {name: open(os.path.join(layouts, name), "rb").read()
+                     for name in sorted(os.listdir(layouts))} if os.path.isdir(layouts) else None
             out["herdr_app"] = {
                 "mod_files": sorted(os.listdir(mod)) if os.path.isdir(mod) else None,
-                "layouts": {name: '"mod": "nudge"' in open(os.path.join(layouts, name)).read()
-                            for name in sorted(os.listdir(layouts))} if os.path.isdir(layouts) else None,
+                "layouts": None if texts is None else {
+                    name: {"panel": re.search(rb'"mod":\s*"nudge"', text) is not None,
+                           "sha256": hashlib.sha256(text).hexdigest()[:12]} for name, text in texts.items()},
             }
         return out
 
@@ -2565,10 +2569,12 @@ def scenarios():
             lacks=["updated"]))
 
     # ---- `nudge panel install`: the panel's files into the Herdr app's home, then docked through a fake `herdr-app`
-    # (never the real window). `herdr_app` in `files` lists the mod's files and which layouts show the panel.
+    # (never the real window). `herdr_app` in `files` lists the mod's files and each layout's panel and bytes.
     layouts_dir = "home/.config/herdr-app/layouts/"
     shipped = json.dumps({"id": "root", "type": "row", "children": [{"id": "work", "type": "block", "content": {"tab": "active"}}]})
-    own = json.dumps({"id": "root", "type": "row", "cloned_from": {"name": "main"}, "children": []})
+    # A layout of your own as Herdr writes it: two-space indent, Herdr's key order.
+    own = json.dumps({"id": "root", "cloned_from": {"name": "main", "version": "0.1.12"}, "type": "row",
+                      "children": [{"id": "work", "type": "block", "content": {"tab": "active"}}]}, indent=2) + "\n"
     with_panel = json.dumps({"id": "root", "type": "row", "cloned_from": {"name": "main"},
                              "children": [{"id": "nudge-panel", "type": "block", "content": {"mod": "nudge"}}]}, indent=2)
     status = lambda name: rule(["status"], {"layout": name, "errors": []})
@@ -2578,11 +2584,13 @@ def scenarios():
         cmd(["panel", "remove"], expect=0, has="Removed the Nudge panel's files ("),
         cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in "))
     add("panel-install-remove-own-layout", write(layouts_dir + "mine.json", own), fake("herdr-app", fixture(status("mine"))),
+        cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in ", lacks=["Took the panel out"]),
         cmd(["panel", "install"], expect=0,
             has=['Docked it on the right of your layout "mine": added to ', "mine.json as the last child of its top row:\n  ",
-                 '{"content":{"mod":"nudge"},"id":"nudge-panel","size":{"px":320},"type":"block"}',
+                 '{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}',
                  "`nudge panel remove` takes it out again."]),
         cmd(["panel", "install"], expect=0, has='It\'s docked in your layout "mine".'),
+        # mine.json's hash after this remove is the one after the first step: the same bytes.
         cmd(["panel", "remove"], expect=0, has=['Took the panel out of your layout "mine" (', "Removed the Nudge panel's files ("]),
         cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in ", lacks=["Took the panel out"]))
     switch = rule(["do", "layout.switch", "--name", "main-nudge"], {"ok": True})

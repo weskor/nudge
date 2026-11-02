@@ -1,15 +1,15 @@
-//! Herdr's layout files (`layouts/<name>.json`), as far as the panel needs: whether a layout shows the panel,
-//! whether it's a layout of your own (made by `layout.clone`, so Herdr never replaces it), and adding or taking
-//! out the panel's block on the right. Every other field is kept as read.
+//! Herdr's layout files (`layouts/<name>.json`) read as trees, as far as the panel needs: whether a layout shows
+//! the panel, whether it's a layout of your own (made by `layout.clone`, so Herdr never replaces it), and a
+//! canonical form to tell two layouts apart. Edits go to the text instead (`edit.rs`), so every other byte stays.
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 
 /// The mod folder the panel lives in.
 pub(super) const PANEL_MOD: &str = "nudge";
 /// The id of the block `nudge panel install` adds; `nudge panel remove` takes out only that block.
-const PANEL_ID: &str = "nudge-panel";
+pub(super) const PANEL_ID: &str = "nudge-panel";
 
 /// A layout node: a block, row, column or stack, with its children and floating blocks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -26,20 +26,6 @@ pub(super) struct Node {
 }
 
 impl Node {
-    /// The block install adds: the panel, 320 px wide, as Herdr docks a mod that asks for `"place": "right"`.
-    pub(super) fn panel_block() -> Self {
-        let mut rest = Map::new();
-        rest.insert("id".into(), json!(PANEL_ID));
-        rest.insert("type".into(), json!("block"));
-        rest.insert("size".into(), json!({ "px": 320 }));
-        Self {
-            content: Some(json!({ "mod": PANEL_MOD })),
-            children: None,
-            floating: None,
-            rest,
-        }
-    }
-
     fn is_panel(&self) -> bool {
         self.content
             .as_ref()
@@ -47,7 +33,8 @@ impl Node {
             .is_some_and(|name| name == PANEL_MOD)
     }
 
-    fn is_our_block(&self) -> bool {
+    /// The block install added: the panel, with install's id.
+    pub(super) fn is_our_block(&self) -> bool {
         self.is_panel() && self.rest.get("id").is_some_and(|id| id == PANEL_ID)
     }
 
@@ -66,32 +53,6 @@ impl Node {
         self.rest.contains_key("cloned_from")
     }
 
-    /// Add the panel's block as the last child of the root row.
-    pub(super) fn dock_panel(&mut self) -> Result<()> {
-        if self.rest.get("type").and_then(Value::as_str) != Some("row") {
-            return Err(Error::Other(
-                "this layout isn't a row at its top, so the panel can't dock on its right".into(),
-            ));
-        }
-        self.children.get_or_insert_with(Vec::new).push(Self::panel_block());
-        Ok(())
-    }
-
-    /// Take out every block install added (by its id), anywhere in the tree; a panel put there some other way
-    /// stays. Returns whether there was one.
-    pub(super) fn undock_panel(&mut self) -> bool {
-        let mut removed = false;
-        for list in [&mut self.children, &mut self.floating].into_iter().flatten() {
-            let before = list.len();
-            list.retain(|node| !node.is_our_block());
-            removed |= list.len() != before;
-            for node in list.iter_mut() {
-                removed |= node.undock_panel();
-            }
-        }
-        removed
-    }
-
     /// The tree as one canonical JSON line (keys sorted), to tell whether two layouts are the same.
     pub(super) fn canonical(&self) -> Result<String> {
         serde_json::to_value(self)
@@ -107,16 +68,6 @@ pub(super) fn parse(text: &str, name: &str) -> Result<Node> {
             "Herdr's layout \"{name}\" isn't a layout nudge can read: {error}"
         ))
     })
-}
-
-/// A tree as layout file text.
-pub(super) fn to_text(node: &Node) -> Result<String> {
-    serde_json::to_string_pretty(node).map_err(|error| Error::Other(error.to_string()))
-}
-
-/// A tree as one line of JSON, to show what was added.
-pub(super) fn to_line(node: &Node) -> Result<String> {
-    serde_json::to_string(node).map_err(|error| Error::Other(error.to_string()))
 }
 
 #[cfg(test)]

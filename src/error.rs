@@ -40,6 +40,12 @@ impl From<std::io::Error> for Error {
     }
 }
 
+impl From<serde_json::Error> for Error {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Other(error.to_string())
+    }
+}
+
 impl From<WebhookError> for Error {
     fn from(error: WebhookError) -> Self {
         Self::Webhook(error)

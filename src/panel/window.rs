@@ -60,16 +60,18 @@ pub(super) fn opens_with(home: &Path) -> Option<String> {
     serde_json::from_str::<Shared>(&text).ok()?.layout
 }
 
-pub(super) fn read_layout(layouts: &Path, name: &str) -> Result<Node> {
+/// `layouts/<name>.json`: its text, and the text read as a tree.
+pub(super) fn read_layout(layouts: &Path, name: &str) -> Result<(String, Node)> {
     let path = layouts.join(format!("{name}.json"));
     let text = fs::read_to_string(&path)
         .map_err(|error| Error::Other(format!("can't read Herdr's layout {}: {error}", path.display())))?;
-    layout::parse(&text, name)
+    let tree = layout::parse(&text, name)?;
+    Ok((text, tree))
 }
 
-/// Save `layout` as `layouts/<name>.json`, whole; Herdr shows the change at once.
-pub(super) fn write_layout(layouts: &Path, name: &str, layout: &Node) -> Result<()> {
-    write_whole(&layouts.join(format!("{name}.json")), &layout::to_text(layout)?)
+/// Save `text` as `layouts/<name>.json`, whole; Herdr shows the change at once.
+pub(super) fn write_layout(layouts: &Path, name: &str, text: &str) -> Result<()> {
+    write_whole(&layouts.join(format!("{name}.json")), text)
 }
 
 /// Run a `herdr-app` command that has to work; `what` says what it was for when it doesn't.

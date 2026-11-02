@@ -70,7 +70,7 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 
 With Herdr open, run `nudge panel install`. It writes the five files above into `~/.config/herdr-app/mods/nudge/` (only those that differ) and docks the panel on the right of the window without restarting anything. On one of Herdr's own layouts it first runs `herdr-app do layout.clone` (copy named `<layout>-nudge`, with your sizes and shown panels) and shows the copy; on a layout of your own it adds the panel's block to that layout's file and prints the block. Running it again changes nothing. With Herdr closed it installs the files and says to run it again once Herdr is open; without `herdr-app` on PATH it says that.
 
-`nudge panel remove` undoes it, safe to run again and with Herdr closed: it switches Herdr from `<layout>-nudge` back to `<layout>`, takes the panel's block out of your layouts, deletes the copy install made while it's still as Herdr cloned it (otherwise it keeps it and says why), and deletes the panel's files.
+`nudge panel remove` undoes it, safe to run again and with Herdr closed: it switches Herdr from `<layout>-nudge` back to `<layout>`, takes the panel's block out of your layouts (leaving each file byte for byte as it was before install), deletes the copy install made while it's still as Herdr cloned it (otherwise it keeps it and says why), and deletes the panel's files.
 
 ## Install by hand
 

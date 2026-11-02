@@ -1,11 +1,8 @@
 use std::fs;
 
-use serde_json::Value;
-
 use super::{Kept, Undocked, undock};
 use crate::env::tests::FakeRun;
 use crate::panel::dock::dock;
-use crate::panel::layout;
 use crate::panel::record;
 use crate::panel::tests::{Herdr, MAIN, app, json, layout_files, open, shows_panel, text};
 use crate::panel::window::Window;
@@ -34,37 +31,31 @@ fn install_then_remove_on_herdr_s_layout_shows_it_again_and_deletes_the_copy() {
 }
 
 #[test]
-fn install_then_remove_on_a_layout_of_your_own_gives_back_the_same_layout() {
-    let own = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"theme":"dusk","children":[
+fn install_then_remove_on_a_layout_of_your_own_gives_back_the_same_bytes() {
+    // Herdr's own formatting (a real `layout.clone` of `main`), and a hand-made custom layout on fewer lines.
+    let herdr = include_str!("../edit/herdr-clone.json");
+    let custom = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"theme":"dusk","children":[
         {"id":"side","type":"stack","active":"agents","children":[{"id":"agents","type":"block","content":{"mod":"agents"}}]},
         {"id":"work","type":"block","content":{"tab":"active"},"floating":[]}]}"#;
-    let home = app(&[("desk", own)]);
-    let record_path = home.path().join("panel.json");
-    let run = FakeRun::default();
-    dock(home.path(), &record_path, open(&run, "desk")).unwrap();
-    assert!(shows_panel(home.path(), "desk"));
+    for own in [herdr, custom] {
+        let home = app(&[("mine", own)]);
+        let record_path = home.path().join("panel.json");
+        let run = FakeRun::default();
+        dock(home.path(), &record_path, open(&run, "mine")).unwrap();
+        assert!(shows_panel(home.path(), "mine"));
 
-    let undocked = undock(home.path(), &record_path, open(&run, "desk")).unwrap();
-    assert_eq!(
-        undocked,
-        Undocked {
-            taken_out: vec!["desk".into()],
-            ..Undocked::default()
-        }
-    );
-    assert_eq!(
-        json(home.path(), "desk"),
-        serde_json::from_str::<Value>(own).unwrap(),
-        "the same layout, field for field"
-    );
-    assert!(run.calls().is_empty());
-
-    // A file already in nudge's format comes back byte for byte.
-    let written = layout::to_text(&layout::parse(own, "desk").unwrap()).unwrap();
-    fs::write(home.path().join("layouts/desk.json"), &written).unwrap();
-    dock(home.path(), &record_path, open(&run, "desk")).unwrap();
-    undock(home.path(), &record_path, open(&run, "desk")).unwrap();
-    assert_eq!(text(home.path(), "desk"), written);
+        let undocked = undock(home.path(), &record_path, open(&run, "mine")).unwrap();
+        assert_eq!(
+            undocked,
+            Undocked {
+                taken_out: vec!["mine".into()],
+                ..Undocked::default()
+            }
+        );
+        assert_eq!(text(home.path(), "mine"), own, "byte for byte");
+        assert!(run.calls().is_empty());
+        assert!(!record_path.exists(), "nothing recorded for a layout of your own");
+    }
 }
 
 #[test]

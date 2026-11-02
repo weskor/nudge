@@ -5,8 +5,8 @@
 use std::fs;
 use std::path::Path;
 
-use super::record;
 use super::window::{self, Window};
+use super::{edit, record};
 use crate::error::Result;
 
 /// What undocking did.
@@ -50,11 +50,13 @@ pub(super) fn undock(home: &Path, record_path: &Path, window: Window<'_>) -> Res
         Window::Closed | Window::NoApp => window::opens_with(home),
     };
     for name in layout_names(&layouts) {
-        let Ok(mut tree) = window::read_layout(&layouts, &name) else {
+        let Ok((text, tree)) = window::read_layout(&layouts, &name) else {
             continue;
         };
-        if tree.is_own() && tree.undock_panel() {
-            window::write_layout(&layouts, &name, &tree)?;
+        if tree.is_own()
+            && let Some(undocked) = edit::undock(&text)?
+        {
+            window::write_layout(&layouts, &name, &undocked)?;
             out.taken_out.push(name);
         }
     }
@@ -77,7 +79,7 @@ fn delete_made(layouts: &Path, record_path: &Path, shown: Option<&str>, out: &mu
             continue;
         }
         let unchanged = window::read_layout(layouts, &name)
-            .and_then(|tree| tree.canonical())
+            .and_then(|(_, tree)| tree.canonical())
             .is_ok_and(|now| now == entry.as_cloned);
         if !unchanged {
             out.kept.push((name, Kept::Changed));

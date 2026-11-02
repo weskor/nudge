@@ -3,6 +3,7 @@
 //! panel is docked on the right of the layout it shows (see `dock`), and nothing restarts: not the window, not
 //! herdr-core, not a terminal. Both are safe to run again, and with Herdr closed.
 mod dock;
+mod edit;
 mod files;
 mod layout;
 mod record;

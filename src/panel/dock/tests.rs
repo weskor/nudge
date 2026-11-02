@@ -6,7 +6,7 @@ use crate::panel::record;
 use crate::panel::tests::{Herdr, MAIN, app, json, layout_files, open, shows_panel, text};
 use crate::panel::window::Window;
 
-const BLOCK: &str = r#"{"content":{"mod":"nudge"},"id":"nudge-panel","size":{"px":320},"type":"block"}"#;
+const BLOCK: &str = r#"{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}"#;
 
 #[test]
 fn herdr_s_own_layout_is_copied_with_layout_clone_recorded_and_the_copy_gets_the_panel() {
