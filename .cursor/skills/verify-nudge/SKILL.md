@@ -154,7 +154,7 @@ NUDGE_BIN=/path/to/new/nudge $VN parity .verify/parity/new.json
 diff -u .verify/parity/old.json .verify/parity/new.json
 ```
 
-Runs the fixed scenario list (250 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
+Runs the fixed scenario list (255 scenarios; `--only SUBSTRING` repeatable filters by name) each in a fresh sandbox
 with its own fakes and one shared fake webhook, then writes one JSON transcript with sorted keys. Per step it
 records the same fields as `run`, with JSON payloads (webhook bodies, `list --json` stdout as `stdout_json`, MCP
 responses keyed by JSON-RPC id with JSON tool text as `text_json`, state.json) compared as data. Multi-line text is
@@ -194,8 +194,10 @@ moves every cursor stop below `Auto-notify` down by one): that is the expected d
 build without the global switch (0.11.1 and older) fails the `switch-*` scenarios, keeps unprefixed pane keys in
 state.json, and its doctor has no `Nudge on` line. A build without routes (before slice 2) fails the `route-*`,
 `default-cli` and `settings-routes` scenarios, and its webhook bodies have no `webhook` field. A build without the
-herdr-core backend (before slice 4) fails the `core-*` scenarios. Steps that call the fake `hc` record `hc_calls` (in
-call order); others have no such key.
+herdr-core backend (before slice 4) fails the `core-*` scenarios, and one without the login service (before slice 5)
+the `core-service*` ones. Steps that call a fake `hc`, `systemctl`, `loginctl` or `launchctl` record
+`<tool>_calls` (in call order); others have no such key. `files.login_service` (the systemd unit's lines) appears only
+while the unit exists.
 
 ## Evidence
 
@@ -232,6 +234,6 @@ All in `.cursor/skills/verify-nudge/bin/`, executable, python3 stdlib:
 
 - `verify-nudge` — every command above; `$VN --help` prints the usage.
 - `fake-webhook --dir DIR --id ID [--secret LABEL=SECRET]...` — the webhook; started by `launch`/`parity`, not by hand.
-- `fake-herdr` — run by the sh wrappers `<sandbox>/fakebin/herdr` and `<sandbox>/fakebin/hc` (herdr-core's CLI); per tool (the wrapper's name): fixture `<sandbox>/<tool>.json`, log `<sandbox>/<tool>-calls.jsonl`.
+- `fake-herdr` — run by the sh wrappers `<sandbox>/fakebin/herdr`, `hc` (herdr-core's CLI), `systemctl`, `loginctl` and `launchctl`; per tool (the wrapper's name): fixture `<sandbox>/<tool>.json` (none: exit 1, so the real tool is never reached), log `<sandbox>/<tool>-calls.jsonl`.
 - `fake-clipboard` — run by the wrappers `<sandbox>/fakebin/wl-paste` and `xclip`; prints `<sandbox>/clipboard.txt` (exit 1 if empty),
   logs to `<sandbox>/clipboard-calls.jsonl` with `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`.
