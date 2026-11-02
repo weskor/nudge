@@ -24,7 +24,7 @@ This design adds four things and changes no existing behavior for TUI users:
 | 5 | Remote machines | Each server runs its own watcher for its own terminals. The local watcher skips connected machines' terminals by default |
 | 6 | Mod CI | `bun test` for the mod's pure helpers in CI; `herdr-app check` as a required manual step in the mod's PRs, run by `scripts/check-mod.sh` when `herdr-app` is installed (see "Test plan" for why) |
 | 7 | Sender detection inside a core terminal | herdr-core sets `HC_TERMINAL_ID` (the terminal's address, e.g. `t7`) and `HC_TERMINAL_SOCKET` in every terminal it starts (`crates/herdr-core/src/api/run.rs`). nudge uses `HC_TERMINAL_ID`, like `HERDR_PANE_ID` for the TUI |
-| 8 | Where the mod lives | In this repo (`herdr-app/mods/nudge/`) **and** published on herdr.dev/mods from a separate `herdr-mod` repo. Creating that repo and publishing wait for Wes's OK |
+| 8 | Where the mod lives | In this repo (`herdr-app/mods/nudge/`) **and** published on herdr.dev/mods from a separate `herdr-mod` repo. Creating that repo and publishing wait for the maintainer's OK |
 | 9 | Default webhook from the panel | Yes: the panel can change `default_webhook` |
 
 ## In our own words: the problem
@@ -496,7 +496,7 @@ export default class Nudge extends View {
 
 ### Publishing the mod
 
-The mod's source of truth is this repo (`herdr-app/mods/nudge/`). herdr.dev/mods lists public GitHub repos with the topic `herdr-mod` that hold `mods/<name>/`, a `RECIPE.md`, a `preview.png` and, if needed, a `keys.json` snippet, and no `layouts/` folder. So publishing needs a small second repo. The plan, **none of which happens without Wes's OK**:
+The mod's source of truth is this repo (`herdr-app/mods/nudge/`). herdr.dev/mods lists public GitHub repos with the topic `herdr-mod` that hold `mods/<name>/`, a `RECIPE.md`, a `preview.png` and, if needed, a `keys.json` snippet, and no `layouts/` folder. So publishing needs a small second repo. The plan, **none of which happens without the maintainer's OK**:
 
 1. Create `weskor/nudge-herdr-mod` (public, topic `herdr-mod`), holding `mods/nudge/`, `RECIPE.md`, `preview.png` and `keys.json`.
 2. `scripts/sync-mod.sh` in this repo copies `herdr-app/mods/nudge/` and the recipe files into a checkout of that repo, so it's never edited by hand. It runs at nudge release time; the mod's `RECIPE.md` names the nudge version it needs.
@@ -651,7 +651,7 @@ Each slice is its own PR to `main`, with green CI and its parity diff. Merging a
    - `docs/webhook-instructions.md`: `source`, and the `hc send` reply.
    - `config.example.toml`: routes and `[core]`.
    - CONTRIBUTING layout.
-9. **Publishing the mod** (only with Wes's OK): the `herdr-mod` repo and `scripts/sync-mod.sh`, as described under "Publishing the mod".
+9. **Publishing the mod** (only with the maintainer's OK): the `herdr-mod` repo and `scripts/sync-mod.sh`, as described under "Publishing the mod".
 
 ## Open questions
 
