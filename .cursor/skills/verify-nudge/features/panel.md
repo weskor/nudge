@@ -10,8 +10,11 @@ panel in <dir>`). Then it asks `herdr-app status` which layout the open window s
 - the layout already has a block with `content.mod == "nudge"` (docked or floating): `It's docked in your layout "<name>".`;
 - a layout of your own (has `cloned_from`): the block `{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},
   "size":{"px":320}}` is spliced into the file's text after the root row's last child, with the same gap (newline and
-  indent) before it; no other byte changes. It prints the file, the block and `` `nudge panel remove` takes it out
-  again. ``. A root that isn't a row with `children` is exit 1;
+  indent) before it, or right after `[` when the list is empty; no other byte changes. It prints the file, the block
+  and `` `nudge panel remove` takes it out again. ``;
+- a layout install can't dock in (a root that isn't a row with `children`, a file that isn't JSON, comments): exit 1,
+  nothing written; the error is followed by `To dock the panel by hand, add this block as the last child of the top
+  row in <file> (…): `, the block on its own line, and `Or open it over the window: herdr-app do mod.open --name nudge`;
 - otherwise (Herdr's own layout): `herdr-app do layout.clone {"as":"<name>-nudge","name":"<name>"}`, recorded with the
   copy as Herdr wrote it in nudge's state dir (`panel.json`), or `herdr-app do layout.switch --name <name>-nudge` when
   that copy exists; then the copy gets the block. Herdr's own file is never written. A refused command is exit 1
@@ -39,13 +42,16 @@ panel in <dir>`). Then it asks `herdr-app status` which layout the open window s
   first step's; remove again changes nothing.
 - `panel-install-shows-the-copy` on Herdr's `main` with `main-nudge` present: `layout.switch`, no clone.
 - `panel-remove-switches-back` shown `main-nudge` that nudge didn't make: switch to `main`, block out, copy kept.
+- `panel-install-refused` a layout of your own whose root is a column: exit 1 with the by-hand block and the
+  `mod.open` fallback; `tall.json` unchanged.
 - `panel-install-copy-refused` `layout.clone` fails: exit 1, `main.json` untouched, no copy.
 - `panel-no-herdr-app` PATH without `herdr-app`: install and remove say so; remove still deletes the files.
 - `panel-cli` `panel`, `panel frob`, `panel install extra`, `panel remove extra`: exit 2.
 - Unit-tested only: the clone path and the record (a fake window that writes the copy like Herdr); install then
   remove round trips (Herdr's layout: copy deleted, `main` untouched; your own, from a real `layout.clone` file and
-  a custom one: byte for byte); one-line, tab-indented and empty-children layouts byte for byte; blocks cut anywhere
-  (leading runs, floating lists); a changed copy; Herdr closed with the copy it opens with; a root that isn't a row;
+  a custom one: byte for byte); one-line, tab-indented and empty-children layouts byte for byte, including the
+  whitespace inside `[ ]` / `[\n]`; blocks cut anywhere (leading runs, floating lists); refusals (column, row without
+  children, comments, broken JSON) write nothing; a changed copy; Herdr closed with the copy it opens with;
   `HERDR_APP_HOME`.
 
 ## Driving it with verify-nudge

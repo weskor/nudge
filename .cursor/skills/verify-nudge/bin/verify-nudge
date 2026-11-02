@@ -2604,6 +2604,13 @@ def scenarios():
                  'Kept the layout "main-nudge": `nudge panel install` didn\'t make it.']))
     add("panel-install-copy-refused", write(layouts_dir + "main.json", shipped), fake("herdr-app", fixture(status("main"))),
         cmd(["panel", "install"], expect=1, has='nudge: Herdr couldn\'t copy the layout "main"'))
+    tall = json.dumps({"id": "root", "type": "column", "cloned_from": {"name": "main"}, "children": []}, indent=2)
+    add("panel-install-refused", write(layouts_dir + "tall.json", tall), fake("herdr-app", fixture(status("tall"))),
+        cmd(["panel", "install"], expect=1,
+            has=["nudge: this layout isn't a row with children at its top, so the panel can't dock on its right\n",
+                 "tall.json (Herdr's own layouts take no new panels: clone one first):\n  "
+                 '{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}\n',
+                 "Or open it over the window: herdr-app do mod.open --name nudge"]))
     no_app = {"PATH": "/usr/bin:/bin"}  # no fakebin: no herdr-app at all
     add("panel-no-herdr-app", write(layouts_dir + "mine.json", own),
         cmd(["panel", "install"], env=no_app, expect=0, has="`herdr-app` isn't on PATH, so nudge can't reach Herdr's window to dock the panel."),

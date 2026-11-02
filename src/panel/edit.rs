@@ -64,6 +64,7 @@ pub(super) fn dock(text: &str) -> Result<String> {
             let gap = before.strip_prefix(before.trim_end()).unwrap_or_default();
             (after.end, format!(",{gap}{}", block_text(gap)?))
         }
+        // Right after `[`: whatever was between the brackets stays after the block, and remove cuts just the block.
         None => (span(text, children.get())?.start + 1, block_line()?),
     };
     let (head, tail) = text
@@ -113,7 +114,7 @@ fn collect_cuts(text: &str, node: &str, cuts: &mut Vec<Range<usize>>) -> Result<
             .iter()
             .map(|entry| Ok(layout::parse(entry.get(), key)?.is_our_block()))
             .collect::<Result<Vec<bool>>>()?;
-        cuts_in_list(text, list, &entries, &ours, cuts)?;
+        cuts_in_list(text, &entries, &ours, cuts)?;
         for (entry, _) in entries.iter().zip(&ours).filter(|(_, ours)| !**ours) {
             collect_cuts(text, entry.get(), cuts)?;
         }
@@ -121,23 +122,17 @@ fn collect_cuts(text: &str, node: &str, cuts: &mut Vec<Range<usize>>) -> Result<
     Ok(())
 }
 
-/// The cuts that take the entries marked `ours` out of `list`: a leading run up to the first kept entry, each
-/// later one from the end of the entry before it (so its comma and gap go too), all of them by emptying the list.
-fn cuts_in_list(
-    text: &str,
-    list: &RawValue,
-    entries: &[&RawValue],
-    ours: &[bool],
-    cuts: &mut Vec<Range<usize>>,
-) -> Result<()> {
+/// The cuts that take the entries marked `ours` out of a list: a leading run up to the first kept entry, each
+/// later one from the end of the entry before it (so its comma and gap go too); when all are ours, the entries and
+/// what's between them, leaving the whitespace inside the brackets as it was.
+fn cuts_in_list(text: &str, entries: &[&RawValue], ours: &[bool], cuts: &mut Vec<Range<usize>>) -> Result<()> {
     let spans = entries
         .iter()
         .map(|entry| span(text, entry.get()))
         .collect::<Result<Vec<_>>>()?;
     let Some(first_kept) = ours.iter().position(|ours| !ours) else {
-        if !spans.is_empty() {
-            let brackets = span(text, list.get())?;
-            cuts.push(brackets.start + 1..brackets.end.saturating_sub(1));
+        if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
+            cuts.push(first.start..last.end);
         }
         return Ok(());
     };

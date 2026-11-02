@@ -8,7 +8,7 @@ use super::edit;
 use super::record::{self, Made};
 use super::window::{self, Window};
 use crate::env::Run;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Where the panel ended up.
 #[derive(Debug, PartialEq, Eq)]
@@ -33,12 +33,13 @@ pub(super) fn dock(home: &Path, record: &Path, window: Window<'_>) -> Result<Doc
         Window::Open { run, layout } => (run, layout),
     };
     let layouts = home.join("layouts");
-    let (text, current) = window::read_layout(&layouts, &name)?;
+    let (text, current) = window::read_layout(&layouts, &name).map_err(|error| refused(&layouts, &name, &error))?;
     if current.shows_panel() {
         return Ok(Docked::Already(name));
     }
     if current.is_own() {
-        window::write_layout(&layouts, &name, &edit::dock(&text)?)?;
+        let docked = edit::dock(&text).map_err(|error| refused(&layouts, &name, &error))?;
+        window::write_layout(&layouts, &name, &docked)?;
         let block = edit::block_line()?;
         return Ok(Docked::Added { name, block });
     }
@@ -52,11 +53,24 @@ pub(super) fn dock(home: &Path, record: &Path, window: Window<'_>) -> Result<Doc
     } else {
         clone(run, &layouts, record, &name, &copy)?;
     }
-    let (text, copied) = window::read_layout(&layouts, &copy)?;
+    let (text, copied) = window::read_layout(&layouts, &copy).map_err(|error| refused(&layouts, &copy, &error))?;
     if !copied.shows_panel() {
-        window::write_layout(&layouts, &copy, &edit::dock(&text)?)?;
+        let docked = edit::dock(&text).map_err(|error| refused(&layouts, &copy, &error))?;
+        window::write_layout(&layouts, &copy, &docked)?;
     }
     Ok(Docked::Copied { name: copy, from: name })
+}
+
+/// Install can't put the block in `name`, so it writes nothing: say why, what to add by hand and where, and how to
+/// show the panel without docking it.
+fn refused(layouts: &Path, name: &str, problem: &Error) -> Error {
+    let block = edit::block_line().unwrap_or_default();
+    Error::Other(format!(
+        "{problem}\nTo dock the panel by hand, add this block as the last child of the top row in {} (Herdr's own \
+         layouts take no new panels: clone one first):\n  {block}\nOr open it over the window: herdr-app do \
+         mod.open --name nudge",
+        layouts.join(format!("{name}.json")).display()
+    ))
 }
 
 /// `layout.clone` Herdr's `name` as `copy` (Herdr shows the copy), and record the copy as Herdr wrote it.

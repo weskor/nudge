@@ -61,6 +61,20 @@ fn any_formatting_round_trips_byte_for_byte() {
 }
 
 #[test]
+fn an_empty_children_list_keeps_the_whitespace_between_its_brackets() {
+    for inner in ["", " ", "\n", "\n  ", "\r\n\t"] {
+        let text = format!("{{\n  \"type\": \"row\",\n  \"children\": [{inner}]\n}}\n");
+        let docked = dock(&text).unwrap();
+        let block = block_line().unwrap();
+        assert!(
+            docked.contains(&format!("[{block}{inner}]")),
+            "the block right after `[`: {docked:?}"
+        );
+        assert_eq!(undock(&docked).unwrap().unwrap(), text, "inner {inner:?}");
+    }
+}
+
+#[test]
 fn remove_takes_out_install_s_blocks_anywhere_and_keeps_every_other_byte() {
     let ours = r#"{"id":"nudge-panel","type":"block","content":{"mod":"nudge"}}"#;
     let theirs = r#"{"id":"left","type":"block","content":{"mod":"nudge"}}"#;
@@ -71,7 +85,7 @@ fn remove_takes_out_install_s_blocks_anywhere_and_keeps_every_other_byte() {
     assert_eq!(
         kept,
         format!(
-            "{{\"type\": \"row\", \"children\": [ {{\"id\": \"a\", \"floating\": []}},  {theirs}\n],\n \"floating\": []}}"
+            "{{\"type\": \"row\", \"children\": [ {{\"id\": \"a\", \"floating\": []}},  {theirs}\n],\n \"floating\": [  ]}}"
         ),
     );
     assert!(

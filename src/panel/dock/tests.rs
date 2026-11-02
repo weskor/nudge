@@ -92,15 +92,30 @@ fn a_closed_window_or_no_herdr_app_docks_nothing_and_a_failed_copy_writes_nothin
 }
 
 #[test]
-fn a_layout_of_your_own_whose_top_isnt_a_row_is_left_as_it_was() {
-    let column = r#"{"id":"root","type":"column","cloned_from":{"name":"main"},"children":[]}"#;
-    let home = app(&[("tall", column)]);
-    let error = dock(
-        home.path(),
-        &home.path().join("panel.json"),
-        open(&FakeRun::default(), "tall"),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("isn't a row"), "{error}");
-    assert_eq!(text(home.path(), "tall"), column);
+fn a_layout_install_cant_dock_in_is_left_as_it_was_and_the_error_says_how_to_dock_by_hand() {
+    let refusals = [
+        r#"{"id":"root","type":"column","cloned_from":{"name":"main"},"children":[]}"#,
+        r#"{"id":"root","type":"row","cloned_from":{"name":"main"}}"#,
+        "// mine\n{\"id\":\"root\",\"type\":\"row\",\"cloned_from\":{\"name\":\"main\"},\"children\":[]}",
+        "{\"id\":\"root\",\"type\":\"row\",",
+    ];
+    for layout in refusals {
+        let home = app(&[("mine", layout)]);
+        let record_path = home.path().join("panel.json");
+        let run = FakeRun::default();
+        let error = dock(home.path(), &record_path, open(&run, "mine"))
+            .unwrap_err()
+            .to_string();
+        let path = home.path().join("layouts/mine.json");
+        for hint in [
+            format!("add this block as the last child of the top row in {}", path.display()),
+            format!("\n  {BLOCK}\n"),
+            "Or open it over the window: herdr-app do mod.open --name nudge".to_owned(),
+        ] {
+            assert!(error.contains(&hint), "{hint:?} in {error}");
+        }
+        assert_eq!(text(home.path(), "mine"), layout, "nothing written");
+        assert_eq!(layout_files(home.path()), ["mine.json"]);
+        assert!(run.calls().is_empty() && !record_path.exists());
+    }
 }
