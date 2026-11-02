@@ -102,18 +102,33 @@ impl Service<'_> {
         Ok(0)
     }
 
-    /// Write the file and start the service now and at every login.
+    /// Write the file and start the service now and at every login. A reinstall restarts a running watcher, so it
+    /// runs what the new file says.
     fn install(&self, path: &Path, nudge: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             DirBuilder::new().recursive(true).create(dir)?;
         }
-        let path_var = self.env.get("PATH").unwrap_or("/usr/local/bin:/usr/bin:/bin");
-        fs::write(path, service_file(self.kind, nudge, path_var))?;
+        // Only absolute entries: an empty or relative one would resolve against the service's working directory.
+        let absolute: Vec<&str> = self
+            .env
+            .get("PATH")
+            .unwrap_or_default()
+            .split(':')
+            .filter(|entry| entry.starts_with('/'))
+            .collect();
+        let path_var = if absolute.is_empty() {
+            "/usr/local/bin:/usr/bin:/bin".to_owned()
+        } else {
+            absolute.join(":")
+        };
+        fs::write(path, service_file(self.kind, nudge, &path_var))?;
         let file = path.to_string_lossy();
         match self.kind {
             ServiceKind::SystemdUser => {
                 self.required(&["systemctl", "--user", "daemon-reload"])?;
-                self.required(&["systemctl", "--user", "enable", "--now", UNIT])
+                self.required(&["systemctl", "--user", "enable", UNIT])?;
+                // `restart` starts a stopped unit too, and picks up a changed file in a running one.
+                self.required(&["systemctl", "--user", "restart", UNIT])
             }
             ServiceKind::LaunchdAgent => {
                 // Loaded already (a reinstall): unload it first, or bootstrap refuses.

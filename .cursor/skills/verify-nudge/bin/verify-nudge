@@ -2445,7 +2445,8 @@ def scenarios():
     # ---- the login service (`nudge core service`), on Linux: a systemd user unit, driven through fake `systemctl` and
     # `loginctl` (never the real ones: without a fixture the fakes exit 1). `login_service` in `files` is the unit's text.
     user = {"USER": "tester"}
-    systemd = fake("systemctl", fixture(rule(["--user", "daemon-reload"]), rule(["--user", "enable", "--now", "nudge-watch.service"]),
+    systemd = fake("systemctl", fixture(rule(["--user", "daemon-reload"]), rule(["--user", "enable", "nudge-watch.service"]),
+                                        rule(["--user", "restart", "nudge-watch.service"]),
                                         rule(["--user", "is-active", "nudge-watch.service"], "active"),
                                         rule(["--user", "disable", "--now", "nudge-watch.service"])))
     unit_path = "/home/.config/systemd/user/nudge-watch.service"  # under the sandbox; `has` matches raw output
@@ -2455,6 +2456,8 @@ def scenarios():
             has=["Installed the login service: ", unit_path + "\nIt runs `", "core watch` at login and restarts it if it fails.",
                  "! Lingering is off for tester", "loginctl enable-linger tester"]),
         cmd(["core", "service", "status"], expect=0, has=["Login service: installed, running\n  ", unit_path]),
+        # A reinstall restarts the running watcher; empty and relative PATH entries don't reach the unit.
+        cmd(["core", "service", "install"], env={"PATH": "{RUN}/fakebin::.:bin:/usr/bin:/bin"}, expect=0, has="Installed the login service"),
         cmd(["core", "service", "remove"], expect=0, has=["Removed the login service (", unit_path + ")."]),
         cmd(["core", "service", "remove"], expect=0, has="The login service isn't installed."),
         cmd(["core", "service", "status"], expect=0, has="Login service: not installed"))
@@ -2462,7 +2465,7 @@ def scenarios():
         cmd(["core", "service", "install"], expect=0, has="/home/.local/bin/nudge core watch` at login", lacks=["Lingering"]))
     add("core-service-fails", fake("systemctl", fixture(rule(["--user", "daemon-reload"]))),
         cmd(["core", "service", "install"], env=user, expect=1,
-            has="nudge: `systemctl --user enable --now nudge-watch.service` failed"),
+            has="nudge: `systemctl --user enable nudge-watch.service` failed"),
         cmd(["core", "service", "status"], expect=0, has="Login service: installed, not running"))
     add("core-service-no-systemd",
         cmd(["core", "service", "install"], expect=1, has="nudge: `systemctl --user daemon-reload` failed"))
