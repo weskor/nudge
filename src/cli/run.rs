@@ -50,7 +50,8 @@ fn dispatch(command: &str, rest: &[String], args: Args, env: &Env) -> Result<u8>
         "core" => core(rest, &args, env),
         "panel" => match rest {
             [action] if action == "install" => panel::install(env, &System),
-            _ => Err(Error::Usage("panel takes install".into())),
+            [action] if action == "remove" => panel::remove(env, &System),
+            _ => Err(Error::Usage("panel takes install or remove".into())),
         },
         "doctor" => {
             no_args(rest, "doctor")?;

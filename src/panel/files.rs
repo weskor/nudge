@@ -1,5 +1,5 @@
-//! The panel's files, built into nudge so installing it needs nothing but this binary, and writing them (and
-//! layout files) whole: to a temp file beside the target, then renamed over it.
+//! The panel's files, built into nudge so installing it needs nothing but this binary; taking them out again; and
+//! writing files (the mod's, layouts) whole: to a hidden temp file beside the target, then renamed over it.
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::Path;
@@ -33,6 +33,45 @@ pub(super) fn install_mod(dir: &Path) -> Result<bool> {
         changed = true;
     }
     Ok(changed)
+}
+
+/// Files Herdr itself writes beside a mod (`herdr-app check`, the editor types); they go with the panel.
+const HERDR_WRITES: [&str; 3] = ["jsconfig.json", "gpui-kit.d.ts", "herdr.d.ts"];
+
+/// What taking the panel's files out of its folder did.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Removed {
+    /// The folder had no panel files.
+    Nothing,
+    /// The panel's files and the folder are gone.
+    Folder,
+    /// The panel's files are gone; the folder stays because it holds these other files.
+    Kept(Vec<String>),
+}
+
+/// Delete the panel's files (and the ones Herdr wrote beside them) from `dir`, then `dir` itself if that left
+/// it empty. Anything else in it is left alone.
+pub(super) fn remove_mod(dir: &Path) -> Result<Removed> {
+    let mut any = false;
+    for name in MOD_FILES.iter().map(|(name, _)| *name).chain(HERDR_WRITES) {
+        match fs::remove_file(dir.join(name)) {
+            Ok(()) => any |= MOD_FILES.iter().any(|(ours, _)| *ours == name),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(if any { Removed::Folder } else { Removed::Nothing });
+    };
+    let mut left: Vec<String> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect();
+    left.sort();
+    if !left.is_empty() {
+        return Ok(if any { Removed::Kept(left) } else { Removed::Nothing });
+    }
+    fs::remove_dir(dir)?;
+    Ok(if any { Removed::Folder } else { Removed::Nothing })
 }
 
 /// Replace `path` with `text` in one step, so Herdr never reads half a file. The temp file is hidden, which

@@ -15,7 +15,7 @@ const USAGE: &str = "Usage:
                | rm (--pane NAME | --workspace NAME) [--backend tui|core]
   nudge core   watch [--once] | send <terminal> [--blocked] | service install|remove|status
                | context '<json>'
-  nudge panel  install
+  nudge panel  install | remove
   nudge doctor [--ping]
   nudge settings
   nudge list   [--json]
@@ -58,7 +58,7 @@ const USAGE: &str = "Usage:
            focused terminal isn't notified for 90 s after.
   panel    install: put the Herdr desktop app panel in Herdr's mods and dock it
            on the right of the open window (Herdr's own layout is copied first;
-           nothing restarts). Safe to run again.
+           nothing restarts). remove: undo it. Both are safe to run again.
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
   settings Change auto-notify, who can notify and the default webhook in a

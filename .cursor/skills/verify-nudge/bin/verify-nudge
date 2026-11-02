@@ -2574,17 +2574,35 @@ def scenarios():
     status = lambda name: rule(["status"], {"layout": name, "errors": []})
     add("panel-install-closed",
         cmd(["panel", "install"], expect=0, has=["Installed the Nudge panel in ", "Herdr's window isn't open"]),
-        cmd(["panel", "install"], expect=0, has="Already installed: the Nudge panel"))
-    add("panel-install-own-layout", write(layouts_dir + "mine.json", own), fake("herdr-app", fixture(status("mine"))),
-        cmd(["panel", "install"], expect=0, has='Docked it on the right of your layout "mine".'),
-        cmd(["panel", "install"], expect=0, has='It\'s docked in your layout "mine".'))
+        cmd(["panel", "install"], expect=0, has="Already installed: the Nudge panel"),
+        cmd(["panel", "remove"], expect=0, has="Removed the Nudge panel's files ("),
+        cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in "))
+    add("panel-install-remove-own-layout", write(layouts_dir + "mine.json", own), fake("herdr-app", fixture(status("mine"))),
+        cmd(["panel", "install"], expect=0,
+            has=['Docked it on the right of your layout "mine": added to ', "mine.json as the last child of its top row:\n  ",
+                 '{"content":{"mod":"nudge"},"id":"nudge-panel","size":{"px":320},"type":"block"}',
+                 "`nudge panel remove` takes it out again."]),
+        cmd(["panel", "install"], expect=0, has='It\'s docked in your layout "mine".'),
+        cmd(["panel", "remove"], expect=0, has=['Took the panel out of your layout "mine" (', "Removed the Nudge panel's files ("]),
+        cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in ", lacks=["Took the panel out"]))
     switch = rule(["do", "layout.switch", "--name", "main-nudge"], {"ok": True})
     add("panel-install-shows-the-copy", write(layouts_dir + "main.json", shipped), write(layouts_dir + "main-nudge.json", with_panel),
         fake("herdr-app", fixture(status("main"), switch)),
         cmd(["panel", "install"], expect=0, has='Docked it on the right of "main-nudge", your copy of Herdr\'s "main" layout'))
+    add("panel-remove-switches-back", write(layouts_dir + "main.json", shipped), write(layouts_dir + "main-nudge.json", with_panel),
+        fake("herdr-app", fixture(status("main-nudge"), rule(["do", "layout.switch", "--name", "main"], {"ok": True}))),
+        cmd(["panel", "remove"], expect=0,
+            has=['Herdr showed "main-nudge"; it shows "main" again.', 'Took the panel out of your layout "main-nudge"',
+                 'Kept the layout "main-nudge": `nudge panel install` didn\'t make it.']))
     add("panel-install-copy-refused", write(layouts_dir + "main.json", shipped), fake("herdr-app", fixture(status("main"))),
         cmd(["panel", "install"], expect=1, has='nudge: Herdr couldn\'t copy the layout "main"'))
-    add("panel-cli", cmd(["panel"], expect=2), cmd(["panel", "frob"], expect=2), cmd(["panel", "install", "extra"], expect=2))
+    no_app = {"PATH": "/usr/bin:/bin"}  # no fakebin: no herdr-app at all
+    add("panel-no-herdr-app", write(layouts_dir + "mine.json", own),
+        cmd(["panel", "install"], env=no_app, expect=0, has="`herdr-app` isn't on PATH, so nudge can't reach Herdr's window to dock the panel."),
+        cmd(["panel", "remove"], env=no_app, expect=0,
+            has=["`herdr-app` isn't on PATH, so nudge can't reach Herdr's window to show another layout.", "Removed the Nudge panel's files ("]))
+    add("panel-cli", cmd(["panel"], expect=2), cmd(["panel", "frob"], expect=2), cmd(["panel", "install", "extra"], expect=2),
+        cmd(["panel", "remove", "extra"], expect=2))
 
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per
