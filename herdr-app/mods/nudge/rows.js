@@ -35,11 +35,14 @@ export function machineList(machines) {
  */
 export function readStatus(result) {
   if (!result) return { kind: "missing" };
+  // nudge 0.11.1 and older answer `unknown command "status"` (exit 2); their JSON-less output too.
+  const old = { kind: "error", text: "This nudge has no `nudge status --json`; update nudge there" };
+  if (result.code === 2 && /unknown command "?status"?/.test(result.stderr ?? "")) return old;
   if (result.code !== 0) return { kind: "error", text: firstLine(result.stderr) || `nudge status failed (exit ${result.code})` };
   try {
     return { kind: "ok", status: JSON.parse(result.stdout) };
   } catch {
-    return { kind: "error", text: "This nudge has no `nudge status --json`; update nudge there" };
+    return old;
   }
 }
 
@@ -116,10 +119,20 @@ export function agentRows(agents, terminals, status, machine) {
       ? { webhook: known.webhook, via: known.via }
       : resolveRoute(status, { pane: [name, local, a.address], workspace: [a.space_name, space] });
     return {
-      kind: "agent", address: a.address, local, machine, name, label: name || a.title || local,
+      kind: "agent", address: a.address, local, machine, name, label: agentLabel(name, a, local),
       status: a.status, glyph: statusGlyph(a.status), space, space_name: a.space_name, ...route,
     };
   });
+}
+
+/**
+ * What an agent row is called: its terminal's name, else its tab's name (unless Herdr numbered it), else
+ * its title (unless that's just its address), else its address there.
+ */
+export function agentLabel(name, agent, local) {
+  const tab = agent.tab_name && !/^\d+$/.test(agent.tab_name) ? agent.tab_name : null;
+  const title = agent.title && agent.title !== agent.address && agent.title !== local ? agent.title : null;
+  return name || tab || title || local;
 }
 
 /** The picked machine's spaces, as rows with where their terminals go and why. */
@@ -156,7 +169,8 @@ export function terminalRow(address, agents, terminals, status) {
 export function watcherLine(status) {
   const watcher = status.core?.watcher;
   if (!watcher?.running) return { running: false, text: "○ Not watching", start: Boolean(status.on) };
-  const n = (status.core?.terminals ?? []).length;
+  // Only terminals that report a status are agents: not plain shells, and not the watcher's own terminal.
+  const n = (status.core?.terminals ?? []).filter((t) => t.status).length;
   const how = watcher.started_by === "service" ? "service running" : "started here";
   return { running: true, text: `● ${n} ${n === 1 ? "agent" : "agents"} · ${how}`, start: false };
 }
@@ -169,11 +183,16 @@ export function outcomeText(outcome) {
   return why ? why[1] : outcome;
 }
 
-/** Recent decisions, newest first: who, what, and what nudge did. `at` stays epoch ms. */
-export function recentRows(status, limit = 5) {
+/**
+ * Recent decisions, newest first: who (as the Agents list calls them), what, and what nudge did. `at`
+ * stays epoch ms.
+ */
+export function recentRows(status, agentList = [], limit = 5) {
+  const labels = new Map(agentList.map((r) => [r.local, r.label]));
   const names = new Map((status.core?.terminals ?? []).map((t) => [t.address, t.name]));
+  const who = (address) => labels.get(address) || names.get(address) || address;
   return [...(status.core?.decisions ?? [])].sort((a, b) => b.at - a.at).slice(0, limit)
-    .map((d) => ({ at: d.at, text: `${names.get(d.terminal) || d.terminal} ${d.status}`, outcome: outcomeText(d.outcome) }));
+    .map((d) => ({ at: d.at, text: `${who(d.terminal)} ${d.status}`, outcome: outcomeText(d.outcome) }));
 }
 
 /** The picker's note for a machine: `● on · watching`, `○ off`, `○ nudge not found`. */

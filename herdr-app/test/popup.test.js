@@ -73,8 +73,16 @@ describe("the other popups", () => {
       ["Open config folder", "folder", null],
     ]);
     const remote = P.footerOptions(box, "box");
-    expect(remote.map((o) => o.label)).toEqual(["Add a webhook…", "Edit settings…", "Remove service"]);
-    expect(remote[2]).toMatchObject({ on: "box", argv: ["core", "service", "remove"] });
+    expect(remote.map((o) => o.label)).toEqual(["Add a webhook…", "Edit settings…", "Remove service…"]);
+    expect(remote[2]).toMatchObject({ on: "box", action: "confirm", argv: null });
+  });
+
+  test("Remove service asks first, naming the machine, and only then runs the panel's command", () => {
+    const { confirm } = P.footerOptions(box, "box")[2];
+    expect(confirm.title).toBe("Remove the login service?");
+    expect(confirm.detail).toContain("box's terminals");
+    expect(confirm.command).toEqual({ name: "nudge.remove-service" });
+    expect(P.removeServiceConfirm(null).detail).toContain("this computer's terminals");
   });
 
   test("the machine picker ticks the picked machine and says where nudge is missing", () => {
@@ -103,5 +111,22 @@ describe("toasts", () => {
     expect(t.title).toBe("Couldn't turn nudge off");
     expect(t.body).not.toContain("https://");
     expect(P.switchToast(null, true).body).toBe("nudge not found");
+  });
+
+  test("Start that leaves no watcher says why: hc's error, or where to read the stopped terminal", () => {
+    const started = { code: 0, stdout: '{"address":"t5","name":"nudge-watch","state":"live"}', stderr: "" };
+    expect(P.startToast(started, null).body).toBe("It stopped right away; hc read t5 shows why");
+    expect(P.startToast(started, "box").body).toBe("It stopped right away; hc read t5 --on box shows why");
+    const remote = { code: 0, stdout: '{"address":"box/t3","name":"nudge-watch"}', stderr: "" };
+    expect(P.startToast(remote, "box").body).toBe("It stopped right away; hc read box/t3 shows why");
+    expect(P.startToast({ code: 1, stdout: "", stderr: "hc: no such machine\n" }, "box").body).toBe("hc: no such machine");
+    expect(P.startToast(null, null).body).toBe("hc not found");
+  });
+
+  test("removing the service: done, or why not", () => {
+    expect(P.serviceToast({ code: 0, stdout: "", stderr: "" }, "box")).toEqual({ level: "success", title: "Removed the login service on box" });
+    const failed = P.serviceToast({ code: 1, stdout: "", stderr: "nudge: `systemctl --user disable --now nudge-watch.service` failed\n" }, null);
+    expect(failed).toMatchObject({ level: "error", title: "Couldn't remove the login service" });
+    expect(failed.body).toContain("systemctl");
   });
 });

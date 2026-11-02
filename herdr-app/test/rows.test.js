@@ -64,6 +64,14 @@ describe("agent and workspace rows", () => {
     expect(rows.map((r) => [r.label, r.local, r.machine, R.routeLabel(r)])).toEqual([["trainer", "t7", "box", "→ ops (default)"]]);
   });
 
+  test("an agent without a terminal name is called by its tab, else a real title, else its address", () => {
+    const plain = { address: "box/t2", tab_name: "gpu-train", title: "box/t2" };
+    expect(R.agentLabel(null, plain, "t2")).toBe("gpu-train");
+    expect(R.agentLabel(null, { ...plain, tab_name: "1" }, "t2")).toBe("t2");
+    expect(R.agentLabel(null, { ...plain, tab_name: "1", title: "Codex" }, "t2")).toBe("Codex");
+    expect(R.agentLabel("trainer", plain, "t2")).toBe("trainer");
+  });
+
   test("workspaces show their route, including ones nudge doesn't list", () => {
     const rows = R.spaceRows(app.spaces, laptop, null);
     expect(rows.map((r) => [r.label, R.routeLabel(r)])).toEqual([
@@ -90,8 +98,10 @@ describe("header, watcher line and recent decisions", () => {
   });
 
   test("a nudge without status --json says to update it", () => {
-    const state = R.readStatus({ code: 2, stdout: "", stderr: "nudge: unknown command status\n" });
-    expect(R.header(state, null).kind).toBe("error");
+    const old = R.readStatus({ code: 2, stdout: "", stderr: 'nudge: unknown command "status"\nRun "nudge --help" for usage.\n' });
+    expect(R.header(old, null)).toMatchObject({ kind: "error", text: "This nudge has no `nudge status --json`; update nudge there" });
+    const broken = R.readStatus({ code: 1, stdout: "", stderr: "nudge: cannot read state\n" });
+    expect(R.header(broken, null).text).toBe("nudge: cannot read state");
   });
 
   test("off reads 'Off: nothing is sent from' this computer or the machine", () => {
@@ -106,6 +116,7 @@ describe("header, watcher line and recent decisions", () => {
     const here = clone(box);
     here.core.watcher.started_by = "terminal";
     here.core.terminals.push({ ...here.core.terminals[0], address: "t8" });
+    here.core.terminals.push({ ...here.core.terminals[0], address: "t9", name: "nudge-watch", status: null });
     expect(R.watcherLine(here).text).toBe("● 2 agents · started here");
     expect(R.watcherLine(laptop)).toEqual({ running: false, text: "○ Not watching", start: true });
     expect(R.watcherLine({ ...laptop, on: false }).start).toBe(false);
@@ -116,6 +127,10 @@ describe("header, watcher line and recent decisions", () => {
       ["api-refactor blocked", "sent"],
       ["docs-site done", "you were watching"],
     ]);
+    const unnamed = clone(laptop);
+    unnamed.core.terminals = [];
+    const shown = R.recentRows(unnamed, [{ local: "t3", label: "api-refactor" }]).map((d) => d.text);
+    expect(shown).toEqual(["api-refactor blocked", "t5 done"]);
   });
 
   test("the picker's machine notes", () => {
