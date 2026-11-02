@@ -513,7 +513,6 @@ class Sandbox:
         self.state_dir = os.path.join(self.home, ".local", "state", "nudge")
         self.link = os.path.join(self.home, ".local", "bin", "nudge")
         self.seeded = {}
-        self.stamps = {}  # "<digits>" put into arguments by `{NOW…}` -> its label
         self.marks = {}
 
     def create(self):
@@ -917,9 +916,6 @@ class Normalizer:
     def text(self, s):
         for old, new in self.pairs:
             s = s.replace(old, new)
-        # `{NOW}` / `{NOW-<ms>}` stamps put into a step's arguments (see stamp()).
-        for raw, label in self.sb.stamps.items():
-            s = s.replace(raw, label)
         # Per-notification id and sent_at; only well-formed values, so a malformed one stays visible in the diff.
         s = UUID_V4_TEXT.sub("<uuid>", s)
         return SENT_AT_TEXT.sub("<sent_at>", s)
@@ -972,8 +968,7 @@ class Normalizer:
         rec.pop("raw_output", None)  # screen-mode PTY steps: kept for the secret check only
         if "webhook" in rec:
             rec["webhook"] = [self.webhook_request(r) for r in rec["webhook"]]
-        # JSON stdout (list --json, status --json) is compared as data, not bytes; parsed before the text is
-        # normalized, since a normalized number (`<now>`) isn't JSON.
+        # JSON stdout (list --json, status --json) is compared as data, not bytes.
         if rec.get("stdout"):
             try:
                 rec["stdout_json"] = json.loads(rec["stdout"])
@@ -2460,22 +2455,29 @@ def scenarios():
         cmd(["core", "context", "{}", "{}"], expect=2))
 
     # ---- the desktop app's context (`nudge core context '<json>'`): focus (a terminal is watched when the context
-    # names it, the window is active and `at` is under 90 s old; away overrides) and space names for routes and scope.
-    # `{NOW}` / `{NOW-<ms>}` become epoch ms when the step runs. `app_context` in `files` is context.json.
-    def app_context(terminal="t1", active=True, spaces=(), at="{NOW}"):
-        body = json.dumps({"terminal": terminal, "window_active": active,
-                           "spaces": [{"id": i, "name": n} for i, n in spaces], "at": "AT"}).replace('"AT"', at)
-        return cmd(["core", "context", body], expect=0)
+    # names it, the window is active and the context arrived under 90 s ago; away overrides) and space names for routes
+    # and scope. nudge stamps `at` itself; an old or future context is written to context.json directly.
+    # `app_context` in `files` is context.json.
+    def app_context(terminal="t1", active=True, spaces=(), **extra):
+        body = {"terminal": terminal, "window_active": active, "spaces": [{"id": i, "name": n} for i, n in spaces], **extra}
+        return cmd(["core", "context", json.dumps(body)], expect=0)
+
+    def stored_context(at):
+        return write("home/.local/state/nudge/context.json",
+                     json.dumps({"terminal": "t1", "window_active": True, "spaces": [], "at": at}))
 
     looking = "t1 done: skipped (you are looking at this pane)"
-    add("core-context", app_context(spaces=[("s1", "client")]),
-        cmd(["core", "context", "not json"], expect=2, has="core context takes JSON {terminal, window_active, spaces: [{id, name}], at}"),
-        cmd(["core", "context", '{"terminal": "t1", "window_active": "yes", "spaces": [], "at": 1}'], expect=2),
-        cmd(["core", "context", '{"terminal": "t1", "window_active": true, "spaces": []}'], expect=2),
+    year_2100 = 4102444800000
+    add("core-context", app_context(spaces=[("s1", "client")], at=year_2100),
+        cmd(["core", "context", "not json"], expect=2, has="core context takes JSON {terminal, window_active, spaces: [{id, name}]}"),
+        cmd(["core", "context", '{"terminal": "t1", "window_active": "yes", "spaces": []}'], expect=2),
+        cmd(["core", "context", '{"terminal": "t1", "spaces": []}'], expect=2),
         cmd(["core", "context", "{}", "--once"], expect=2))
     add("core-watch-focus", config(), core_stream, state({"auto": True}), app_context(),
         cmd(watch_once, expect=0, sends=2, sources=[["core", "t2"], ["core", "t3"]], has=looking))
-    add("core-watch-focus-stale", config(), core_stream, state({"auto": True}), app_context(at="{NOW-91000}"),
+    add("core-watch-focus-stale", config(), core_stream, state({"auto": True}), stored_context(1700000000000),
+        cmd(watch_once, expect=0, sends=3, lacks=[looking]))
+    add("core-watch-focus-future", config(), core_stream, state({"auto": True}), stored_context(year_2100),
         cmd(watch_once, expect=0, sends=3, lacks=[looking]))
     add("core-watch-focus-inactive", config(), core_stream, state({"auto": True}), app_context(active=False),
         cmd(watch_once, expect=0, sends=3, lacks=[looking]))
@@ -2537,6 +2539,9 @@ def scenarios():
         cmd(["status", "--json"], expect=0, has=['"installed": true', '"running": true']))
     add("status-json-no-config", cmd(["status", "--json"], expect=0, has=['"webhooks": []', '"config_error": null']))
     add("status-json-broken-config", raw_config("[[webhook]\nname = "), cmd(["status", "--json"], expect=0, has='"config_error": "'))
+    add("status-json-old-config", raw_config(OLD_FORMAT_CONFIG),
+        cmd(["status", "--json"], expect=0, config_unchanged=1, has=['"default_webhook": "main"', '"name": "research"'],
+            lacks=["updated"]))
 
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per
@@ -2706,25 +2711,12 @@ def scenarios():
     return S
 
 
-def stamp(sb, text):
-    """`{NOW}` and `{NOW-<ms>}` in a step's arguments become epoch ms when the step runs; the transcript shows
-    `<now>` / `<now-<ms>ms>` instead, so it's the same on every run."""
-    def put(match):
-        ago = int(match.group(1) or 0)
-        value = now_ms() - ago
-        label = f"<now-{ago}ms>" if ago else "<now>"
-        sb.seeded[value] = label
-        sb.stamps[str(value)] = label
-        return str(value)
-    return re.sub(r"\{NOW(?:-(\d+))?\}", put, text)
-
-
 def run_scenario(index, name, ops, scratch, binary, root, port, offline_port):
     run = os.path.join(scratch, "s", f"{index:03d}")
     sb = Sandbox(run, binary, port, offline_port, os.path.join(scratch, "requests.jsonl")).create()
     sb.mark()
     t0 = now_ms()
-    subst = lambda v: stamp(sb, v.replace("{PORT}", str(port)).replace("{OFFLINE_PORT}", str(offline_port)).replace("{NUDGE_SIBLING}", sibling_install(root)).replace("{NUDGE_ROOT}", root).replace("{RUN}", run)) if isinstance(v, str) else v
+    subst = lambda v: v.replace("{PORT}", str(port)).replace("{OFFLINE_PORT}", str(offline_port)).replace("{NUDGE_SIBLING}", sibling_install(root)).replace("{NUDGE_ROOT}", root).replace("{RUN}", run) if isinstance(v, str) else v
     steps, setup_log, checks = [], [], []
     for op in ops:
         do = op["do"]

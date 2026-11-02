@@ -1,4 +1,5 @@
-//! Locating and reading the config file, rewriting an old-format file in the new format on the way.
+//! Locating and reading the config file, rewriting an old-format file in the new format on the way (or, for
+//! read-only callers, understanding it without rewriting).
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -31,9 +32,14 @@ pub(crate) fn read_config(path: &Path) -> Result<Option<Config>> {
     Ok(found.map(|(config, _)| config))
 }
 
-/// The config at `path`, if any. A file that uses only the old keys is rewritten with the new ones (keeping every
-/// other setting), and the note says so.
-pub(super) fn read_and_migrate(path: &Path) -> Result<Option<(Config, Option<String>)>> {
+/// The config at `path`, if any, read without changing the file: an old-format file is understood, not rewritten.
+/// For read-only views (`nudge status --json`).
+pub(crate) fn peek_config(path: &Path) -> Result<Option<Config>> {
+    Ok(parse_file(path)?.map(|(config, _)| config))
+}
+
+/// The config at `path`, if any, parsed in memory, and whether it uses the old keys.
+fn parse_file(path: &Path) -> Result<Option<(Config, bool)>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -42,7 +48,15 @@ pub(super) fn read_and_migrate(path: &Path) -> Result<Option<(Config, Option<Str
     let source = path.to_string_lossy();
     let mut raw = parse_toml(&text, &source)?;
     let old_format = rename_old_keys(&mut raw);
-    let config = validate_config(&raw, &source)?;
+    Ok(Some((validate_config(&raw, &source)?, old_format)))
+}
+
+/// The config at `path`, if any. A file that uses only the old keys is rewritten with the new ones (keeping every
+/// other setting), and the note says so.
+pub(super) fn read_and_migrate(path: &Path) -> Result<Option<(Config, Option<String>)>> {
+    let Some((config, old_format)) = parse_file(path)? else {
+        return Ok(None);
+    };
     if !old_format {
         return Ok(Some((config, None)));
     }

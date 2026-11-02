@@ -176,21 +176,21 @@ fn missed_reconciles_without_notifying_and_drops_terminals_that_went_away() {
 #[test]
 fn the_terminal_in_focus_in_the_app_is_skipped_unless_the_context_is_stale() {
     let hook = FakeWebhook::start(|_| (200, String::new()));
-    let (_state, env) = setup(&hook.base);
+    let (state, env) = setup(&hook.base);
     let run = FakeRun::default();
     let mut watcher = Watcher::new(&env, &run);
     watcher.set_connected(true);
     let _snapshot = watcher.line(&snapshot(now_ms() - 600_000));
-    let focus = |terminal: &str, at: i64| {
-        let context = format!(r#"{{"terminal":"{terminal}","window_active":true,"spaces":[],"at":{at}}}"#);
-        save_app_context(&env, &context).unwrap();
-    };
-    focus("t1", now_ms());
+    save_app_context(&env, r#"{"terminal":"t1","window_active":true,"spaces":[]}"#).unwrap();
     let _done = watcher.line(&status("t1", "done"));
     assert!(hook.requests().is_empty(), "you were looking at t1");
-    focus("t2", now_ms() - 90_000);
-    let _blocked = watcher.line(&status("t2", "blocked"));
-    assert_eq!(hook.requests().len(), 1, "a 90 s old context watches nothing");
+    // A stored context received 90 s ago, and one dated a day ahead (this clock went back): neither watches.
+    for (terminal, at) in [("t2", now_ms() - 90_000), ("t3", now_ms() + 86_400_000)] {
+        let stored = format!(r#"{{"terminal":"{terminal}","window_active":true,"spaces":[],"at":{at}}}"#);
+        fs::write(state.path().join("context.json"), stored).unwrap();
+        let _blocked = watcher.line(&status(terminal, "blocked"));
+    }
+    assert_eq!(hook.requests().len(), 2, "t2 and t3 notified");
 }
 
 #[test]
@@ -204,11 +204,8 @@ fn a_route_can_name_the_space_the_app_calls_it() {
         hook.base
     );
     fs::write(&config, text).unwrap();
-    let context = format!(
-        r#"{{"terminal":"t1","window_active":false,"spaces":[{{"id":"s1","name":"client"}}],"at":{}}}"#,
-        now_ms()
-    );
-    save_app_context(&env, &context).unwrap();
+    let context = r#"{"terminal":"t1","window_active":false,"spaces":[{"id":"s1","name":"client"}]}"#;
+    save_app_context(&env, context).unwrap();
     let run = FakeRun::default();
     let mut watcher = Watcher::new(&env, &run);
     watcher.set_connected(true);

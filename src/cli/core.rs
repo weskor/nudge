@@ -50,7 +50,7 @@ pub(super) fn core(rest: &[String], args: &Args, env: &Env) -> Result<u8> {
             Err(Error::Usage("core service takes install, remove or status".into()))
         }
         [command, ..] if command == "context" => Err(Error::Usage(
-            "core context takes one JSON argument: {terminal, window_active, spaces, at}".into(),
+            "core context takes one JSON argument: {terminal, window_active, spaces}".into(),
         )),
         _ => Err(Error::Usage(
             "core needs a command: watch, send <terminal>, service install|remove|status or context '<json>'".into(),

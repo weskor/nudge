@@ -1,9 +1,9 @@
 //! `nudge status --json`: what the desktop panel draws for this machine, in one JSON object. Webhooks by name and
-//! host only: never a URL path, header or secret.
+//! host only: never a URL path, header or secret. Read-only: it never rewrites the config or the state.
 use serde::Serialize;
 
 use crate::VERSION;
-use crate::config::{Config, Route, default_config_path, default_webhook_name, read_config};
+use crate::config::{Config, Route, default_config_path, default_webhook_name, peek_config};
 use crate::core::{CoreStatus, core_status};
 use crate::env::{Env, Run};
 use crate::error::{Error, Result};
@@ -41,7 +41,7 @@ pub(super) fn status(json: bool, env: &Env, run: &dyn Run) -> Result<u8> {
                 .into(),
         ));
     }
-    let (config, config_error) = match read_config(&default_config_path(env)) {
+    let (config, config_error) = match peek_config(&default_config_path(env)) {
         Ok(config) => (config, None),
         Err(error) => (None, Some(error.to_string())),
     };

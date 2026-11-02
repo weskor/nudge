@@ -49,7 +49,8 @@ const USAGE: &str = "Usage:
            systemd user unit on Linux, a launchd agent on macOS); status
            says whether it's installed and running. context: the desktop
            app's focus and space names, {terminal, window_active,
-           spaces: [{id, name}], at}; the focused terminal isn't notified.
+           spaces: [{id, name}]}, stamped with the time it arrives; the
+           focused terminal isn't notified for 90 s after.
   doctor   Check config, webhook (--ping sends a test ping), herdr plugin,
            auto-notify, the nudge command and clipboard tools.
   settings Change auto-notify, who can notify and the default webhook in a

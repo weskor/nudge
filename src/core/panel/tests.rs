@@ -7,7 +7,6 @@ use crate::core::context::save_app_context;
 use crate::core::status_file::{DecisionRecord, TerminalStatus, WatchStatus, write_status};
 use crate::env::Env;
 use crate::env::tests::FakeRun;
-use crate::state::now_ms;
 
 const CONFIG: &str = r#"default_webhook = "main"
 
@@ -44,11 +43,9 @@ fn setup(pid: u32) -> (tempfile::TempDir, Env) {
         ("NUDGE_STATE_DIR", dir.path().to_str().unwrap()),
         ("HOME", dir.path().to_str().unwrap()),
     ]);
-    let context = format!(
-        r#"{{"terminal":"t1","window_active":true,"spaces":[{{"id":"s1","name":"client"}},{{"id":"s2","name":"docs"}}],"at":{}}}"#,
-        now_ms()
-    );
-    save_app_context(&env, &context).unwrap();
+    let context =
+        r#"{"terminal":"t1","window_active":true,"spaces":[{"id":"s1","name":"client"},{"id":"s2","name":"docs"}]}"#;
+    save_app_context(&env, context).unwrap();
     let decisions = VecDeque::from([DecisionRecord {
         at: 1,
         terminal: "t1".into(),

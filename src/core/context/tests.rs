@@ -4,22 +4,35 @@ use super::{AppContext, FRESH_MS, SpaceRef, name_space, read_app_context, save_a
 use crate::env::Env;
 use crate::error::Error;
 use crate::source::{AgentRef, Backend, WorkspaceRef};
+use crate::state::now_ms;
 
 fn env(dir: &tempfile::TempDir) -> Env {
     Env::from([("NUDGE_STATE_DIR", dir.path().to_str().unwrap())])
 }
 
+/// Sent with an `at` from a panel whose clock is a day ahead.
 const SAVED: &str =
-    r#"{"terminal":"t7","window_active":true,"spaces":[{"id":"s1","name":"client-a"}],"at":1700000000000}"#;
+    r#"{"terminal":"t7","window_active":true,"spaces":[{"id":"s1","name":"client-a"}],"at":4102444800000}"#;
 
 #[test]
-fn the_context_is_stored_and_read_back() {
+fn the_context_is_stored_stamped_with_when_it_arrived_not_the_panels_clock() {
     let dir = tempfile::tempdir().unwrap();
     let env = env(&dir);
     assert_eq!(read_app_context(&env), None);
+    let before = now_ms();
     assert_eq!(save_app_context(&env, SAVED).unwrap(), 0);
+    let after = now_ms();
     let context = read_app_context(&env).unwrap();
-    assert_eq!(context.terminal.as_deref(), Some("t7"));
+    assert!(
+        (before..=after).contains(&context.at),
+        "{} not in {before}..={after}",
+        context.at
+    );
+    assert!(context.watches("t7", after));
+    assert!(
+        !context.watches("t7", context.at + FRESH_MS),
+        "stale 90 s after it arrived, whatever the panel said"
+    );
     assert_eq!(context.space_name("s1").as_deref(), Some("client-a"));
     assert_eq!(context.space_name("s2"), None);
 }
@@ -32,7 +45,7 @@ fn malformed_context_is_refused_and_the_stored_one_kept() {
     for bad in [
         "not json",
         r#"{"terminal":"t7","window_active":"yes","spaces":[],"at":1}"#,
-        r#"{"terminal":"t7","window_active":true,"spaces":[]}"#,
+        r#"{"terminal":"t7","spaces":[]}"#,
         r#"{"terminal":"t7","window_active":true,"spaces":[{"id":"s1"}],"at":1}"#,
     ] {
         let error = save_app_context(&env, bad).unwrap_err();
@@ -55,8 +68,13 @@ fn a_terminal_is_watched_only_when_focused_in_an_active_window_with_a_fresh_cont
         spaces: Vec::new(),
         at,
     };
-    assert!(context.watches("t7", at + FRESH_MS - 1));
-    assert!(!context.watches("t7", at + FRESH_MS), "90 s old is stale");
+    assert!(context.watches("t7", at));
+    assert!(context.watches("t7", at + 89_999), "89.999 s old is fresh");
+    assert!(!context.watches("t7", at + 90_000), "90.000 s old is stale");
+    assert!(
+        !context.watches("t7", at - 1),
+        "a context dated in the future isn't fresh"
+    );
     assert!(!context.watches("t8", at));
     let inactive = AppContext {
         window_active: false,
