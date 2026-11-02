@@ -14,7 +14,7 @@ fn report_sent(verb: &str, sent: &Sent) {
     let agent = notification.from_agent.as_deref().unwrap_or("<none>");
     println!(
         "{verb} webhook \"{}\" (status {status}, HTTP {}) as agent {agent}.",
-        sent.webhook, sent.http_status
+        notification.webhook, sent.http_status
     );
     if notification.from_agent.is_none() {
         eprintln!(

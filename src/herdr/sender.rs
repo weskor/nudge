@@ -23,6 +23,15 @@ impl Sender {
             workspace_id: env.get("HERDR_WORKSPACE_ID").map(str::to_owned),
         }
     }
+
+    /// Whatever runs in herdr pane `pane_id` when herdr doesn't know an agent there.
+    pub(crate) fn in_pane(pane_id: &str) -> Self {
+        Self {
+            agent: None,
+            pane_id: Some(pane_id.to_owned()),
+            workspace_id: None,
+        }
+    }
 }
 
 /// Who is sending, in order:

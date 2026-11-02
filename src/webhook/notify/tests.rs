@@ -1,8 +1,34 @@
+use crate::config::{Route, Selector};
 use crate::error::Error;
 use crate::state::update_state;
 use crate::webhook::status::{NotifyStatus, Status};
 use crate::webhook::tests::{FakeWebhook, config, env, herdr_and_git, webhook_error};
 use crate::webhook::{Origin, notify_webhook, ping_webhook};
+
+#[test]
+fn notify_follows_the_senders_route_unless_a_webhook_is_named_and_ping_ignores_routes() {
+    let hook = FakeWebhook::start(|_| (200, String::new()));
+    let state = tempfile::tempdir().unwrap();
+    let (env, run) = (env(&state, true), herdr_and_git());
+    let origin = Origin {
+        env: &env,
+        cwd: "/home/user/src/api",
+        run: &run,
+    };
+    let mut config = config(&hook.base);
+    config.route = vec![Route {
+        selector: Selector::Pane("api-refactor".into()),
+        webhook: "research".into(),
+        backend: None,
+    }];
+    let routed = notify_webhook(&config, None, NotifyStatus::Done, "x", None, origin).unwrap();
+    let named = notify_webhook(&config, Some("bridge"), NotifyStatus::Done, "x", None, origin).unwrap();
+    let pinged = ping_webhook(&config, None, None, origin).unwrap();
+    let sent_to = [routed, named, pinged].map(|sent| sent.notification.webhook);
+    assert_eq!(sent_to, ["research", "bridge", "bridge"]);
+    let paths: Vec<String> = hook.requests().into_iter().map(|request| request.path).collect();
+    assert_eq!(paths, ["/research", "/bridge", "/bridge"]);
+}
 
 #[test]
 fn posts_the_notification_to_the_default_webhook_with_its_authorization_header() {
@@ -33,8 +59,9 @@ fn posts_the_notification_to_the_default_webhook_with_its_authorization_header()
         "status": "blocked",
         "message": "Need the staging DB password.",
         "reply_hint": "reply with: herdr agent prompt api-refactor \"...\"",
+        "webhook": "bridge",
     });
-    assert_eq!((sent.webhook.as_str(), sent.http_status), ("bridge", 202));
+    assert_eq!(sent.http_status, 202);
     let requests = hook.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].path, "/bridge");
@@ -234,7 +261,7 @@ fn ping_sends_a_test_status_and_does_not_count_as_the_agent_notifying() {
         run: &run,
     };
     let sent = ping_webhook(&config(&hook.base), None, None, origin).unwrap();
-    assert_eq!(sent.webhook, "bridge");
+    assert_eq!(sent.notification.webhook, "bridge");
     assert!(update_state(&env, |state| state.panes.is_empty()).unwrap());
     let body: serde_json::Value = serde_json::from_str(&hook.requests()[0].body).unwrap();
     assert_eq!(

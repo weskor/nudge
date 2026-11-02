@@ -1,7 +1,7 @@
 //! The settings being edited, built from the config, the saved toggles and what herdr has open. Pure state: no
 //! terminal, no files.
 use super::choices::{Choice, agent_choices, workspace_choices};
-use crate::config::{Auto, Config, default_webhook_name};
+use crate::config::{Auto, Config, Route, default_webhook_name};
 use crate::herdr::{ListedAgent, ListedWorkspace};
 use crate::state::State;
 
@@ -33,6 +33,8 @@ pub(crate) struct Settings {
     pub(super) agents: Vec<Choice>,
     pub(super) webhooks: Vec<WebhookRow>,
     pub(super) default_webhook: Option<String>,
+    /// The config's routes, shown read-only (`nudge route` edits them).
+    pub(super) routes: Vec<Route>,
     pub(super) cursor: usize,
     pub(super) status: Option<String>,
     pub(super) edits: Edits,
@@ -65,6 +67,7 @@ impl Settings {
             agents: agent_choices(&config.scope.agents, workspaces, agents),
             webhooks: webhook_rows(config),
             default_webhook: default_webhook_name(config).map(str::to_owned),
+            routes: config.route.clone(),
             cursor: 0,
             status: None,
             edits: Edits::None,

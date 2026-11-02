@@ -1407,6 +1407,7 @@ def step_assertions(rec, op, config_before=None):
     state_keys={K: V}    state.json's top-level key K is V after the step (None = absent), e.g. {"away": None}
     config_mode=MODE     the config file's permission bits, e.g. "600"
     herdr_has=[ARGV...]  each of these herdr calls was made (exact argv)
+    sent_to=[NAME...]    the `webhook` field of each request the webhook received, in order (which webhook it went to)
     config_unchanged=1   the config text is byte-for-byte what it was before the step"""
     problems = []
     cfg = (rec.get("files") or {}).get("config")
@@ -1434,6 +1435,9 @@ def step_assertions(rec, op, config_before=None):
         problems.append("config text changed, expected unchanged")
     if op.get("config_mode") is not None and (cfg or {}).get("mode") != op["config_mode"]:
         problems.append(f"config mode {(cfg or {}).get('mode')}, expected {op['config_mode']}")
+    sent_to = [(r.get("body") or {}).get("webhook") for r in rec.get("webhook", []) if isinstance(r.get("body"), dict)]
+    if op.get("sent_to") is not None and sent_to != op["sent_to"]:
+        problems.append(f"requests went to {sent_to}, expected {op['sent_to']}")
     for argv in op.get("herdr_has") or []:
         if argv not in rec.get("herdr_calls", []):
             problems.append(f"no herdr call {argv}")
@@ -1479,6 +1483,16 @@ def scope(workspaces=None, agents=None):
 def auto(**settings):
     """An [auto] table for config(extra=...)."""
     return "[auto]\n" + "".join(f"{k} = {json.dumps(v)}\n" for k, v in settings.items())
+
+
+def route(webhook, pane=None, workspace=None, backend=None):
+    """A [[route]] table for config(extra=...): `pane` or `workspace` (or both, to test the error), optional `backend`."""
+    lines = ["[[route]]"]
+    lines += [f"{key} = {json.dumps(value)}" for key, value in (("pane", pane), ("workspace", workspace)) if value]
+    lines.append(f"webhook = {json.dumps(webhook)}")
+    if backend:
+        lines.append(f"backend = {json.dumps(backend)}")
+    return "\n".join(lines) + "\n\n"
 
 
 def raw_config(text):
@@ -2242,6 +2256,89 @@ def scenarios():
         cmd(["setup", "--yes", "--url", URL, "--authorization", GOOD, "--no-install-command", "--no-test"], expect=0,
             sends=0, state_keys={"on": False}))
 
+    # ---- routes: [[route]] sends a pane's (agent name or pane id) or a workspace's (label or id) notifications to
+    # another webhook. Pane beats workspace beats default_webhook; --webhook beats every route; `test` pings the
+    # default. main and research share /hook, so `sent_to` (the body's `webhook`) shows where each request went.
+    ws_routes = route("research", pane="claude-1") + route("signed", workspace="api-work")
+    add("route-notify-precedence", config(extra=ws_routes), herdr(ws_herdr),
+        cmd(["notify", "pane route"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sent_to=["research"]),
+        cmd(["notify", "workspace route"], env={"HERDR_PANE_ID": "wD:p3"}, expect=0, sent_to=["signed"]),
+        cmd(["notify", "no route"], env={"HERDR_PANE_ID": "wE:p2"}, expect=0, sent_to=["main"]),
+        cmd(["notify", "--webhook", "main", "named"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sent_to=["main"]),
+        cmd(["notify", "--agent", "claude-1", "named agent"], expect=0, sent_to=["research"]),
+        cmd(["test"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sent_to=["main"]))
+    add("route-notify-by-id", config(extra=route("research", pane="wE:p2") + route("signed", workspace="wD")), herdr(ws_herdr),
+        cmd(["notify", "pane id"], env={"HERDR_PANE_ID": "wE:p2"}, expect=0, sent_to=["research"]),
+        cmd(["notify", "workspace id"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sent_to=["signed"]),
+        cmd(["notify", "workspace from env"], env={"HERDR_WORKSPACE_ID": "wD"}, cwd="home", expect=0, sent_to=["signed"]))
+    add("route-notify-backend", config(extra=route("research", pane="claude-1", backend="core")), herdr(ws_herdr),
+        cmd(["notify", "core-only route"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sent_to=["main"]),
+        config(extra=route("research", pane="claude-1", backend="tui")),
+        cmd(["notify", "tui route"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sent_to=["research"]))
+    add("route-notify-with-scope", config(extra=scope(workspaces=["api-work"]) + ws_routes), herdr(ws_herdr),
+        cmd(["notify", "in scope, routed"], env={"HERDR_PANE_ID": "wD:p3"}, expect=0, sent_to=["signed"]),
+        cmd(["notify", "outside scope"], env={"HERDR_PANE_ID": "wE:p2"}, expect=1, sends=0, has=outside))
+    add("route-mcp", config(extra=ws_routes), herdr(ws_herdr),
+        mcp([("notify_webhook", {"message": "routed"}), ("notify_webhook", {"message": "named", "webhook": "main"})],
+            env={"HERDR_PANE_ID": "wD:p1"}, sent_to=["research", "main"]))
+    add("route-event", config(extra=ws_routes), herdr(ws_herdr), state({"auto": True}),
+        event("blocked", pane="wD:p1", sent_to=["research"], toasts=["Told the webhook: claude-1 is blocked"]),
+        event("blocked", pane="wE:p2", sent_to=["main"], toasts=["Told the webhook: reviewer is blocked"]))
+    add("route-send-pane", config(extra=ws_routes), herdr(ws_herdr),
+        action("send-pane", {"focused_pane_id": "wD:p3"}, sent_to=["signed"]),
+        action("send-pane", {"focused_pane_id": "wD:p1"}, sent_to=["research"]),
+        action("send-pane", {"focused_pane_id": "wE:p2"}, sent_to=["main"]))
+    add("route-no-default", raw_config(TWO_WEBHOOKS_NO_DEFAULT + "\n" + route("beta", pane="claude-1")), herdr(ws_herdr),
+        cmd(["notify", "routed without a default"], env={"HERDR_PANE_ID": "wD:p1"}, expect=0, sent_to=["beta"]),
+        cmd(["notify", "no route, no default"], env={"HERDR_PANE_ID": "wE:p2"}, expect=1, sends=0,
+            has="no default_webhook; pass --webhook"))
+    add("route-invalid-config", raw_config(TWO_WEBHOOKS_NO_DEFAULT + "\n" + route("ghost", pane="a")
+                                           + route("alpha", pane="b", workspace="c") + route("alpha", pane="d", backend="desk")),
+        cmd(["notify", "hi"], expect=1, sends=0, has=['route.0.webhook: no [[webhook]] named "ghost"',
+                                                      "route.1: set exactly one of pane or workspace",
+                                                      'route.2.backend: must be "tui" or "core"']),
+        cmd(["route", "ls"], expect=1), cmd(["doctor"], expect=1))
+    route_ls_empty = "everything else → main (default webhook)"
+    add("route-cli", config(),
+        cmd(["route", "ls"], expect=0, has=route_ls_empty, lacks=["→ research"]),
+        cmd(["route", "set", "--pane", "claude-1", "--webhook", "research"], expect=0,
+            has='Added route: pane "claude-1" → research', config_keys={"route": [{"pane": "claude-1", "webhook": "research"}]}),
+        cmd(["route", "set", "--workspace", "api-work", "--webhook", "signed", "--backend", "core"], expect=0,
+            has='Added route: workspace "api-work" → signed (core only)'),
+        cmd(["route", "set", "--pane", "claude-1", "--webhook", "main"], expect=0, has='Changed route: pane "claude-1" → main',
+            config_keys={"route": [{"pane": "claude-1", "webhook": "main"},
+                                   {"workspace": "api-work", "webhook": "signed", "backend": "core"}]}),
+        cmd(["route", "ls"], expect=0, has='pane "claude-1" → main\nworkspace "api-work" → signed (core only)\n' + route_ls_empty),
+        cmd(["route", "ls", "--json"], expect=0),
+        cmd(["route", "rm", "--workspace", "api-work"], expect=1, has='no route for workspace "api-work"; see nudge route ls',
+            config_unchanged=True),
+        cmd(["route", "rm", "--workspace", "api-work", "--backend", "core"], expect=0,
+            has='Removed route: workspace "api-work" → signed (core only)'),
+        cmd(["route", "set", "--pane", "x", "--webhook", "ghost"], expect=1, has='unknown webhook "ghost"', config_unchanged=True),
+        cmd(["route", "set", "--pane", "x"], expect=2, config_unchanged=True),
+        cmd(["route", "set", "--pane", "x", "--workspace", "y", "--webhook", "main"], expect=2, config_unchanged=True),
+        cmd(["route", "set", "--pane", "x", "--webhook", "main", "--backend", "desk"], expect=2, config_unchanged=True),
+        cmd(["route", "ls", "--pane", "x"], expect=2), cmd(["route"], expect=2), cmd(["route", "frob"], expect=2),
+        cmd(["route", "--help"], expect=0, has="nudge route set (--pane NAME | --workspace NAME) --webhook NAME"),
+        cmd(["list"], expect=0))
+    add("route-cli-no-config", cmd(["route", "ls"], expect=1), cmd(["route", "set", "--pane", "x", "--webhook", "main"], expect=1),
+        cmd(["default", "main"], expect=1))
+    add("default-cli", config(),
+        cmd(["default", "research"], expect=0, has="Default webhook: research", config_keys={"default_webhook": "research"}),
+        cmd(["notify", "goes to the new default"], expect=0, sent_to=["research"]),
+        cmd(["default", "ghost"], expect=1, has='unknown webhook "ghost"', config_unchanged=True),
+        cmd(["default"], expect=2), cmd(["default", "main", "research"], expect=2),
+        cmd(["list", "--json"], expect=0))
+    add("route-kept-by-writers", config(extra=ws_routes), herdr(ws_herdr),
+        action("only-agent", {"focused_pane_id": "wD:p1"}, config_keys={"route": [{"pane": "claude-1", "webhook": "research"},
+                                                                                  {"workspace": "api-work", "webhook": "signed"}]}),
+        action("all-agents", config_keys={"route": [{"pane": "claude-1", "webhook": "research"},
+                                                    {"workspace": "api-work", "webhook": "signed"}]}),
+        cmd(["setup", "--webhook", "extra", "--url", URL, "--authorization", GOOD], expect=0,
+            config_keys={"route": [{"pane": "claude-1", "webhook": "research"}, {"workspace": "api-work", "webhook": "signed"}]}),
+        cmd(["default", "research"], expect=0,
+            config_keys={"route": [{"pane": "claude-1", "webhook": "research"}, {"workspace": "api-work", "webhook": "signed"}]}))
+
     # ---- settings TUI. Cursor stops: 0 Auto-notify, 1 Away, 2 Toast, 3 Shortest turn, 4 Cooldown, 5 Terminal lines,
     # 6 Every agent, 7 Only these, then (only while "Only these" is picked) one per workspace and agent, then one per
     # webhook. settings_herdr() lists workspaces api-work, web-work, wF (unlabelled) and agents claude-1, reviewer, wF:p4
@@ -2369,6 +2466,17 @@ def scenarios():
             on_screen("[x] " + away_row), keys("j\\r"), on_screen(cursor="[ ] " + away_row),  # Enter flips it too
             keys("s")], expect=0, has=saved, state_auto=True, state_keys={"away": None}),
         pty(["settings"], [on_screen("[x] Auto-notify", "[ ] " + away_row), keys("q")], expect=0, has=unchanged))
+    # Routes are listed read-only under the webhooks (no cursor stop); saving settings keeps them.
+    set_routes = route("research", pane="claude-1") + route("signed", workspace="api-work", backend="core")
+    kept_routes = [{"pane": "claude-1", "webhook": "research"}, {"workspace": "api-work", "webhook": "signed", "backend": "core"}]
+    add("settings-routes", config(extra=set_routes), set_herdr, state({"auto": True}),
+        pty(["settings"], [
+            on_screen("Routes", 'pane "claude-1" → research', 'workspace "api-work" → signed (core only)',
+                      "change with nudge route set / nudge route rm", cursor="[x] Auto-notify"),
+            keys("j" * 20), on_screen("Used when no route matches and the agent names no webhook.",
+                                      cursor="( ) signed    127.0.0.1  signed"),
+            keys(" "), on_screen("● unsaved", cursor="(•) signed    127.0.0.1  signed"),
+            keys("s")], expect=0, has=saved, sends=0, config_keys={"default_webhook": "signed", "route": kept_routes}))
     add("settings-away-from-action", config(), set_herdr, action("away-on", toasts=[away_on]),
         pty(["settings", "--pane"], [
             on_screen("[ ] Auto-notify", "[x] " + away_row, cursor="[ ] Auto-notify"),

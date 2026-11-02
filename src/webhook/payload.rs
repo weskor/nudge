@@ -24,6 +24,8 @@ pub(crate) struct Notification {
     pub(crate) status: Status,
     pub(crate) message: String,
     pub(crate) reply_hint: String,
+    /// The configured webhook's name: the one named, else the sender's route, else the default.
+    pub(crate) webhook: String,
 }
 
 pub(super) fn reply_hint(agent: Option<&str>) -> String {
@@ -55,11 +57,13 @@ pub(super) fn message_text(message: &str) -> Result<&str> {
     Ok(message)
 }
 
-/// Build the notification from `from_agent` (the reply target), with a fresh id and the git repo and branch.
+/// Build the notification for `webhook` from `from_agent` (the reply target), with a fresh id and the git repo and
+/// branch.
 pub(crate) fn build_notification(
     status: Status,
     message: &str,
     from_agent: Option<String>,
+    webhook: &str,
     origin: Origin<'_>,
 ) -> Result<Notification> {
     let message = message_text(message)?;
@@ -74,6 +78,7 @@ pub(crate) fn build_notification(
         branch: git.branch,
         status,
         message: message.to_owned(),
+        webhook: webhook.to_owned(),
     })
 }
 

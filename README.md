@@ -67,7 +67,7 @@ That's it. Agents in herdr are now covered; they don't need any instructions.
 
 ### Automatic notifications
 
-The plugin listens to herdr's agent status changes. It notifies your default webhook when all of these hold:
+The plugin listens to herdr's agent status changes. It notifies your default webhook (or the one the pane's [route](#send-some-agents-to-another-webhook) names) when all of these hold:
 
 | Rule | Why |
 | --- | --- |
@@ -111,6 +111,20 @@ By default every agent can reach the webhook. To narrow that down, tick workspac
 | `nudge.all-agents` | Every agent again |
 
 Both write the `[scope]` table in the config. Scope applies to automatic notifications and to `nudge notify` and the MCP tool; an agent outside it gets an error and nothing is sent. Sending a pane yourself with `send-pane`, and `nudge test`, ignore it.
+
+### Send some agents to another webhook
+
+A route sends one agent's or one workspace's notifications to a webhook other than the default, for example a client's own automation:
+
+```sh
+nudge route set --workspace client-a --webhook client-a   # everything from the client-a workspace
+nudge route set --pane api-refactor --webhook research     # one agent (its name, or a pane id)
+nudge route ls                                            # what goes where
+nudge route rm --pane api-refactor
+nudge default main                                        # the webhook for everything else
+```
+
+The most specific route wins: a pane route, then a workspace route, then the default webhook. Routes match by name or by id, like the scope, so renaming a workspace or an agent breaks its route. Automatic notifications, `send-pane` and `nudge notify` all follow routes; `nudge notify --webhook NAME` (and the MCP tool's `webhook`) still wins, because it names one, and `nudge test` pings the default. Routes are checked after the scope: they decide where a notification goes, not whether it may be sent. `nudge settings` lists them; the `webhook` field in each event says where it went.
 
 ### Settings
 
@@ -199,7 +213,8 @@ POSTed to your webhook with its `Authorization` header and `Content-Type: applic
   "branch": "auth-refactor",
   "status": "blocked",
   "message": "Need the staging DB password to run migrations.",
-  "reply_hint": "reply with: herdr agent prompt api-refactor \"...\""
+  "reply_hint": "reply with: herdr agent prompt api-refactor \"...\"",
+  "webhook": "main"
 }
 ```
 
@@ -212,6 +227,7 @@ POSTed to your webhook with its `Authorization` header and `Content-Type: applic
 | `branch` | The current branch; `null` when detached or outside git |
 | `status` | `done`, `blocked`, `question`, or `test` |
 | `message` | The agent's text; for automatic events, a note saying so plus the pane's last lines |
+| `webhook` | The name of the configured webhook it was sent to (see [routes](#send-some-agents-to-another-webhook)), for automations that serve several |
 
 <details>
 <summary>Signed requests, for webhooks you host yourself</summary>
@@ -259,7 +275,7 @@ description = "nudge: send this pane to the webhook"
 
 ## Configuration
 
-`nudge setup` writes the config for you; [config.example.toml](config.example.toml) documents the format. To add another webhook, run `nudge setup --webhook research`. `--default` makes it the webhook the plugin uses.
+`nudge setup` writes the config for you; [config.example.toml](config.example.toml) documents the format. To add another webhook, run `nudge setup --webhook research`. `--default` (or later `nudge default research`) makes it the webhook everything without a [route](#send-some-agents-to-another-webhook) goes to.
 
 [Settings](#settings) edits these for you. By hand, automatic notifications are tuned in an optional `[auto]` table; leave out anything you don't change:
 
@@ -273,11 +289,18 @@ toast = true             # herdr toast when one is sent
 [scope]                  # who may notify; leave out for everyone
 workspaces = ["api"]     # herdr workspace names (or ids)
 agents = ["reviewer"]    # herdr agent names (or pane ids)
+
+[[route]]               # nudge route set writes these; one table per route
+workspace = "client-a"   # or pane = "api-refactor" (agent name or pane id)
+webhook = "client-a"
+# backend = "tui"       # optional: only herdr ("tui") or only herdr-core ("core")
 ```
+
+A config with routes is still read by older nudge versions, but they ignore the routes, and drop them if they save the config (setup, settings, the scope actions). Keep every machine that shares a config on the same version.
 
 | Path | Holds |
 | --- | --- |
-| `~/.config/nudge/config.toml` | Webhooks (URL, Authorization header, optional description and signing secret), `[auto]` and `[scope]` |
+| `~/.config/nudge/config.toml` | Webhooks (URL, Authorization header, optional description and signing secret), `[auto]`, `[scope]` and `[[route]]` |
 | `~/.local/state/nudge/state.json` | The on/off switch, the auto-notify and away toggles, and per-pane timestamps |
 | `~/.local/bin/nudge` | Optional link to the plugin's `nudge` command; kept current across plugin updates |
 
@@ -298,6 +321,10 @@ nudge setup  [--webhook NAME] [--url URL] [--authorization VALUE | --authorizati
 nudge notify [--webhook NAME] [--status done|blocked|question] [--agent NAME] <message...|->
 nudge test   [--webhook NAME] [--agent NAME]
 nudge on | off
+nudge default <webhook>
+nudge route  ls [--json]
+nudge route  set (--pane NAME | --workspace NAME) --webhook NAME [--backend tui|core]
+nudge route  rm  (--pane NAME | --workspace NAME) [--backend tui|core]
 nudge doctor [--ping]
 nudge settings
 nudge list   [--json]

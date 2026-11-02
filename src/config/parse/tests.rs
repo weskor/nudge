@@ -2,6 +2,7 @@ use std::fs;
 
 use super::parse_config;
 use crate::config::Auto;
+use crate::config::serialize::serialize_config;
 use crate::config::tests::{VALID, config_error};
 
 #[test]
@@ -16,9 +17,12 @@ fn parses_webhooks_and_default_webhook() {
 }
 
 #[test]
-fn the_shipped_example_is_rejected_until_placeholders_are_filled_in() {
+fn the_shipped_example_is_rejected_only_until_placeholders_are_filled_in() {
     let example = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.toml")).unwrap();
-    assert!(config_error(parse_config(&example, "example")).contains("placeholder"));
+    let message = config_error(parse_config(&example, "example"));
+    let problems: Vec<&str> = message.lines().skip(1).collect();
+    assert!(!problems.is_empty());
+    assert!(problems.iter().all(|line| line.contains("placeholder")), "{message}");
 }
 
 #[test]
@@ -96,4 +100,72 @@ fn rejects_bad_auto_and_scope_settings_naming_each() {
     ] {
         assert!(message.contains(expected), "missing {expected:?} in\n{message}");
     }
+}
+
+const ROUTES: &str = r#"
+[[route]]
+workspace = "client-a"
+webhook = "research"
+
+[[route]]
+pane = "api-refactor"
+webhook = "bridge"
+backend = "core"
+"#;
+
+#[test]
+fn routes_parse_in_file_order_and_survive_a_save() {
+    let config = parse_config(&format!("{VALID}{ROUTES}"), "cfg").unwrap();
+    let shown: Vec<String> = config.route.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        shown,
+        [
+            r#"workspace "client-a" → research"#,
+            r#"pane "api-refactor" → bridge (core only)"#
+        ]
+    );
+    let saved = serialize_config(&config);
+    assert_eq!(parse_config(&saved, "saved").unwrap(), config);
+    assert_eq!(serialize_config(&parse_config(&saved, "saved").unwrap()), saved);
+}
+
+#[test]
+fn a_config_without_routes_saves_byte_for_byte_as_before() {
+    let config = parse_config(VALID, "cfg").unwrap();
+    let saved = serialize_config(&config);
+    assert!(!saved.contains("route"), "{saved}");
+    assert_eq!(serialize_config(&parse_config(&saved, "saved").unwrap()), saved);
+}
+
+#[test]
+fn rejects_bad_routes_naming_each() {
+    let text = format!(
+        "{VALID}\n[[route]]\npane = \"a\"\nwebhook = \"nope\"\n\n[[route]]\npane = \"a\"\nworkspace = \"w\"\nwebhook = \"bridge\"\n\n\
+         [[route]]\nwebhook = \"bridge\"\n\n[[route]]\nworkspace = \"w\"\nwebhook = \"bridge\"\nbackend = \"desktop\"\n\n\
+         [[route]]\nworkspace = \"w\"\nwebhook = \"bridge\"\nmachine = \"box\"\n\n\
+         [[route]]\nworkspace = \"w\"\nwebhook = \"research\"\n\n[[route]]\npane = \" \"\nwebhook = \"bridge\"\n"
+    );
+    let message = config_error(parse_config(&text, "cfg"));
+    for expected in [
+        r#"route.0.webhook: no [[webhook]] named "nope""#,
+        "route.1: set exactly one of pane or workspace",
+        "route.2: set exactly one of pane or workspace",
+        r#"route.3.backend: must be "tui" or "core""#,
+        "route.4.machine: unknown setting",
+        "route.6.pane: must be a non-empty string",
+    ] {
+        assert!(message.contains(expected), "missing {expected:?} in\n{message}");
+    }
+    let duplicate = format!(
+        "{VALID}\n[[route]]\npane = \"a\"\nwebhook = \"bridge\"\n\n[[route]]\npane = \"a\"\nwebhook = \"research\"\n"
+    );
+    assert!(
+        config_error(parse_config(&duplicate, "cfg"))
+            .contains(r#"route.1: duplicate route for pane "a"; an earlier route already matches it"#)
+    );
+    let other_backend = format!("{duplicate}backend = \"core\"\n");
+    assert!(
+        parse_config(&other_backend, "cfg").is_ok(),
+        "a backend makes it a different route"
+    );
 }

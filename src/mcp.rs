@@ -53,7 +53,7 @@ fn tools() -> Value {
                         "enum": ["done", "blocked", "question"],
                     },
                     "webhook": {
-                        "description": "Webhook name from list_webhooks; omit for the default webhook.",
+                        "description": "Webhook name from list_webhooks; omit for your route's webhook, else the default.",
                         "type": "string",
                     },
                     "agent": {
@@ -155,10 +155,10 @@ struct WebhookSummary<'a> {
     description: &'a str,
 }
 
+/// `notify_webhook`'s result: the notification as sent (its `webhook` names where it went) and the HTTP status.
 #[derive(Serialize)]
 struct Notified {
     ok: bool,
-    webhook: String,
     http_status: u16,
     #[serde(flatten)]
     notification: Notification,
@@ -201,7 +201,6 @@ fn notify(args: NotifyArgs, env: &Env) -> Result<String> {
     )?;
     Ok(pretty(&Notified {
         ok: true,
-        webhook: sent.webhook,
         http_status: sent.http_status,
         notification: sent.notification,
     }))

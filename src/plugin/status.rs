@@ -5,10 +5,10 @@ use serde::Deserialize;
 
 use super::{Plugin, log};
 use crate::auto::{Decision, HerdrStatus, Settled, Trigger, decide};
-use crate::config::{Auto, Config, default_config_path, load_config, read_config};
+use crate::config::{Auto, Backend, Config, default_config_path, load_config, read_config, routes_name_workspaces};
 use crate::env::System;
 use crate::error::{Error, Result};
-use crate::herdr::{AgentInfo, Sender, herdr_agent, in_scope};
+use crate::herdr::{AgentInfo, Sender, SenderIds, herdr_agent};
 use crate::state::{now_ms, tui_key, update_state};
 use crate::webhook::NotifyStatus;
 
@@ -88,23 +88,18 @@ impl Plugin<'_> {
             Some(config) => config,
             None => load_config(path)?,
         };
-        let sender = agent.map_or_else(
-            || Sender {
-                agent: None,
-                workspace_id: None,
-                pane_id: Some(pane_id.to_owned()),
-            },
-            |agent| agent.sender,
-        );
+        let sender = agent.map_or_else(|| Sender::in_pane(pane_id), |agent| agent.sender);
         let (notify_status, status, done) = match settled {
             Settled::Done => (NotifyStatus::Done, "done", "finished a turn"),
             Settled::Blocked => (NotifyStatus::Blocked, "blocked", "is blocked"),
         };
-        if !in_scope(&config.scope, &sender, self.env, &System) {
+        let workspace = !config.scope.workspaces.is_empty() || routes_name_workspaces(&config.route, Backend::Tui);
+        let ids = SenderIds::lookup(&sender, workspace, self.env, &System);
+        if !ids.in_scope(&config.scope) {
             log(&format!("{pane_id} {status}: skipped (outside nudge's scope)"));
             return Ok(false);
         }
-        let sent = self.send_pane(&config, pane_id, notify_status, Trigger::Settled(settled))?;
+        let sent = self.send_pane(&config, pane_id, notify_status, Trigger::Settled(settled), Some(&ids))?;
         log(&format!(
             "{pane_id} {status}: notified webhook (HTTP {})",
             sent.http_status
