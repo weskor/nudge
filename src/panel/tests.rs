@@ -45,8 +45,8 @@ pub(super) fn layout_files(home: &Path) -> Vec<String> {
     names
 }
 
-/// Herdr's window: `layout.clone` writes the copy as Herdr does (the source plus `cloned_from`), and
-/// `layout.switch` works for any layout file that exists.
+/// Herdr's window: `layout.clone` writes the copy as Herdr does (the source plus `cloned_from`),
+/// `layout.switch` works for any layout file that exists, and `layout.resize` / `layout.show` answer ok.
 pub(super) struct Herdr {
     pub(super) home: PathBuf,
     pub(super) calls: Mutex<Vec<String>>,
@@ -86,6 +86,7 @@ impl Run for Herdr {
                 .join(format!("layouts/{name}.json"))
                 .exists()
                 .then(|| r#"{"ok":true}"#.into()),
+            ["herdr-app", "do", "layout.resize" | "layout.show", "--id", _, ..] => Some(r#"{"ok":true}"#.into()),
             _ => None,
         }
     }

@@ -1,6 +1,6 @@
 # Nudge
 
-A 320 px panel on the right of the window that shows and changes [nudge](https://github.com/weskor/nudge)'s settings: whether nudge is on, where each agent's notifications go and why, and what nudge decided lately. It does it all by running the `nudge` command, on this computer or on a machine added with `hc machine add`. It never reads nudge's files and never sees a webhook's address or secret.
+A 280 px panel on the right of the window that shows and changes [nudge](https://github.com/weskor/nudge)'s settings: whether nudge is on, where each agent's notifications go and why, and what nudge decided lately. It does it all by running the `nudge` command, on this computer or on a machine added with `hc machine add`. It never reads nudge's files and never sees a webhook's address or secret.
 
 Requires a nudge with `nudge status --json`, installed on each machine the panel should show.
 
@@ -38,7 +38,7 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 
 ## Built from
 
-- `mod.json`: `{ "place": "right", "size": 320, "title": "Nudge", "overlay": { "width": 340, "height": 640 } }` (the overlay size is for `mod.open`).
+- `mod.json`: `{ "place": "right", "size": 280, "title": "Nudge", "overlay": { "width": 340, "height": 640 } }` (the overlay size is for `mod.open`).
 - `main.js`: the panel's `View`. `popup-view.js`: the popups, opened as `openOverlay({ mod: "nudge", kind: "popup", props: { popup: "route" | "default" | "footer" | "machines", ... } })`; the popup tells the panel what changed through `setShared("nudge.machine")` and `setShared("nudge.bump")`.
 - `rows.js` and `popup.js`: pure functions (rows, route reasons, the context plan, popup options with the exact `nudge` argv each runs), tested with `bun test`.
 - `herdr` functions: `agents`, `terminals`, `spaces`, `machines`, `focused`, `window`, `exec`, `hc`, `notify`, `openOverlay` (its popups, and Herdr's own `confirm` dialog with `command: { name: "nudge.remove-service" }`), `closeOverlay`, `props`, `shared`, `setShared`, `run` (`tab.new`, `space.new`), `nextCommand`, `watchFolder`, `home`, `theme`.
@@ -53,6 +53,7 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 - An older nudge without `status --json` shows "This nudge has no `nudge status --json`; update nudge there" instead of the panel.
 - **Start** runs `nudge` in a herdr-core terminal, so it uses the core's PATH, which can differ from the app's: an older nudge first on the core's PATH starts and stops at once (the toast says where to look).
 - Herdr's own layouts take no new panels: Herdr docks a new mod only while a layout of your own is shown. `nudge panel install` handles it: on one of Herdr's layouts it makes your copy with Herdr's `layout.clone` (`main-nudge` for the default) and adds the panel to the copy, live.
+- **Width in a narrow window.** Herdr saves a width for a block in `layouts/.state/<layout>.json` (a divider drag does that) and keeps it whatever the window's width; it doesn't rescale it on resize. Herdr's main layout already needs 268 px for the sidebar, plus 368 px (at least 280) for Files when it's open: at 826 px wide the terminal gets 60 columns without the panel, 16 with Files open, and with the panel at 280 px 27 columns, or none with Files open. 280 px is the narrowest every row of the panel fits at (at 240 the footer's `⋯` is cut off). The block has `"min": 280, "max": 360`: Herdr lays it out within those whatever width it saved, so at 826 px a saved width can't leave the terminal fewer than 17 columns. Running `nudge panel install` again gives an older block those limits and sets a saved width back to the layout's, and `nudge panel remove` takes the panel's entry out of the click state too. A `min` on Herdr's `work` column doesn't help: Herdr honors it by pushing the panel past the window's edge, not by shrinking it.
 - `herdr-app check` renders only the first, loading state.
 
 ## Done when
@@ -77,4 +78,4 @@ With Herdr open, run `nudge panel install`. It writes the five files above into 
 1. Copy `mods/nudge/` into `~/.config/herdr-app/mods/nudge/`, leaving `RECIPE.md`, `keys.json` and `preview.png` out.
 2. Merge the `global` entries of `keys.json` into `~/.config/herdr-app/keys.json`, keeping any key you already use.
 3. Run `herdr-app check ~/.config/herdr-app/mods/nudge`.
-4. To dock it, show a layout of your own (on the default one: `herdr-app do layout.clone '{"name":"main"}'`) and add `{ "id": "nudge-panel", "type": "block", "content": { "mod": "nudge" }, "size": { "px": 320 } }` as the last child of its root row. Or open it over the window with `herdr-app do mod.open --name nudge`.
+4. To dock it, show a layout of your own (on the default one: `herdr-app do layout.clone '{"name":"main"}'`) and add `{ "id": "nudge-panel", "type": "block", "content": { "mod": "nudge" }, "size": { "px": 280 }, "min": 280, "max": 360 }` as the last child of its root row. Or open it over the window with `herdr-app do mod.open --name nudge`.

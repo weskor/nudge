@@ -47,6 +47,19 @@ impl Node {
         self.is_panel() || self.nested().any(Self::shows_panel)
     }
 
+    /// The block install added, wherever it is in this tree.
+    pub(super) fn our_block(&self) -> Option<&Self> {
+        if self.is_our_block() {
+            return Some(self);
+        }
+        self.nested().find_map(Self::our_block)
+    }
+
+    /// The node's width in the file, when it's given in px.
+    pub(super) fn px(&self) -> Option<f64> {
+        self.rest.get("size")?.get("px")?.as_f64()
+    }
+
     /// A layout of your own: `layout.clone` marks its copies with `cloned_from`. Herdr's own layouts (and
     /// hand-written ones) don't have it, so they're copied rather than edited.
     pub(super) fn is_own(&self) -> bool {

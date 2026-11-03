@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::{block_line, dock, undock};
+use super::{block_line, bound, dock, forget_node, undock};
 use crate::panel::layout::parse;
 
 /// A layout of your own exactly as Herdr 0.1.12 wrote it: `layout.clone` of the default `main` layout.
@@ -15,8 +15,10 @@ const HERDR_STYLE_BLOCK: &str = r#"    },
         "mod": "nudge"
       },
       "size": {
-        "px": 320
-      }
+        "px": 280
+      },
+      "min": 280,
+      "max": 360
     }
   ],
   "background": "canvas","#;
@@ -42,6 +44,51 @@ fn install_then_remove_gives_back_herdr_s_own_file_byte_for_byte() {
     assert_eq!(undock(HERDR_CLONE).unwrap(), None, "nothing to take out");
 }
 
+/// The block exactly as the previous release (4d0ac1a) wrote it into that layout: no `min` and `max`.
+const OLDER_BLOCK: &str = r#"    },
+    {
+      "id": "nudge-panel",
+      "type": "block",
+      "content": {
+        "mod": "nudge"
+      },
+      "size": {
+        "px": 320
+      }
+    }
+  ],
+  "background": "canvas","#;
+
+#[test]
+fn a_block_from_the_previous_release_gets_min_and_max_written_like_its_neighbours() {
+    let tail = "    }\n  ],\n  \"background\": \"canvas\",";
+    let older = HERDR_CLONE.replacen(tail, OLDER_BLOCK, 1);
+    assert_ne!(older, HERDR_CLONE);
+    let bounded = bound(&older).unwrap().unwrap();
+    assert_eq!(
+        bounded,
+        dock(HERDR_CLONE).unwrap().replace("\"px\": 280", "\"px\": 320"),
+        "what install writes now, byte for byte, with the width the block had"
+    );
+    assert_eq!(bound(&bounded).unwrap(), None, "again: nothing to add");
+    assert_eq!(
+        undock(&bounded).unwrap().unwrap(),
+        HERDR_CLONE,
+        "remove still gives the file back"
+    );
+
+    // One line, one limit already there (kept as it is), a block someone else added (left alone).
+    let theirs = r#"{"id":"mine","type":"block","content":{"mod":"nudge"}}"#;
+    let one_line = format!(
+        r#"{{"type":"row","children":[{theirs},{{"id":"nudge-panel","type":"block","content":{{"mod":"nudge"}},"max":360}}]}}"#
+    );
+    let expected = format!(
+        r#"{{"type":"row","children":[{theirs},{{"id":"nudge-panel","type":"block","content":{{"mod":"nudge"}},"max":360,"min":280}}]}}"#
+    );
+    assert_eq!(bound(&one_line).unwrap().unwrap(), expected);
+    assert_eq!(bound(HERDR_CLONE).unwrap(), None, "no block of ours");
+}
+
 #[test]
 fn any_formatting_round_trips_byte_for_byte() {
     let one_line = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"children":[{"id":"a","type":"block","content":{"tab":"active"}}]}"#;
@@ -56,8 +103,38 @@ fn any_formatting_round_trips_byte_for_byte() {
         assert_eq!(undock(&docked).unwrap().unwrap(), text);
     }
     assert!(dock(one_line).unwrap().ends_with(
-        r#"{"tab":"active"}},{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}]}"#
+        r#"{"tab":"active"}},{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":280},"min":280,"max":360}]}"#
     ));
+}
+
+#[test]
+fn the_panel_s_node_is_cut_out_of_herdr_s_click_state_and_every_other_byte_stays() {
+    let panel = "\"panel\": {\n      \"hidden\": false\n    }";
+    let ours = "\"nudge-panel\": {\n      \"size\": {\n        \"px\": 559.0\n      }\n    }";
+    let state = |nodes: &str| {
+        format!(
+            "{{\n  \"nodes\": {{{nodes}}},\n  \"theme\": {{\n    \"dark\": \"graphite\"\n  }},\n  \"file\": {{\"id\": \"nudge-panel\"}}\n}}\n"
+        )
+    };
+    let cases = [
+        // First, then another node: the gap after it goes with it.
+        (format!("\n    {ours},\n    {panel}\n  "), format!("\n    {panel}\n  ")),
+        // After another node: the comma and gap before it go.
+        (format!("\n    {panel},\n    {ours}\n  "), format!("\n    {panel}\n  ")),
+        // In the middle.
+        (
+            format!("\n    {panel},\n    {ours},\n    \"x\": {{}}\n  "),
+            format!("\n    {panel},\n    \"x\": {{}}\n  "),
+        ),
+        // The only node: the braces are left empty.
+        (format!("\n    {ours}\n  "), String::new()),
+    ];
+    for (nodes, kept) in cases {
+        assert_eq!(forget_node(&state(&nodes)).unwrap().unwrap(), state(&kept), "{nodes}");
+    }
+    for nothing in [state(&format!("\n    {panel}\n  ")), "{\"theme\": {}}".to_owned()] {
+        assert_eq!(forget_node(&nothing).unwrap(), None, "no node of ours: {nothing}");
+    }
 }
 
 #[test]

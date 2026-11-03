@@ -2,6 +2,7 @@
 //! to do by hand, and undo that. The mod's files go into Herdr's `mods/nudge/`; while Herdr's window is open the
 //! panel is docked on the right of the layout it shows (see `dock`), and nothing restarts: not the window, not
 //! herdr-core, not a terminal. Both are safe to run again, and with Herdr closed.
+mod clicks;
 mod dock;
 mod edit;
 mod files;
@@ -27,16 +28,25 @@ pub(crate) fn install(env: &Env, run: &dyn Run) -> Result<u8> {
     let changed = files::install_mod(&mods)?;
     let verb = if changed { "Installed" } else { "Already installed:" };
     println!("{verb} the Nudge panel in {}", mods.display());
+    for name in dock::bound_all(&home)? {
+        println!(
+            "Kept the panel in your layout \"{name}\" between 280 and 360 px wide (it had no limits), so a width \
+             Herdr saves for it can't take the window."
+        );
+    }
     let message = match dock::dock(&home, &record_path(env), window::ask(env, run)?)? {
-        Docked::Already(name) => format!("It's docked in your layout \"{name}\"."),
+        Docked::Already { name, restored } => {
+            format!("It's docked in your layout \"{name}\".{}", restored_note(&restored))
+        }
         Docked::Added { name, block } => format!(
             "Docked it on the right of your layout \"{name}\": added to {} as the last child of its top row:\n  \
              {block}\n`nudge panel remove` takes it out again.",
             layout_path(&home, &name).display()
         ),
-        Docked::Copied { name, from } => format!(
+        Docked::Copied { name, from, restored } => format!(
             "Docked it on the right of \"{name}\", your copy of Herdr's \"{from}\" layout, which Herdr shows now. \
-             `nudge panel remove` undoes it."
+             `nudge panel remove` undoes it.{}",
+            restored_note(&restored)
         ),
         Docked::Closed => "Herdr's window isn't open, so nudge can't dock the panel or check that it is: run \
                            `nudge panel install` again while it's open."
@@ -47,6 +57,24 @@ pub(crate) fn install(env: &Env, run: &dyn Run) -> Result<u8> {
     Ok(0)
 }
 
+/// What install put back of the window's saved state for the panel, and what the window refused, as lines to add;
+/// empty when nothing.
+fn restored_note(restored: &clicks::Restored) -> String {
+    let width = restored
+        .width
+        .map(|width| format!("\nHerdr had saved the panel {width} px wide; it's back to its layout's width."));
+    let hidden = restored
+        .hidden
+        .then_some("\nHerdr had the panel hidden; it shows again.");
+    let refused = restored
+        .refused
+        .iter()
+        .map(|refused| format!("\n{refused}; drag the panel's edge back by hand, or run `nudge panel install` again."))
+        .collect::<Vec<_>>()
+        .concat();
+    format!("{}{}{refused}", width.unwrap_or_default(), hidden.unwrap_or_default())
+}
+
 /// `nudge panel remove`: undock the panel, then delete its files.
 pub(crate) fn remove(env: &Env, run: &dyn Run) -> Result<u8> {
     let home = app_home(env);
@@ -55,6 +83,9 @@ pub(crate) fn remove(env: &Env, run: &dyn Run) -> Result<u8> {
         println!("{}", no_app("show another layout"));
     }
     let undocked = undock::undock(&home, &record_path(env), window)?;
+    for refused in &undocked.refused {
+        println!("{refused}; the window may keep its saved size for the panel until it shows another layout.");
+    }
     if let Some((copy, back)) = &undocked.switched {
         println!("Herdr showed \"{copy}\"; it shows \"{back}\" again.");
     }
