@@ -1,12 +1,14 @@
 //! Undoing `nudge panel install`'s docking: show `<name>` again when the window shows the `<name>-nudge` copy,
 //! take the panel's block out of every layout of your own, and delete the copies install made, but only while
-//! each is still just what Herdr's `layout.clone` wrote. Herdr's own layouts are never written. Works with the
+//! each is still just what Herdr's `layout.clone` wrote. Herdr's own layouts are never written. What the window
+//! saved for the panel (a dragged width, hidden) goes too, from each of those layouts' click state. Works with the
 //! window closed too: then a copy Herdr will open with is kept until the next run.
 use std::fs;
 use std::path::Path;
 
 use super::window::{self, Window};
-use super::{edit, record};
+use super::{clicks, edit, record};
+use crate::env::Run;
 use crate::error::Result;
 
 /// What undocking did.
@@ -45,7 +47,10 @@ pub(super) fn undock(home: &Path, record_path: &Path, window: Window<'_>) -> Res
                 out.switched = Some((layout.clone(), base.to_owned()));
                 Some(base.to_owned())
             }
-            _ => Some(layout),
+            _ => {
+                restore_shown(run, &layouts, &layout)?;
+                Some(layout)
+            }
         },
         Window::Closed | Window::NoApp => window::opens_with(home),
     };
@@ -61,7 +66,22 @@ pub(super) fn undock(home: &Path, record_path: &Path, window: Window<'_>) -> Res
         }
     }
     delete_made(&layouts, record_path, shown.as_deref(), &mut out)?;
+    for name in out.taken_out.iter().chain(&out.deleted) {
+        clicks::forget(&layouts, name)?;
+    }
     Ok(out)
+}
+
+/// The window keeps the shown layout's click state in memory and would save the panel's again after the block is
+/// gone, so first ask it to put the panel back to what the file says, which drops its entry.
+fn restore_shown(run: &dyn Run, layouts: &Path, name: &str) -> Result<()> {
+    let Ok((_, tree)) = window::read_layout(layouts, name) else {
+        return Ok(());
+    };
+    if let Some(block) = tree.our_block().filter(|_| tree.is_own()) {
+        clicks::restore(run, layouts, name, block.px())?;
+    }
+    Ok(())
 }
 
 /// Delete the copies install made that are still as Herdr made them and not the layout Herdr shows (or opens

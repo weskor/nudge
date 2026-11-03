@@ -2,6 +2,7 @@
 //! to do by hand, and undo that. The mod's files go into Herdr's `mods/nudge/`; while Herdr's window is open the
 //! panel is docked on the right of the layout it shows (see `dock`), and nothing restarts: not the window, not
 //! herdr-core, not a terminal. Both are safe to run again, and with Herdr closed.
+mod clicks;
 mod dock;
 mod edit;
 mod files;
@@ -28,15 +29,18 @@ pub(crate) fn install(env: &Env, run: &dyn Run) -> Result<u8> {
     let verb = if changed { "Installed" } else { "Already installed:" };
     println!("{verb} the Nudge panel in {}", mods.display());
     let message = match dock::dock(&home, &record_path(env), window::ask(env, run)?)? {
-        Docked::Already(name) => format!("It's docked in your layout \"{name}\"."),
+        Docked::Already { name, restored } => {
+            format!("It's docked in your layout \"{name}\".{}", restored_note(&restored))
+        }
         Docked::Added { name, block } => format!(
             "Docked it on the right of your layout \"{name}\": added to {} as the last child of its top row:\n  \
              {block}\n`nudge panel remove` takes it out again.",
             layout_path(&home, &name).display()
         ),
-        Docked::Copied { name, from } => format!(
+        Docked::Copied { name, from, restored } => format!(
             "Docked it on the right of \"{name}\", your copy of Herdr's \"{from}\" layout, which Herdr shows now. \
-             `nudge panel remove` undoes it."
+             `nudge panel remove` undoes it.{}",
+            restored_note(&restored)
         ),
         Docked::Closed => "Herdr's window isn't open, so nudge can't dock the panel or check that it is: run \
                            `nudge panel install` again while it's open."
@@ -45,6 +49,17 @@ pub(crate) fn install(env: &Env, run: &dyn Run) -> Result<u8> {
     };
     println!("{message}");
     Ok(0)
+}
+
+/// What install put back of the window's saved state for the panel, as lines to add; empty when nothing.
+fn restored_note(restored: &clicks::Restored) -> String {
+    let width = restored
+        .width
+        .map(|width| format!("\nHerdr had saved the panel {width} px wide; it's back to its layout's width."));
+    let hidden = restored
+        .hidden
+        .then_some("\nHerdr had the panel hidden; it shows again.");
+    format!("{}{}", width.unwrap_or_default(), hidden.unwrap_or_default())
 }
 
 /// `nudge panel remove`: undock the panel, then delete its files.

@@ -121,3 +121,38 @@ fn herdr_s_layouts_and_panels_nudge_didn_t_add_are_never_touched() {
     assert_eq!(text(home.path(), "main"), shipped);
     assert_eq!(text(home.path(), "mine"), mine);
 }
+
+#[test]
+fn what_the_window_saved_for_the_panel_goes_with_it_and_nothing_else_it_saved() {
+    let with_panel = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"children":[{"id":"work","type":"block"},{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}]}"#;
+    let home = app(&[
+        ("main", MAIN),
+        ("shown", with_panel),
+        ("other", with_panel),
+        ("main-nudge", with_panel),
+    ]);
+    let states = home.path().join("layouts/.state");
+    fs::create_dir_all(&states).unwrap();
+    let saved = "{\n  \"nodes\": {\n    \"work\": {\"hidden\": true},\n    \"nudge-panel\": {\"size\": {\"px\": 559.0}}\n  }\n}\n";
+    let kept = "{\n  \"nodes\": {\n    \"work\": {\"hidden\": true}\n  }\n}\n";
+    for name in ["shown", "other", "main-nudge", "main"] {
+        fs::write(states.join(format!("{name}.json")), saved).unwrap();
+    }
+    let herdr = Herdr::new(home.path());
+    undock(home.path(), &home.path().join("panel.json"), open(&herdr, "shown")).unwrap();
+
+    assert_eq!(
+        herdr.calls(),
+        ["do layout.resize --id nudge-panel --px 320"],
+        "the shown layout's state is in the window's memory: it's asked first, while the block is still there"
+    );
+    for name in ["shown", "other", "main-nudge"] {
+        let state = fs::read_to_string(states.join(format!("{name}.json"))).unwrap();
+        assert_eq!(state, kept, "{name}: only the panel's node goes");
+    }
+    let shipped = fs::read_to_string(states.join("main.json")).unwrap();
+    assert_eq!(
+        shipped, saved,
+        "Herdr's own layout had no block of ours, so its state isn't nudge's to edit"
+    );
+}

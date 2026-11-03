@@ -53,6 +53,7 @@ When nudge isn't installed on the picked machine, the panel shows the machine bu
 - An older nudge without `status --json` shows "This nudge has no `nudge status --json`; update nudge there" instead of the panel.
 - **Start** runs `nudge` in a herdr-core terminal, so it uses the core's PATH, which can differ from the app's: an older nudge first on the core's PATH starts and stops at once (the toast says where to look).
 - Herdr's own layouts take no new panels: Herdr docks a new mod only while a layout of your own is shown. `nudge panel install` handles it: on one of Herdr's layouts it makes your copy with Herdr's `layout.clone` (`main-nudge` for the default) and adds the panel to the copy, live.
+- **Width in a narrow window.** Herdr saves a dragged divider's width in `layouts/.state/<layout>.json` and keeps it whatever the window's width; it doesn't rescale it on resize. Herdr's main layout already needs about 268 px for the sidebar, plus 368 px (at least 280) for Files when it's open. So in a window around 830 px wide, a 320 px panel leaves the terminal no room while Files is open, and a panel dragged wider takes the whole work area. The block therefore has `"min": 280, "max": 400`: Herdr lays it out within those whatever width it saved. Running `nudge panel install` again sets a saved width back to the layout's, and `nudge panel remove` takes the panel's entry out of the click state too. A `min` on Herdr's `work` column doesn't help: Herdr honors it by pushing the panel past the window's edge, not by shrinking it.
 - `herdr-app check` renders only the first, loading state.
 
 ## Done when
@@ -77,4 +78,4 @@ With Herdr open, run `nudge panel install`. It writes the five files above into 
 1. Copy `mods/nudge/` into `~/.config/herdr-app/mods/nudge/`, leaving `RECIPE.md`, `keys.json` and `preview.png` out.
 2. Merge the `global` entries of `keys.json` into `~/.config/herdr-app/keys.json`, keeping any key you already use.
 3. Run `herdr-app check ~/.config/herdr-app/mods/nudge`.
-4. To dock it, show a layout of your own (on the default one: `herdr-app do layout.clone '{"name":"main"}'`) and add `{ "id": "nudge-panel", "type": "block", "content": { "mod": "nudge" }, "size": { "px": 320 } }` as the last child of its root row. Or open it over the window with `herdr-app do mod.open --name nudge`.
+4. To dock it, show a layout of your own (on the default one: `herdr-app do layout.clone '{"name":"main"}'`) and add `{ "id": "nudge-panel", "type": "block", "content": { "mod": "nudge" }, "size": { "px": 320 }, "min": 280, "max": 400 }` as the last child of its root row. Or open it over the window with `herdr-app do mod.open --name nudge`.

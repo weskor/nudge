@@ -11,6 +11,8 @@ use super::layout::{self, PANEL_ID, PANEL_MOD};
 use crate::error::{Error, Result};
 
 /// The panel's block, 320 px wide as Herdr docks a mod that asks for `"place": "right"`; keys in Herdr's order.
+/// Herdr saves a dragged width whatever the window's width, and lays the block out within `min` and `max` whatever
+/// it saved: at most 400 px, the rest of a narrow window keeps room; at least 280 px, the panel's rows still fit.
 #[derive(Debug, Serialize)]
 struct Block {
     id: &'static str,
@@ -18,6 +20,8 @@ struct Block {
     kind: &'static str,
     content: Content,
     size: Size,
+    min: u32,
+    max: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,6 +40,8 @@ const BLOCK: Block = Block {
     kind: "block",
     content: Content { name: PANEL_MOD },
     size: Size { px: 320 },
+    min: 280,
+    max: 400,
 };
 
 /// A JSON object's fields, each value still a slice of the file's text.
@@ -100,6 +106,45 @@ pub(super) fn undock(text: &str) -> Result<Option<String>> {
     }
     kept.push_str(text.get(from..).unwrap_or_default());
     Ok(Some(kept))
+}
+
+/// `text`, a window's click state (`layouts/.state/<name>.json`), without the panel's node (`nodes` →
+/// `nudge-panel`) and the gap before it; `None` when it has none. Every other byte stays.
+pub(super) fn forget_node(text: &str) -> Result<Option<String>> {
+    let root: Fields<'_> = serde_json::from_str(text)?;
+    let Some(nodes) = root.get("nodes") else {
+        return Ok(None);
+    };
+    let fields: Fields<'_> = serde_json::from_str(nodes.get())?;
+    let mut members = fields
+        .iter()
+        .map(|(key, value)| Ok((key.as_str(), span(text, value.get())?)))
+        .collect::<Result<Vec<_>>>()?;
+    members.sort_by_key(|(_, value)| value.start);
+    let Some(at) = members.iter().position(|(key, _)| *key == PANEL_ID) else {
+        return Ok(None);
+    };
+    let braces = span(text, nodes.get())?;
+    // A member starts at its key's opening quote: the first `"` after the member before it, or after the `{`.
+    let key_start = |index: usize| {
+        let from = match index.checked_sub(1) {
+            Some(before) => members.get(before).map(|(_, value)| value.end),
+            None => Some(braces.start + 1),
+        }?;
+        Some(from + text.get(from..)?.find('"')?)
+    };
+    let ours = members.get(at).map(|(_, value)| value.clone());
+    let before = at.checked_sub(1).and_then(|index| members.get(index));
+    let cut = match (ours, before, members.get(at + 1)) {
+        (Some(ours), Some((_, before)), _) => Some(before.end..ours.end),
+        (Some(_), None, Some(_)) => key_start(at).zip(key_start(at + 1)).map(|(start, end)| start..end),
+        (Some(_), None, None) => Some(braces.start + 1..braces.end.saturating_sub(1)),
+        (None, _, _) => None,
+    };
+    let lost = || Error::Other("nudge lost its place in Herdr's click state".into());
+    let cut = cut.ok_or_else(lost)?;
+    let (head, tail) = text.get(..cut.start).zip(text.get(cut.end..)).ok_or_else(lost)?;
+    Ok(Some(format!("{head}{tail}")))
 }
 
 /// Add the cuts for the panel's blocks in `node` (a slice of `text`) and below it.

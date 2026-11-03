@@ -199,6 +199,8 @@ It puts the panel's files in `~/.config/herdr-app/mods/nudge/` and docks the pan
 
 `nudge panel remove` undoes it: Herdr shows your layout again (`main` instead of `main-nudge`), the panel's block comes out of your layouts (install and remove touch only the block's own bytes, so your layout's file comes back exactly as it was), the copy install made is deleted (kept, with a note, if you changed it since), and the panel's files go. It's safe to run again, and with Herdr closed.
 
+The panel is 320 px wide and Herdr keeps it between 280 and 400 px, whatever width a dragged divider saved. In a narrow window with Files open, the panel and Files can still leave the terminal no room: close Files, or widen the window. `nudge panel install` sets a width Herdr saved for the panel back to 320 px.
+
 <p align="center"><img src="herdr-app/mods/nudge/preview.png" width="320" alt="The Nudge panel: nudge on, auto-notify on, watching 3 agents; api-refactor blocked and routed to client-a by its workspace, docs-site and review-bot to the default webhook main; recent decisions; the default webhook and Test in the footer"></p>
 
 It needs this version of nudge (with `nudge status --json`) on every machine it should show, first on that machine's `PATH` for the app and for herdr-core's terminals (the panel's Start runs the watcher in one); a machine without it shows "nudge not found", one with an older nudge says to update it.
@@ -399,6 +401,7 @@ Start with `nudge doctor`, or `herdr plugin action invoke nudge.status` to see t
 | `nudge notify` says the agent is outside nudge's scope | Run `nudge.all-agents`, or add the agent or its workspace to `[scope]` |
 | `from_agent` is `null` | The event wasn't sent from an agent's pane, so pass `--agent NAME` |
 | `nudge: command not found` | Run `herdr plugin action invoke nudge.setup` and accept the command install, or add `~/.local/bin` to your `PATH` |
+| The Nudge panel takes the window, or the terminal is gone | Herdr kept a dragged panel width, or the window is too narrow for the sidebar, Files and the panel. Run `nudge panel install` again (it sets the panel back to 320 px), close Files, or widen the window |
 
 ## Limitations
 

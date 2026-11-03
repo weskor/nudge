@@ -1,12 +1,16 @@
+use std::fs;
+
 use serde_json::Value;
 
 use super::{Docked, dock};
 use crate::env::tests::FakeRun;
+use crate::panel::clicks::Restored;
 use crate::panel::record;
 use crate::panel::tests::{Herdr, MAIN, app, json, layout_files, open, shows_panel, text};
 use crate::panel::window::Window;
 
-const BLOCK: &str = r#"{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}"#;
+const BLOCK: &str =
+    r#"{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320},"min":280,"max":400}"#;
 
 #[test]
 fn herdr_s_own_layout_is_copied_with_layout_clone_recorded_and_the_copy_gets_the_panel() {
@@ -18,7 +22,8 @@ fn herdr_s_own_layout_is_copied_with_layout_clone_recorded_and_the_copy_gets_the
         docked,
         Docked::Copied {
             name: "main-nudge".into(),
-            from: "main".into()
+            from: "main".into(),
+            restored: Restored::default()
         }
     );
     assert_eq!(text(home.path(), "main"), MAIN, "Herdr's own layout is never written");
@@ -29,7 +34,13 @@ fn herdr_s_own_layout_is_copied_with_layout_clone_recorded_and_the_copy_gets_the
 
     let before = text(home.path(), "main-nudge");
     let again = dock(home.path(), &record_path, open(&herdr, "main-nudge")).unwrap();
-    assert_eq!(again, Docked::Already("main-nudge".into()));
+    assert_eq!(
+        again,
+        Docked::Already {
+            name: "main-nudge".into(),
+            restored: Restored::default()
+        }
+    );
     assert_eq!(text(home.path(), "main-nudge"), before);
 }
 
@@ -43,12 +54,60 @@ fn back_on_herdr_s_layout_the_existing_copy_is_shown_again_not_copied_twice() {
         docked,
         Docked::Copied {
             name: "main-nudge".into(),
-            from: "main".into()
+            from: "main".into(),
+            restored: Restored::default()
         }
     );
     assert_eq!(herdr.calls(), ["do layout.switch --name main-nudge"]);
     assert_eq!(text(home.path(), "main-nudge"), copy, "it already had the panel");
     assert!(!home.path().join("panel.json").exists(), "nudge didn't make that copy");
+}
+
+#[test]
+fn a_width_or_hidden_flag_the_window_saved_for_the_docked_panel_is_put_back_to_the_layout_s() {
+    let copy = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"children":[{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}]}"#;
+    let home = app(&[("main-nudge", copy)]);
+    fs::create_dir_all(home.path().join("layouts/.state")).unwrap();
+    let state = home.path().join("layouts/.state/main-nudge.json");
+    let herdr = Herdr::new(home.path());
+
+    // Dragged to 559 px in a narrow window, and hidden.
+    let saved = r#"{"nodes":{"nudge-panel":{"size":{"px":559.0},"hidden":true},"panel":{"hidden":false}}}"#;
+    fs::write(&state, saved).unwrap();
+    let docked = dock(home.path(), &home.path().join("panel.json"), open(&herdr, "main-nudge")).unwrap();
+    let restored = Restored {
+        width: Some(559.0),
+        hidden: true,
+    };
+    assert_eq!(
+        docked,
+        Docked::Already {
+            name: "main-nudge".into(),
+            restored
+        }
+    );
+    assert_eq!(
+        herdr.calls(),
+        [
+            "do layout.resize --id nudge-panel --px 320",
+            "do layout.show --id nudge-panel"
+        ],
+        "the window saves the shown layout's state from memory, so it's asked, not the file edited"
+    );
+    assert_eq!(fs::read_to_string(&state).unwrap(), saved);
+    assert_eq!(text(home.path(), "main-nudge"), copy);
+
+    // Saved at the layout's own width, or for another node only: nothing to put back.
+    for saved in [
+        r#"{"nodes":{"nudge-panel":{"size":{"px":320.0}}}}"#,
+        r#"{"nodes":{"panel":{"size":{"px":559.0}}}}"#,
+    ] {
+        fs::write(&state, saved).unwrap();
+        let herdr = Herdr::new(home.path());
+        let docked = dock(home.path(), &home.path().join("panel.json"), open(&herdr, "main-nudge")).unwrap();
+        assert!(matches!(docked, Docked::Already { restored, .. } if restored == Restored::default()));
+        assert!(herdr.calls().is_empty());
+    }
 }
 
 #[test]

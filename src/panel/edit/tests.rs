@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::{block_line, dock, undock};
+use super::{block_line, dock, forget_node, undock};
 use crate::panel::layout::parse;
 
 /// A layout of your own exactly as Herdr 0.1.12 wrote it: `layout.clone` of the default `main` layout.
@@ -16,7 +16,9 @@ const HERDR_STYLE_BLOCK: &str = r#"    },
       },
       "size": {
         "px": 320
-      }
+      },
+      "min": 280,
+      "max": 400
     }
   ],
   "background": "canvas","#;
@@ -56,8 +58,38 @@ fn any_formatting_round_trips_byte_for_byte() {
         assert_eq!(undock(&docked).unwrap().unwrap(), text);
     }
     assert!(dock(one_line).unwrap().ends_with(
-        r#"{"tab":"active"}},{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}]}"#
+        r#"{"tab":"active"}},{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320},"min":280,"max":400}]}"#
     ));
+}
+
+#[test]
+fn the_panel_s_node_is_cut_out_of_herdr_s_click_state_and_every_other_byte_stays() {
+    let panel = "\"panel\": {\n      \"hidden\": false\n    }";
+    let ours = "\"nudge-panel\": {\n      \"size\": {\n        \"px\": 559.0\n      }\n    }";
+    let state = |nodes: &str| {
+        format!(
+            "{{\n  \"nodes\": {{{nodes}}},\n  \"theme\": {{\n    \"dark\": \"graphite\"\n  }},\n  \"file\": {{\"id\": \"nudge-panel\"}}\n}}\n"
+        )
+    };
+    let cases = [
+        // First, then another node: the gap after it goes with it.
+        (format!("\n    {ours},\n    {panel}\n  "), format!("\n    {panel}\n  ")),
+        // After another node: the comma and gap before it go.
+        (format!("\n    {panel},\n    {ours}\n  "), format!("\n    {panel}\n  ")),
+        // In the middle.
+        (
+            format!("\n    {panel},\n    {ours},\n    \"x\": {{}}\n  "),
+            format!("\n    {panel},\n    \"x\": {{}}\n  "),
+        ),
+        // The only node: the braces are left empty.
+        (format!("\n    {ours}\n  "), String::new()),
+    ];
+    for (nodes, kept) in cases {
+        assert_eq!(forget_node(&state(&nodes)).unwrap().unwrap(), state(&kept), "{nodes}");
+    }
+    for nothing in [state(&format!("\n    {panel}\n  ")), "{\"theme\": {}}".to_owned()] {
+        assert_eq!(forget_node(&nothing).unwrap(), None, "no node of ours: {nothing}");
+    }
 }
 
 #[test]
