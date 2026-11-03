@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::{block_line, dock, forget_node, undock};
+use super::{block_line, bound, dock, forget_node, undock};
 use crate::panel::layout::parse;
 
 /// A layout of your own exactly as Herdr 0.1.12 wrote it: `layout.clone` of the default `main` layout.
@@ -15,10 +15,10 @@ const HERDR_STYLE_BLOCK: &str = r#"    },
         "mod": "nudge"
       },
       "size": {
-        "px": 320
+        "px": 280
       },
       "min": 280,
-      "max": 400
+      "max": 360
     }
   ],
   "background": "canvas","#;
@@ -44,6 +44,51 @@ fn install_then_remove_gives_back_herdr_s_own_file_byte_for_byte() {
     assert_eq!(undock(HERDR_CLONE).unwrap(), None, "nothing to take out");
 }
 
+/// The block exactly as the previous release (4d0ac1a) wrote it into that layout: no `min` and `max`.
+const OLDER_BLOCK: &str = r#"    },
+    {
+      "id": "nudge-panel",
+      "type": "block",
+      "content": {
+        "mod": "nudge"
+      },
+      "size": {
+        "px": 320
+      }
+    }
+  ],
+  "background": "canvas","#;
+
+#[test]
+fn a_block_from_the_previous_release_gets_min_and_max_written_like_its_neighbours() {
+    let tail = "    }\n  ],\n  \"background\": \"canvas\",";
+    let older = HERDR_CLONE.replacen(tail, OLDER_BLOCK, 1);
+    assert_ne!(older, HERDR_CLONE);
+    let bounded = bound(&older).unwrap().unwrap();
+    assert_eq!(
+        bounded,
+        dock(HERDR_CLONE).unwrap().replace("\"px\": 280", "\"px\": 320"),
+        "what install writes now, byte for byte, with the width the block had"
+    );
+    assert_eq!(bound(&bounded).unwrap(), None, "again: nothing to add");
+    assert_eq!(
+        undock(&bounded).unwrap().unwrap(),
+        HERDR_CLONE,
+        "remove still gives the file back"
+    );
+
+    // One line, one limit already there (kept as it is), a block someone else added (left alone).
+    let theirs = r#"{"id":"mine","type":"block","content":{"mod":"nudge"}}"#;
+    let one_line = format!(
+        r#"{{"type":"row","children":[{theirs},{{"id":"nudge-panel","type":"block","content":{{"mod":"nudge"}},"max":360}}]}}"#
+    );
+    let expected = format!(
+        r#"{{"type":"row","children":[{theirs},{{"id":"nudge-panel","type":"block","content":{{"mod":"nudge"}},"max":360,"min":280}}]}}"#
+    );
+    assert_eq!(bound(&one_line).unwrap().unwrap(), expected);
+    assert_eq!(bound(HERDR_CLONE).unwrap(), None, "no block of ours");
+}
+
 #[test]
 fn any_formatting_round_trips_byte_for_byte() {
     let one_line = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"children":[{"id":"a","type":"block","content":{"tab":"active"}}]}"#;
@@ -58,7 +103,7 @@ fn any_formatting_round_trips_byte_for_byte() {
         assert_eq!(undock(&docked).unwrap().unwrap(), text);
     }
     assert!(dock(one_line).unwrap().ends_with(
-        r#"{"tab":"active"}},{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320},"min":280,"max":400}]}"#
+        r#"{"tab":"active"}},{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":280},"min":280,"max":360}]}"#
     ));
 }
 

@@ -2,15 +2,16 @@ use std::fs;
 
 use serde_json::Value;
 
-use super::{Docked, dock};
+use super::{Docked, bound_all, dock};
 use crate::env::tests::FakeRun;
 use crate::panel::clicks::Restored;
 use crate::panel::record;
 use crate::panel::tests::{Herdr, MAIN, app, json, layout_files, open, shows_panel, text};
+use crate::panel::undock::undock;
 use crate::panel::window::Window;
 
 const BLOCK: &str =
-    r#"{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320},"min":280,"max":400}"#;
+    r#"{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":280},"min":280,"max":360}"#;
 
 #[test]
 fn herdr_s_own_layout_is_copied_with_layout_clone_recorded_and_the_copy_gets_the_panel() {
@@ -71,13 +72,14 @@ fn a_width_or_hidden_flag_the_window_saved_for_the_docked_panel_is_put_back_to_t
     let state = home.path().join("layouts/.state/main-nudge.json");
     let herdr = Herdr::new(home.path());
 
-    // Dragged to 559 px in a narrow window, and hidden.
+    // Saved at 559 px (how the window came to save that is unexplained), and hidden.
     let saved = r#"{"nodes":{"nudge-panel":{"size":{"px":559.0},"hidden":true},"panel":{"hidden":false}}}"#;
     fs::write(&state, saved).unwrap();
     let docked = dock(home.path(), &home.path().join("panel.json"), open(&herdr, "main-nudge")).unwrap();
     let restored = Restored {
         width: Some(559.0),
         hidden: true,
+        refused: Vec::new(),
     };
     assert_eq!(
         docked,
@@ -108,6 +110,73 @@ fn a_width_or_hidden_flag_the_window_saved_for_the_docked_panel_is_put_back_to_t
         assert!(matches!(docked, Docked::Already { restored, .. } if restored == Restored::default()));
         assert!(herdr.calls().is_empty());
     }
+}
+
+#[test]
+fn putting_the_panel_back_is_best_effort_and_only_for_the_shown_layout() {
+    let docked = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"children":[{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}]}"#;
+    let plain = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"children":[]}"#;
+    let home = app(&[("mine", docked), ("other", docked), ("plain", plain)]);
+    fs::create_dir_all(home.path().join("layouts/.state")).unwrap();
+    let saved = r#"{"nodes":{"nudge-panel":{"size":{"px":559.0}}}}"#;
+    for name in ["mine", "other"] {
+        fs::write(home.path().join(format!("layouts/.state/{name}.json")), saved).unwrap();
+    }
+    let record_path = home.path().join("panel.json");
+
+    // The window refuses (an older Herdr, or it closed in between): install still docks, and says so.
+    let refusing = FakeRun::default();
+    let docked_in = dock(home.path(), &record_path, open(&refusing, "mine")).unwrap();
+    let Docked::Already { restored, .. } = docked_in else {
+        panic!("{docked_in:?}")
+    };
+    assert_eq!(restored.width, None);
+    let refusal = "Herdr couldn't set the panel's width in \"mine\" back to 320 px (it had saved 559 px)";
+    assert_eq!(restored.refused, [refusal]);
+
+    // Another layout is shown, or the window is closed: no layout's saved state is put back, none is written.
+    let herdr = Herdr::new(home.path());
+    let other_shown = dock(home.path(), &record_path, open(&herdr, "plain")).unwrap();
+    assert!(matches!(other_shown, Docked::Added { .. }), "{other_shown:?}");
+    assert_eq!(dock(home.path(), &record_path, Window::Closed).unwrap(), Docked::Closed);
+    assert!(herdr.calls().is_empty());
+    for name in ["mine", "other"] {
+        assert_eq!(text(home.path(), name), docked);
+        let state = fs::read_to_string(home.path().join(format!("layouts/.state/{name}.json"))).unwrap();
+        assert_eq!(state, saved);
+    }
+}
+
+#[test]
+fn a_panel_docked_by_an_older_nudge_gets_its_limits_and_is_still_removed_with_its_copy() {
+    let home = app(&[("main", MAIN)]);
+    let record_path = home.path().join("panel.json");
+    let herdr = Herdr::new(home.path());
+    dock(home.path(), &record_path, open(&herdr, "main")).unwrap();
+    // The copy as the previous release (4d0ac1a) left it: the block without `min` and `max`.
+    let path = home.path().join("layouts/main-nudge.json");
+    let current = fs::read_to_string(&path).unwrap();
+    let older = current.replace(",\n      \"min\": 280,\n      \"max\": 360", "");
+    assert_ne!(older, current);
+    assert!(older.contains("\"id\": \"nudge-panel\"") && !older.contains("\"min\""));
+    fs::write(&path, &older).unwrap();
+
+    assert_eq!(bound_all(home.path()).unwrap(), ["main-nudge"]);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        current,
+        "the same block a new install writes"
+    );
+    assert!(bound_all(home.path()).unwrap().is_empty(), "again: nothing to do");
+    assert_eq!(text(home.path(), "main"), MAIN, "Herdr's own layout is never written");
+
+    let undocked = undock(home.path(), &record_path, open(&herdr, "main-nudge")).unwrap();
+    assert_eq!(
+        undocked.deleted,
+        ["main-nudge"],
+        "still recognized as the copy install made"
+    );
+    assert_eq!(layout_files(home.path()), ["main.json"]);
 }
 
 #[test]

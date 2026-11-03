@@ -156,3 +156,40 @@ fn what_the_window_saved_for_the_panel_goes_with_it_and_nothing_else_it_saved() 
         "Herdr's own layout had no block of ours, so its state isn't nudge's to edit"
     );
 }
+
+#[test]
+fn remove_goes_on_when_the_window_refuses_is_closed_or_shows_another_layout() {
+    let with_panel = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"children":[{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320}}]}"#;
+    let without = r#"{"id":"root","type":"row","cloned_from":{"name":"main"},"children":[]}"#;
+    let saved = r#"{"nodes":{"nudge-panel":{"size":{"px":559.0}},"panel":{"hidden":false}}}"#;
+    let kept = r#"{"nodes":{"panel":{"hidden":false}}}"#;
+    let refusing = FakeRun::default();
+    for case in ["refused", "closed", "other shown"] {
+        let home = app(&[("main", MAIN), ("mine", with_panel)]);
+        let state = home.path().join("layouts/.state/mine.json");
+        fs::create_dir_all(state.parent().unwrap()).unwrap();
+        fs::write(&state, saved).unwrap();
+        let herdr = Herdr::new(home.path());
+        let window = match case {
+            "refused" => open(&refusing, "mine"),
+            "closed" => Window::Closed,
+            _ => open(&herdr, "main"),
+        };
+        let undocked = undock(home.path(), &home.path().join("panel.json"), window).unwrap();
+        let refusal = "Herdr couldn't set the panel's width in \"mine\" back to 320 px (it had saved 559 px)";
+        let expected_refused: &[&str] = if case == "refused" { &[refusal] } else { &[] };
+        assert_eq!(undocked.refused, expected_refused, "{case}");
+        assert_eq!(undocked.taken_out, ["mine"], "{case}: the block still comes out");
+        assert_eq!(text(home.path(), "mine"), without, "{case}");
+        assert_eq!(
+            fs::read_to_string(&state).unwrap(),
+            kept,
+            "{case}: and the panel's saved size"
+        );
+        assert!(
+            herdr.calls().is_empty(),
+            "{case}: Herdr's own layout and the core aren't asked for anything"
+        );
+        assert_eq!(text(home.path(), "main"), MAIN);
+    }
+}

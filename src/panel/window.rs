@@ -74,6 +74,19 @@ pub(super) fn write_layout(layouts: &Path, name: &str, text: &str) -> Result<()>
     write_whole(&layouts.join(format!("{name}.json")), text)
 }
 
+/// The layouts in `layouts/`, by name, sorted.
+pub(super) fn layout_names(layouts: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(layouts)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter_map(|file| file.strip_suffix(".json").map(str::to_owned))
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    names.sort();
+    names
+}
+
 /// Run a `herdr-app` command that has to work; `what` says what it was for when it doesn't.
 pub(super) fn herdr_app(run: &dyn Run, args: &[&str], what: &str) -> Result<()> {
     let mut cmd = vec![HERDR_APP];

@@ -3,7 +3,10 @@
 `nudge panel install` writes the panel's five files (`mod.json`, `main.js`, `rows.js`, `popup.js`,
 `popup-view.js`, built into the binary) into `$HERDR_APP_HOME` (else `~/.config/herdr-app`) `/mods/nudge/`, leaving
 files that already match alone (first line `Installed the Nudge panel in <dir>` or `Already installed: the Nudge
-panel in <dir>`). Then it asks `herdr-app status` which layout the open window shows:
+panel in <dir>`). Every layout of your own whose `nudge-panel` block lacks `min`/`max` (docked by an older nudge)
+gets them spliced in after the block's last member, written like it, window open or not: `Kept the panel in your
+layout "<name>" between 280 and 360 px wide (it had no limits), …`. Then it asks `herdr-app status` which layout the
+open window shows (herdr-app exposes no window width, so install can't tell a narrow window and says nothing of it):
 
 - `herdr-app` not on PATH: `` `herdr-app` isn't on PATH, so nudge can't reach Herdr's window to dock the panel. ``, exit 0;
 - no answer (window closed): `Herdr's window isn't open, so nudge can't dock the panel or check that it is: …`, exit 0;
@@ -11,9 +14,11 @@ panel in <dir>`). Then it asks `herdr-app status` which layout the open window s
   when it's install's block (`nudge-panel`) and the window's click state (`layouts/.state/<name>.json`) has a width
   for it other than the file's, `herdr-app do layout.resize --id nudge-panel --px <file's px>` and `Herdr had saved
   the panel <w> px wide; it's back to its layout's width.`; hidden there: `layout.show --id nudge-panel` and `Herdr
-  had the panel hidden; it shows again.` (the same for a `<name>-nudge` copy shown again with `layout.switch`);
+  had the panel hidden; it shows again.` (the same for a `<name>-nudge` copy shown again with `layout.switch`). Both
+  are best effort: a refusal adds `Herdr couldn't …; drag the panel's edge back by hand, or run nudge panel install
+  again.`, exit 0;
 - a layout of your own (has `cloned_from`): the block `{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},
-  "size":{"px":320},"min":280,"max":400}` is spliced into the file's text after the root row's last child, with the
+  "size":{"px":280},"min":280,"max":360}` is spliced into the file's text after the root row's last child, with the
   same gap (newline and indent) before it, or right after `[` when the list is empty; no other byte changes. It
   prints the file, the block and `` `nudge panel remove` takes it out again. ``;
 - a layout install can't dock in (a root that isn't a row with `children`, a file that isn't JSON, comments): exit 1,
@@ -36,16 +41,19 @@ panel in <dir>`). Then it asks `herdr-app status` which layout the open window s
   is closed (`… run nudge panel remove again while it's open …`, still recorded); a `<x>-nudge` it switched away from
   that nudge didn't make: `Kept the layout "<x>-nudge": nudge panel install didn't make it.`;
 - the window's click state for the panel goes too: for the layout the open window shows (and that keeps the block),
-  first `layout.resize` / `layout.show` as install does, since the window would save it again from memory; then the
-  `nudge-panel` node is cut out of `.state/<name>.json` for every layout the block came out of and every copy deleted,
-  leaving every other byte; Herdr's own layouts' state isn't touched;
+  first `layout.resize` / `layout.show` as install does, since the window would save it again from memory (best
+  effort: a refusal prints `Herdr couldn't …; the window may keep its saved size for the panel until it shows another
+  layout.` and the rest goes on); then the `nudge-panel` node is cut out of `.state/<name>.json` for every layout the
+  block came out of and every copy deleted, leaving every other byte; Herdr's own layouts' state isn't touched;
 - the panel's files (and `jsconfig.json` / `*.d.ts` Herdr writes) are deleted, then the folder if empty:
   `Removed the Nudge panel's files (<dir>).`, or it lists the other files it kept, or `… aren't in <dir>.`
 
-Herdr's click state: a dragged divider saves `nodes.<id>.size.px` (unclamped, from the width as laid out); window
-resizes, layout switches and `layout.clone` (which copies the source's state) add no width; a `layout.resize` to the
-file's width drops the entry. The window rereads a layout's state file when it shows it, but rewrites the shown
-layout's from memory on its next click change.
+Herdr's click state: a divider drag saves `nodes.<id>.size.px` (unclamped, from the width as laid out; Herdr applies
+`min`/`max` only when it lays the block out); window resizes, relaunches, layout switches and `layout.clone` (which
+copies the source's state) add no width; a `layout.resize` to the file's width drops the entry. The window rereads a
+layout's state file when it shows it, but rewrites the shown layout's from memory on its next click change. On the
+real flow order (resize or switch, cut, forget) the node stays gone 5 s later, after another divider drag and after a
+relaunch (sandbox, recorded in PR #13).
 
 ## Sub-features
 
@@ -55,8 +63,9 @@ layout's from memory on its next click change.
   first step's; remove again changes nothing.
 - `panel-install-shows-the-copy` on Herdr's `main` with `main-nudge` present: `layout.switch`, no clone.
 - `panel-remove-switches-back` shown `main-nudge` that nudge didn't make: switch to `main`, block out, copy kept.
-- `panel-saved-width` a docked layout of your own whose `.state/mine.json` has the panel at 559 px: install asks the
-  window for `layout.resize … --px 320` and says so; remove takes the block out and cuts only the panel's node from
+- `panel-saved-width` a layout of your own docked by an older nudge (block without `min`/`max`) whose
+  `.state/mine.json` has the panel at 559 px: install adds the limits (`Kept the panel …`), asks the window for
+  `layout.resize … --px 320` and says so; remove takes the block out and cuts only the panel's node from
   `.state/mine.json` (its hash changes, the `panel` node stays).
 - `panel-install-refused` a layout of your own whose root is a column: exit 1 with the by-hand block and the
   `mod.open` fallback; `tall.json` unchanged.
@@ -69,7 +78,10 @@ layout's from memory on its next click change.
   whitespace inside `[ ]` / `[\n]`; blocks cut anywhere (leading runs, floating lists); refusals (column, row without
   children, comments, broken JSON) write nothing; a changed copy; Herdr closed with the copy it opens with;
   `HERDR_APP_HOME`; the click state: a saved width and hidden flag put back through the window, none when it matches
-  the file or is another node's; the panel's node cut first, last, in the middle or alone, never another key's.
+  the file or is another node's; a refusing window (install and remove carry on and say so), a closed one, another
+  layout shown; the panel's node cut first, last, in the middle or alone, never another key's; the exact block the
+  previous release wrote gets `min`/`max` byte for byte as install writes them now, once, and its copy is still
+  deleted by remove.
 
 ## Driving it with verify-nudge
 

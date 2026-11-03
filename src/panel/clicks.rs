@@ -1,6 +1,6 @@
 //! Herdr's click state for the panel's block: what the window saved in `layouts/.state/<name>.json` for the node
-//! `nudge-panel`, a width from a dragged divider or a hidden flag. Herdr keeps a saved width whatever the window's
-//! width, so one dragged in a narrow window can leave the rest of the window no room.
+//! `nudge-panel`, a width (a divider drag saves one) or a hidden flag. Herdr keeps a saved width whatever the
+//! window's width, so a wide one in a narrow window can leave the rest of the window no room.
 //!
 //! The window keeps the shown layout's click state in memory and saves it again on the next change, so for that
 //! layout nudge asks the window (`layout.resize` back to the file's width, `layout.show`). Any other layout's state
@@ -18,12 +18,14 @@ use super::window;
 use crate::env::Run;
 use crate::error::Result;
 
-/// What the window had saved for the panel and put back: the width it had (when it wasn't the file's), and whether
-/// it was hidden.
+/// What the window had saved for the panel and what came of putting it back: the width it had (when it wasn't the
+/// file's) and that it's back, whether it was hidden and is shown again, and what the window refused, if anything.
+/// Putting it back is a courtesy: a refusal is reported, never an error.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Restored {
     pub(super) width: Option<f64>,
     pub(super) hidden: bool,
+    pub(super) refused: Vec<String>,
 }
 
 /// A layout's click state, as far as the panel needs.
@@ -59,7 +61,7 @@ fn saved(layouts: &Path, name: &str) -> Clicks {
 
 /// Put the panel in `name`, the layout the open window shows, back to what its file says: `px` wide (the block's
 /// width in the file, when it has one), and shown.
-pub(super) fn restore(run: &dyn Run, layouts: &Path, name: &str, px: Option<f64>) -> Result<Restored> {
+pub(super) fn restore(run: &dyn Run, layouts: &Path, name: &str, px: Option<f64>) -> Restored {
     let clicks = saved(layouts, name);
     let mut restored = Restored::default();
     if let (Some(was), Some(px)) = (clicks.size.and_then(|size| size.px), px)
@@ -67,19 +69,20 @@ pub(super) fn restore(run: &dyn Run, layouts: &Path, name: &str, px: Option<f64>
     {
         let px = px.to_string();
         let args = ["do", "layout.resize", "--id", PANEL_ID, "--px", &px];
-        window::herdr_app(
-            run,
-            &args,
-            &format!("set the panel's width in \"{name}\" back to {px} px"),
-        )?;
-        restored.width = Some(was);
+        let what = format!("set the panel's width in \"{name}\" back to {px} px (it had saved {was} px)");
+        match window::herdr_app(run, &args, &what) {
+            Ok(()) => restored.width = Some(was),
+            Err(error) => restored.refused.push(error.to_string()),
+        }
     }
     if clicks.hidden == Some(true) {
         let args = ["do", "layout.show", "--id", PANEL_ID];
-        window::herdr_app(run, &args, &format!("show the panel in \"{name}\""))?;
-        restored.hidden = true;
+        match window::herdr_app(run, &args, &format!("show the panel in \"{name}\" again")) {
+            Ok(()) => restored.hidden = true,
+            Err(error) => restored.refused.push(error.to_string()),
+        }
     }
-    Ok(restored)
+    restored
 }
 
 /// Cut the panel's node out of `name`'s click state file, if it has one. A file nudge can't read is Herdr's to

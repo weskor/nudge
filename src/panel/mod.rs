@@ -28,6 +28,12 @@ pub(crate) fn install(env: &Env, run: &dyn Run) -> Result<u8> {
     let changed = files::install_mod(&mods)?;
     let verb = if changed { "Installed" } else { "Already installed:" };
     println!("{verb} the Nudge panel in {}", mods.display());
+    for name in dock::bound_all(&home)? {
+        println!(
+            "Kept the panel in your layout \"{name}\" between 280 and 360 px wide (it had no limits), so a width \
+             Herdr saves for it can't take the window."
+        );
+    }
     let message = match dock::dock(&home, &record_path(env), window::ask(env, run)?)? {
         Docked::Already { name, restored } => {
             format!("It's docked in your layout \"{name}\".{}", restored_note(&restored))
@@ -51,7 +57,8 @@ pub(crate) fn install(env: &Env, run: &dyn Run) -> Result<u8> {
     Ok(0)
 }
 
-/// What install put back of the window's saved state for the panel, as lines to add; empty when nothing.
+/// What install put back of the window's saved state for the panel, and what the window refused, as lines to add;
+/// empty when nothing.
 fn restored_note(restored: &clicks::Restored) -> String {
     let width = restored
         .width
@@ -59,7 +66,13 @@ fn restored_note(restored: &clicks::Restored) -> String {
     let hidden = restored
         .hidden
         .then_some("\nHerdr had the panel hidden; it shows again.");
-    format!("{}{}", width.unwrap_or_default(), hidden.unwrap_or_default())
+    let refused = restored
+        .refused
+        .iter()
+        .map(|refused| format!("\n{refused}; drag the panel's edge back by hand, or run `nudge panel install` again."))
+        .collect::<Vec<_>>()
+        .concat();
+    format!("{}{}{refused}", width.unwrap_or_default(), hidden.unwrap_or_default())
 }
 
 /// `nudge panel remove`: undock the panel, then delete its files.
@@ -70,6 +83,9 @@ pub(crate) fn remove(env: &Env, run: &dyn Run) -> Result<u8> {
         println!("{}", no_app("show another layout"));
     }
     let undocked = undock::undock(&home, &record_path(env), window)?;
+    for refused in &undocked.refused {
+        println!("{refused}; the window may keep its saved size for the panel until it shows another layout.");
+    }
     if let Some((copy, back)) = &undocked.switched {
         println!("Herdr showed \"{copy}\"; it shows \"{back}\" again.");
     }

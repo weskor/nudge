@@ -2593,7 +2593,7 @@ def scenarios():
         cmd(["panel", "remove"], expect=0, has="The Nudge panel's files aren't in ", lacks=["Took the panel out"]),
         cmd(["panel", "install"], expect=0,
             has=['Docked it on the right of your layout "mine": added to ', "mine.json as the last child of its top row:\n  ",
-                 '{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320},"min":280,"max":400}',
+                 '{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":280},"min":280,"max":360}',
                  "`nudge panel remove` takes it out again."]),
         cmd(["panel", "install"], expect=0, has='It\'s docked in your layout "mine".'),
         # mine.json's hash after this remove is the one after the first step: the same bytes.
@@ -2608,8 +2608,9 @@ def scenarios():
         cmd(["panel", "remove"], expect=0,
             has=['Herdr showed "main-nudge"; it shows "main" again.', 'Took the panel out of your layout "main-nudge"',
                  'Kept the layout "main-nudge": `nudge panel install` didn\'t make it.']))
-    # The window saved a width for the docked panel (a divider dragged in a narrow window): install puts it back
-    # through the window; remove cuts the node out of the click state file, leaving the other node.
+    # A layout of your own docked by an older nudge (no min/max) whose click state has the panel at 559 px (how the
+    # window came to save that is unexplained): install adds the limits and puts the width back through the window;
+    # remove cuts the node out of the click state file, leaving the other node.
     docked = json.dumps({"id": "root", "cloned_from": {"name": "main"}, "type": "row", "children": [
         {"id": "work", "type": "block", "content": {"tab": "active"}},
         {"id": "nudge-panel", "type": "block", "content": {"mod": "nudge"}, "size": {"px": 320}}]}, indent=2) + "\n"
@@ -2618,8 +2619,18 @@ def scenarios():
     add("panel-saved-width", write(layouts_dir + "mine.json", docked), write(layouts_dir + ".state/mine.json", saved),
         fake("herdr-app", fixture(status("mine"), resize)),
         cmd(["panel", "install"], expect=0,
-            has=['It\'s docked in your layout "mine".\nHerdr had saved the panel 559 px wide; it\'s back to its layout\'s width.']),
+            has=['Kept the panel in your layout "mine" between 280 and 360 px wide (it had no limits)',
+                 'It\'s docked in your layout "mine".\nHerdr had saved the panel 559 px wide; it\'s back to its layout\'s width.']),
+        cmd(["panel", "install"], expect=0, has='It\'s docked in your layout "mine".', lacks=["Kept the panel"]),
         cmd(["panel", "remove"], expect=0, has='Took the panel out of your layout "mine" ('))
+    # The window refuses to put the width back: install and remove say so, exit 0, and do everything else.
+    add("panel-saved-width-refused", write(layouts_dir + "mine.json", docked), write(layouts_dir + ".state/mine.json", saved),
+        fake("herdr-app", fixture(status("mine"))),
+        cmd(["panel", "install"], expect=0,
+            has="Herdr couldn't set the panel's width in \"mine\" back to 320 px (it had saved 559 px); drag the panel's edge back by hand"),
+        cmd(["panel", "remove"], expect=0,
+            has=["Herdr couldn't set the panel's width in \"mine\" back to 320 px (it had saved 559 px); the window may keep",
+                 'Took the panel out of your layout "mine" (', "Removed the Nudge panel's files ("]))
     add("panel-install-copy-refused", write(layouts_dir + "main.json", shipped), fake("herdr-app", fixture(status("main"))),
         cmd(["panel", "install"], expect=1, has='nudge: Herdr couldn\'t copy the layout "main"'))
     tall = json.dumps({"id": "root", "type": "column", "cloned_from": {"name": "main"}, "children": []}, indent=2)
@@ -2627,7 +2638,7 @@ def scenarios():
         cmd(["panel", "install"], expect=1,
             has=["nudge: this layout isn't a row with children at its top, so the panel can't dock on its right\n",
                  "tall.json (Herdr's own layouts take no new panels: clone one first):\n  "
-                 '{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":320},"min":280,"max":400}\n',
+                 '{"id":"nudge-panel","type":"block","content":{"mod":"nudge"},"size":{"px":280},"min":280,"max":360}\n',
                  "Or open it over the window: herdr-app do mod.open --name nudge"]))
     no_app = {"PATH": "/usr/bin:/bin"}  # no fakebin: no herdr-app at all
     add("panel-no-herdr-app", write(layouts_dir + "mine.json", own),
